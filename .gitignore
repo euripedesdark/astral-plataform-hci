@@ -1,0 +1,29 @@
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+.env
+
+# OneDrive / editor temp
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+OneDriveTemp/
+
+# Dados grandes e arquivos gerados
+nameservers.csv
+*.log
+*.sqlite
+*.db
+
+# chaves e segredos
+*.pem
+*.key
+secrets.*
