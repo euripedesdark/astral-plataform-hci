@@ -285,28 +285,28 @@ Engineer-operated
 
 Astral proves that true innovation lies not in replacing everything, but in integrating proven systems with discipline, clarity and intent.
 
-+-----------------------------------------------------------+
-|                    Astral Control Plane                   |
-|        API • RBAC • Audit • Approvals                     |
-+-------------------------------+---------------------------+
-                                |
-                                v
-+-----------------------------------------------------------------------+
-|            Core Reconciliation Engine (Python Control Core)            |
-|  Intents • Desired State • Validation • Diff • Apply • Rollback        |
-+-----------------------------------------------------------------------+
-                                |
-                                v
-+-----------------------------------------------------------------------+
-|        Converged Infrastructure Fabric (Single Logical Domain)         |
-|  Network • Firewall • Identity • DNS                                   |
-+-----------------------------------------------------------------------+
-                                |
-                                v
-+-----------------------------------------------------------------------+
-|         Compute & Containers Runtime (HCI Node Runtime)                |
-|      KVM / libvirt • OCI Containers                                    |
-+-----------------------------------------------------------------------+
++------------------------------------------------------------+
+|                      Astral Control Plane                  |
+|                 API · RBAC · Audit · Approvals             |
++------------------------------------------------------------+
+                             |
+                             v
++----------------------------------------------------------------+
+|     Core Reconciliation Engine (Python Control Core)           |
+|  Intents · Desired State · Validation · Diff · Apply · Rollback |
++----------------------------------------------------------------+
+                             |
+                             v
++----------------------------------------------------------------+
+|  Converged Infrastructure Fabric (Single Logical Domain)       |
+|            Network · Firewall · Identity · DNS                 |
++----------------------------------------------------------------+
+                             |
+                             v
++----------------------------------------------------------------+
+|    Compute & Containers Runtime (HCI Node Runtime)             |
+|                 KVM / libvirt · OCI Containers                 |
++----------------------------------------------------------------+
 
 (External systems interact only through explicit APIs)
 
