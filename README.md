@@ -285,28 +285,39 @@ Engineer-operated
 
 Astral proves that true innovation lies not in replacing everything, but in integrating proven systems with discipline, clarity and intent.
 
-+------------------------------------------------------------+
-|                      Astral Control Plane                  |
-|                 API · RBAC · Audit · Approvals             |
-+------------------------------------------------------------+
-                             |
-                             v
-+----------------------------------------------------------------+
-|     Core Reconciliation Engine (Python Control Core)           |
-|  Intents · Desired State · Validation · Diff · Apply · Rollback |
-+----------------------------------------------------------------+
-                             |
-                             v
-+----------------------------------------------------------------+
-|  Converged Infrastructure Fabric (Single Logical Domain)       |
-|            Network · Firewall · Identity · DNS                 |
-+----------------------------------------------------------------+
-                             |
-                             v
-+----------------------------------------------------------------+
-|    Compute & Containers Runtime (HCI Node Runtime)             |
-|                 KVM / libvirt · OCI Containers                 |
-+----------------------------------------------------------------+
+### Arquitetura em camadas
+
+### Diagrama resumido da arquitetura do projeto.
+
+```mermaid
+flowchart TB
+  subgraph ControlPlane [Astral Control Plane]
+    direction TB
+    CP_API["API · RBAC · Audit · Approvals"]
+  end
+
+  subgraph Reconciler [Core Reconciliation Engine]
+    direction TB
+    RE["Python Control Core<br/>Intents · Desired State · Validation · Diff · Apply · Rollback"]
+  end
+
+  subgraph Fabric [Converged Infrastructure Fabric]
+    direction TB
+    CF["Network · Firewall · Identity · DNS"]
+  end
+
+  subgraph Runtime [Compute & Containers Runtime]
+    direction TB
+    RT["KVM / libvirt · OCI Containers"]
+  end
+
+  ControlPlane --> Reconciler
+  Reconciler --> Fabric
+  Fabric --> Runtime
+
+  classDef box fill:#f8f9fa,stroke:#2b2b2b,stroke-width:1px,color:#111;
+  class ControlPlane,Reconciler,Fabric,Runtime box;
+```
 
 (External systems interact only through explicit APIs)
 
@@ -398,7 +409,7 @@ APIs, schemas and internal structures are expected to evolve.
 
 Repository Structure (Planned)
 
-astral/
+    astral/
 ├── control-plane/        # API, RBAC, approvals, audit
 ├── reconciler/           # Python reconciliation engine
 ├── fabric/               # Network, firewall, identity, DNS integration
