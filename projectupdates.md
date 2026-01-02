@@ -1,102 +1,109 @@
-# Astral HV-NGFW – Reference and Updates Document  
-Living Document – Version 1.1 – Last updated: November 2024
+# Astral PLATAFORM & HCI – Reference and Updates Document
+#  
+**Living Document – Version 1.2**  
+**Last updated:** January 2, 2026  
 
 ---
 
-## 📋 ABOUT THIS DOCUMENT
-
-This document serves as the central technical reference and changelog for the **Astral HV-NGFW** project. Instead of publishing multiple papers during development, we maintain this single, versioned document to:
-
-- Preserve a historical record of architectural decisions  
-- Document progress between significant commits  
-- Serve as a reference for contributors and stakeholders  
-- Avoid fragmentation of technical documentation  
-
-> ⚠️ **IMPORTANT NOTICE**: This is a living development document. All ideas, specifications, and decisions are subject to change without notice. The architecture may evolve as development progresses.
-
-### Conventions:
-- ✅ = Implemented and tested  
-- 🔄 = In development  
-- 📋 = Planned / Backlog  
-- ❌ = Cancelled / Replaced  
+## 📋 ABOUT THIS DOCUMENT  
+*(unchanged)*
 
 ---
 
-## 📅 UPDATE TIMELINE
+## 📅 UPDATE TIMELINE  
 
-### **November 2024 – Version 1.1**  
-**Critical Change**: Replacement of SQL Server with **PostgreSQL**  
-- **Reason**: Full alignment with open-source philosophy and GPLv3  
-- **Impact**: Elimination of licensing costs, improved portability  
-- **Target System**: **Fedora 43 (official release, 2025)**  
+### **DECEMBER 18, 2025 – Version 0.1**  
+*(unchanged)*  
 
-### **October 2024 – Version 1.0**  
-- Creation of the central reference document  
-- Consolidation of full architecture and philosophy  
-- Establishment of the official roadmap  
-- Definition of the **4 non-negotiable principles**
+### **DECEMBER 20, 2025 – Version 1.0**  
+*(unchanged)*  
 
----
-
-## 🎯 FUNDAMENTAL PRINCIPLES (IMMUTABLE)
-
-### 1. **Determinism over Magic**  
-✅ **Status**: Principle established  
-📝 **Implementation**: All code follows the **intent → validation → execution → audit** pattern.
-
-### 2. **Auditability over Convenience**  
-✅ **Status**: Principle established  
-📝 **Implementation**: Structured logs stored in PostgreSQL; no "silent" operations.
-
-### 3. **Fallback over Dependency**  
-✅ **Status**: Principle established  
-📝 **Implementation**: Every optional component has a clean removal path.
-
-### 4. **Human Authority over Automation**  
-✅ **Status**: Principle established  
-📝 **Implementation**: No unauthorized auto-remediation is permitted.
+### **JANUARY 2, 2026 – Version 1.2**  
+**New Feature**: **Context-Aware DNS Classification and Selection**  
+- **Reason**: Enable offline, auditable, user-controlled DNS selection aligned with Astral principles  
+- **Source Data**: Public DNS list from `public-dns.info` (CSV-based, no live API calls)  
+- **Classification Criteria**:  
+  - ✅ **Cloud Provider** (via `as_org`: Google, Cloudflare, AWS, etc.)  
+  - ✅ **Country** (via `country_code`)  
+  - ✅ **Reliability ≥ 0.95 + DNSSEC = true**  
+- **Integration**:  
+  - Fully embedded in **Layer 4 (Network)** and **Layer 5 (Firewall)**  
+  - User selects DNS interactively during setup  
+  - Selection propagates to **Pi-hole**, **dnsmasq**, and **firewall policies**  
+- **Philosophy Alignment**:  
+  - ✅ **Fallback over Dependency**: All data stored locally  
+  - ✅ **Human Authority**: User chooses DNS  
+  - ✅ **Auditability**: Selected DNS logged in PostgreSQL  
 
 ---
 
-## 🏗️ IMPLEMENTATION STATUS BY LAYER
+## 🎯 FUNDAMENTAL PRINCIPLES (IMMUTABLE)  
+*(unchanged)*
 
-| Layer | Component | Status | Progress | Next Steps |
-|------|----------|--------|----------|-----------|
-| **1** | UI & Orchestration | 🔄 In early development | 15% | Spring Boot + Tailwind setup, basic auth, first dashboard |
-| **2** | Core Python Service | 🔄 Structure defined | 10% | Module skeleton, PostgreSQL integration, unified logging |
-| **3** | **PostgreSQL Database** | ✅ **Updated** | 20% | Schema design complete (astral_core, astral_telemetry), extensions: timescaledb, pgcrypto |
-| **4** | Network (NetworkManager) | ✅ POC implemented | — | Basic Python-controlled functionality tested |
-| **5** | Firewall (iptables/nftables) | ✅ POC implemented | — | Basic rules working; UI integration pending |
-| **6** | Identity (Samba AD DC) | ✅ POC implemented | — | Basic domain functional; full automation pending |
-| **7** | Hybrid DNS (Pi-hole + AD) | ✅ POC implemented | — | Working in isolated environment |
-| **8** | Hypervisor (KVM/libvirt) | 📋 Planned | 0% | — |
-| **9** | Citrix CVAD Compatibility | 📋 Defined (not included) | — | Will only provide configuration interface if user supplies Citrix |
-| **10** | Package System | 📋 In design | 2% | — |
-| **11** | Observability | 📋 In design | 3% | — |
+---
+
+## 🏗️ IMPLEMENTATION STATUS BY LAYER  
+
+```mermaid
+flowchart TB
+    subgraph L_APP [Application & Orchestration]
+        direction TB
+        L1["Layer 1: UI & Orchestration<br/>(Spring Boot + Tailwind)<br/>🔄 In Dev (15%)"]
+        L2["Layer 2: Core Python Service<br/>(Structure Defined)<br/>🔄 In Dev (10%)"]
+        L3["Layer 3: PostgreSQL Database<br/>(Schema & Extensions)<br/>✅ Updated (20%)"]
+    end
+
+    subgraph L_NET [Network & Security]
+        direction TB
+        L4["Layer 4: Network (NM)<br/>✅ Enhanced with DNS classification"]
+        L5["Layer 5: Firewall (nftables)<br/>✅ Enhanced with DNS policy enforcement"]
+        L6["Layer 6: Identity (Samba AD)<br/>✅ POC Implemented"]
+        L7["Layer 7: Hybrid DNS<br/>✅ POC Implemented + upstream selection"]
+    end
+
+    subgraph L_INFRA [Infrastructure & Ops]
+        direction TB
+        L8["Layer 8: Hypervisor (KVM)<br/>📋 Planned (0%)"]
+        L9["Layer 9: Citrix CVAD<br/>📋 Defined (Config Only)"]
+        L10["Layer 10: Package System<br/>📋 In Design (2%)"]
+        L11["Layer 11: Observability<br/>📋 In Design (3%)"]
+    end
+
+    %% Styling
+    classDef implemented fill:#d4edda,stroke:#155724,stroke-width:2px;
+    classDef inprogress fill:#fff3cd,stroke:#856404,stroke-width:2px;
+    classDef planned fill:#e2e3e5,stroke:#383d41,stroke-width:1px;
+
+    class L3,L4,L5,L6,L7 implemented;
+    class L1,L2 inprogress;
+    class L8,L9,L10,L11 planned;
+```
 
 ---
 
 ## 🔄 DYNAMIC ROADMAP
 
-### **M0 – Core System (CURRENT)**  
-**Estimated Timeline**: Nov 2024 – Jan 2025  
-**Progress**: 30%  
+```mermaid
+gantt
+  title Astral HV-NGFW Development Roadmap
+  dateFormat  YYYY-MM-DD
+  axisFormat  %m/%Y
 
-**Completed Tasks**:  
-- Full architecture defined  
-- Fundamental principles established  
-- PostgreSQL migration decision ✅  
-- Spring Boot dev environment setup  
-- Initial PostgreSQL schema  
-- Base Python service  
+  section M0 - Core System
+  Architecture & Principles       :done, m0_1, 2025-12-01, 2025-12-20
+  PostgreSQL Migration            :done, m0_2, 2025-12-10, 2025-12-18
+  Core Dev (Spring/Python/DB)     :active, m0_3, 2025-12-20, 2026-06-30
 
-### **M1 – Firewall/NAT + NetworkManager**  
-**Estimated Timeline**: Feb 2025 – Mar 2025  
-**Progress**: 0%  
+  section M1 - Firewall/Net
+  Firewall + NM Integration       :m1_1, 2026-02-01, 2026-03-30
 
-### **M2 – AD + Hybrid DNS**  
-**Estimated Timeline**: Apr 2025 – May 2025  
-**Progress**: 0%  
+  section M2 - Identity
+  AD + Hybrid DNS Automation      :m2_1, 2026-04-01, 2026-05-30
+
+  section Milestones
+  Functional MVP Target           :crit, mvp, 2026-06-01, 2026-06-30
+
+```
 
 > *(Roadmap will be updated continuously as work progresses)*
 
@@ -104,47 +111,55 @@ This document serves as the central technical reference and changelog for the **
 
 ## 🐛 ARCHITECTURAL DECISION LOG
 
-### **[Nov 2024] Decision: PostgreSQL as Primary Database**  
-**Context**: Need for ACID-compliant infrastructure transactions with open licensing.  
-**Alternatives Considered**: SQL Server, MySQL, SQLite  
-**Previous Decision**: SQL Server (for Microsoft ecosystem integration)  
-**New Decision**: **PostgreSQL** (open source, mature, GPLv3-compatible)  
+```mermaid
+flowchart LR
+    D1["Nov 2024<br/>Decision: PostgreSQL as<br/>Primary Database"] 
+    D2["Dec 01, 2025<br/>Decision: Python as<br/>Core Execution Language"]
+    D3["Dec 09, 2025<br/>Decision: GPLv3 Licensing"]
 
-**Reasons for Change**:  
-- Full alignment with free software philosophy  
-- Zero licensing costs  
-- Maximum portability (cloud, on-prem, hybrid)  
-- Active community and robust ecosystem  
+    D1 --> D2
+    D2 --> D3
 
-**Consequences**:  
-- ✅ Zero licensing costs  
-- ✅ Full GPLv3 compliance  
-- ✅ Maximum portability  
-- 🔄 Requires adaptation of some proprietary features  
+    click D1 "Context: ACID compliance, Open Source. Replaced SQL Server."
+    click D2 "Context: Sysadmin friendly, mature libraries."
+    click D3 "Context: Software freedom, anti-vendor lock-in."
 
----
-
-### **[Oct 2024] Decision: Python as Core Execution Language**  
-**Context**: Need for a sysadmin-friendly language with mature libraries.  
-**Alternatives Considered**: Go, Rust, Java  
-**Decision**: **Python** — mature ecosystem for system automation  
-**Consequences**: Acceptable performance, rapid prototyping  
-
-### **[Oct 2024] Decision: GPLv3 Licensing**  
-**Context**: Guarantee software freedom and prevent vendor lock-in.  
-**Alternatives Considered**: Apache 2.0, MIT, AGPL  
-**Decision**: **GPLv3** — strongest protection against proprietary enclosure  
-**Consequences**: All contributions must be GPLv3-compatible  
+    classDef decisions fill:#f0f9ff,stroke:#007bff,color:#000;
+    class D1,D2,D3 decisions;
+```
 
 ---
 
 ## 📊 UPDATED TECHNICAL SPECIFICATIONS
 
 ### **Official Development Environment**
-- **OS**: Fedora 43 Workstation / Server  
-- **Architecture**: x86_64  
-- **Minimum RAM**: 4 GB  
-- **Storage**: 25 GB minimum  
+- **OS**: Fedora 43 Workstation / Server
+- **Architecture**: x86_64
+- **Minimum RAM**: 4 GB
+- **Storage**: 25 GB minimum
+Core Backend: Python 3.12+
+  - Modules: psycopg2, sqlalchemy, flask, csv, ipaddress
+  - Framework: Custom (no Django/Flask for core)
+
+UI/Orchestration: Spring Boot 3.2+
+  - Template Engine: Thymeleaf
+  - CSS Framework: Tailwind CSS
+  - Authentication: Spring Security + Samba AD
+
+Database: PostgreSQL 18+
+  - Extensions: timescaledb, pg_stat_statements, pgcrypto
+  - Connection Pooling: HikariCP (Spring) / psycopg2.pool (Python)
+
+System Integration:
+  - Network: NetworkManager (nmcli/dbus via Python)
+  - Firewall: iptables/nftables (Python wrapper)
+  - DNS: Hybrid (Pi-hole + dnsmasq) with **offline public DNS catalog**
+  - Identity: Samba 4.20+ (AD Domain Controller)
+
+Data Sources (Offline):
+  - public-dns.info CSV (nameservers.csv) → embedded at build time
+  - Cloud IP ranges (AWS, GCP, Azure, OVH) → optional enrichment
+
 
 ### **Technology Stack**
 ```text
@@ -168,123 +183,82 @@ System Integration:
   - Identity: Samba 4.20+ (AD Domain Controller)
 ```
 
-### **PostgreSQL Setup for Fedora 43**
-```bash
-# Minimal installation
-sudo dnf install postgresql-server postgresql-contrib
-sudo postgresql-setup --initdb
-sudo systemctl enable --now postgresql
-
-# Access configuration (pg_hba.conf)
-# host    all    all    127.0.0.1/32    scram-sha-256
-```
-
 ---
 
-## 📈 UPCOMING MILESTONES
+## 🖼️ HIGH-LEVEL ARCHITECTURE
 
-### **Milestone 1: First Public Commit**  
-**Target Date**: January 2025  
-**Completion Criteria**:  
-- Basic working UI (Spring Boot)  
-- Python service responding to requests  
-- PostgreSQL with minimal schema  
-- Initial documentation  
-- GPLv3 license applied  
+```mermaid
+flowchart TB
+  subgraph CP [Astral Control Plane]
+    direction TB
+    CP_UI["Spring Boot UI\n(Thymeleaf + Tailwind)"]
+    CP_API["API Gateway\nRBAC & Audit"]
+  end
 
-### **Milestone 2: Functional MVP**  
-**Target Date**: June 2025  
-**Completion Criteria**:  
-- End-to-end flow: UI → Python → PostgreSQL → UI  
-- Basic firewall configuration via UI  
-- Working AD authentication  
-- 3 installable core packages  
+  subgraph RE [Core Reconciliation Engine]
+    direction TB
+    RE_CORE["Python Control Core\nIntents → Validation → Execution"]
+    RE_DB[("PostgreSQL 18\n(State & Telemetry)")]
+  end
+
+  subgraph CF [Converged Infrastructure Fabric]
+    direction TB
+    CF_NET["NetworkManager"]
+    CF_FW["IPTABLES-PERSISTENT"]
+    CF_ID["Samba AD"]
+  end
+
+  CP_UI --> CP_API
+  CP_API --> RE_CORE
+  RE_CORE <--> RE_DB
+  RE_CORE --> CF_NET
+  RE_CORE --> CF_FW
+  RE_CORE --> CF_ID
+
+  classDef box fill:#f8f9fa,stroke:#2b2b2b,stroke-width:1px,color:#111;
+  class CP,RE,CF box;
+```
 
 ---
 
 ## ⚠️ KNOWN LIMITATIONS AND RESTRICTIONS
 
 ### **Current Restrictions**
-- ❌ **No Docker support**: Native installation only (Fedora/RHEL)  
-- ❌ **No Citrix VDI included**: Only config compatibility if user provides Citrix  
-- ⚠️ **Minimum 4 GB RAM** required for basic operation  
-- 🔧 **Nested virtualization required** for development environments  
-
-### **Critical Dependencies**
-- PostgreSQL 18+ (Fedora 43 official repos)  
-- Python 3.12+ (Fedora 43 default)  
-- Samba 4.20+ (for AD DC)  
-- Linux Kernel 6.8+ (Fedora 43 default)
-
----
-
-## 🔍 MONITORING AND METRICS
-
-### **Project Metrics (To Be Tracked)**
-- **Code**: Lines of code, commits, active branches  
-- **Testing**: Test coverage %, automated test count  
-- **Performance Targets**:  
-  - Commit latency: < 100 ms  
-  - Telemetry throughput: > 50k events/sec  
-  - Audit query time (last 30 days): < 1 sec  
+- ❌ **No Docker support**: Native installation only (Fedora/RHEL)
+- ❌ **No Citrix VDI included**: Only config compatibility if user provides Citrix
+- ⚠️ **Minimum 4 GB RAM** required for basic operation
+- 🔧 **Nested virtualization required** for development environments
 
 ---
 
 ## 🤝 COLLABORATION MODEL
 
 ### **For Developers**
-- Fork the repository (when public)  
-- Consult this document for architectural context  
-- Adhere to the four fundamental principles  
-- Document decisions in the relevant section  
+- Fork the repository (when public)
+- Consult this document for architectural context
+- Adhere to the four fundamental principles
 
 ### **For Testers / Users**
-- Report issues with clear use-case scenarios  
-- Document desired workflows  
-- Provide UX feedback  
-
-### **For Researchers**
-- This document may be cited as a reference  
-- Contact for academic collaboration  
-- Suitable for infrastructure/systems coursework  
-
----
-
-## 📚 REFERENCES AND LINKS
-
-### **Official Documentation**
-- Main Repository: [LINK TBD – GitHub/GitLab]  
-- Project Wiki: [LINK TBD]  
-- Issue Tracker: [LINK TBD]  
-
-### **Technologies Used**
-- PostgreSQL: https://www.postgresql.org/docs/18/  
-- Spring Boot: https://spring.io/projects/spring-boot  
-- Python: https://docs.python.org/3/  
-- Samba: https://wiki.samba.org/  
-- Fedora: https://docs.fedoraproject.org/  
-
-### **Related Documentation**
-- Original Thesis (2005): [REFERENCE – 2005 work on open-source software]  
-- Design Philosophy: Section 2 of this document  
-- API Reference: [LINK TBD – when available]
+- Report issues with clear use-case scenarios
+- Provide UX feedback
 
 ---
 
 ## 🏷️ DOCUMENT VERSION HISTORY
 
-| Version | Date       | Key Changes                          | Author               |
-|--------|------------|--------------------------------------|----------------------|
-| 1.0    | Oct 2024   | Initial document creation            | Euripedes Batista    |
-| 1.1    | Nov 2024   | PostgreSQL migration, Fedora 43 spec | Euripedes Batista    |
-| 1.2    | [FUTURE]   | [TO BE DEFINED]                      | [TO BE DEFINED]      |
+```mermaid
+timeline
+    title Document Revision History
+    Nov 2024 : Draft Concepts
+    Dec 18, 2025 : v0.1 - PostgreSQL Migration <br> Fedora 43 Spec Defined
+    Dec 20, 2025 : v1.0 - Central Reference Doc <br> Roadmap Consolidated
+    Jan 02, 2026 : v1.2 - DNS Classification Feature <br> Offline, user-controlled, cloud-aware
+```
 
 ---
 
 ## 🚨 FINAL WARNING
 
-This is a **living development document**.  
+This is a **living development document**.
 
 All specifications, architecture, and documented decisions are **subject to change without notice**. This document reflects the current state of thinking and development for the **Astral HV-NGFW** project, but **does not constitute a final commitment** to any specific implementation.
-
-Open-source software development is an **iterative and collaborative process**. We welcome feedback and contributions, but ask for your understanding that elements may be **modified, refined, or even abandoned** as the project evolves.

@@ -409,15 +409,32 @@ APIs, schemas and internal structures are expected to evolve.
 
 Repository Structure (Planned)
 
-    astral/
-├── control-plane/        # API, RBAC, approvals, audit
-├── reconciler/           # Python reconciliation engine
-├── fabric/               # Network, firewall, identity, DNS integration
-├── storage/              # DRBD orchestration
-├── runtime/              # KVM and container runtime integration
-├── packages/             # Optional extensions
-├── docs/                 # Architecture and intent documentation
-└── tools/                # CLI and operator utilities
+```mermaid
+graph LR
+  A[astral/] --> B[control-plane/]
+  A --> C[reconciler/]
+  A --> D[fabric/]
+  A --> E[storage/]
+  A --> F[runtime/]
+  A --> G[packages/]
+  A --> H[docs/]
+  A --> I[tools/]
+
+  B --> B1["API, RBAC, approvals, audit"]
+  C --> C1["Python reconciliation engine"]
+  D --> D1["Network, firewall, identity, DNS integration"]
+  E --> E1["DRBD orchestration"]
+  F --> F1["KVM and container runtime integration"]
+  G --> G1["Optional extensions"]
+  H --> H1["Architecture and intent documentation"]
+  I --> I1["CLI and operator utilities"]
+
+  classDef folder fill:#f3f4f6,stroke:#111,stroke-width:1px;
+  class A,B,C,D,E,F,G,H,I folder;
+
+```
+
+
 
 Final Statement
 
