@@ -12,11 +12,11 @@ import time
 import textwrap
 
 # --- VARIÁVEIS DE CONFIGURAÇÃO ---
-HOSTNAME_COMPLETO = "dc1.astral.celeste"
-NOME_NETBIOS = "ASTRAL"
-REALM = "ASTRAL.CELESTE"
-IP_ESTATICO = "100.100.100.12"
-INTERFACE_REDE = "enp5s0f3u2"
+HOSTNAME_COMPLETO = "nobara.srvcloud.cloud"
+NOME_NETBIOS = "SRVCLOUD"
+REALM = "SRVCLOUD.CLOUD"
+IP_ESTATICO = "192.168.2.2"
+INTERFACE_REDE = "ip0"
 SENHA_ADMIN = "Copa@@2026"
 
 # --- Funções Auxiliares ---
@@ -136,8 +136,8 @@ def configurar_iptables_fedora():
     run_command(["sudo", "iptables", "-F"])
 
     ports = {
-        'tcp': [53, 88, 135, 139, 389, 445, 464, 636, 3268, 3269, 5353, '49152:65535'],
-        'udp': [53, 88, 123, 137, 138, 389, 464, '49152:65535']
+        'tcp': [53, 88, 135, 139, 389, 445, 464, 636, 3268, 3269, 5353, 1433, 1521, '49152:65535'],
+        'udp': [53, 88, 123, 137, 138, 389, 464, 1433, 1521, '49152:65535']
     }
     for proto, port_list in ports.items():
         for port in port_list:
