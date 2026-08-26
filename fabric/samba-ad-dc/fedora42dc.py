@@ -11,13 +11,59 @@ import sys
 import time
 import textwrap
 
-# --- VARIÁVEIS DE CONFIGURAÇÃO ---
-HOSTNAME_COMPLETO = "nobara.srvcloud.cloud"
-NOME_NETBIOS = "SRVCLOUD"
-REALM = "SRVCLOUD.CLOUD"
-IP_ESTATICO = "192.168.2.2"
-INTERFACE_REDE = "ip0"
-SENHA_ADMIN = "Copa@@2026"
+# --- CARREGAR VARIÁVEIS DE AMBIENTE DO auth.env ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_FILE = os.path.join(SCRIPT_DIR, "auth.env")
+
+def _parse_valor(raw):
+    raw = raw.strip()
+    if '"' in raw:
+        return raw.split('"')[1]
+    if "'" in raw:
+        return raw.split("'")[1]
+    return raw
+
+def _ler_env():
+    try:
+        with open(ENV_FILE, 'r') as f:
+            return f.read()
+    except PermissionError:
+        r = subprocess.run(["sudo", "cat", ENV_FILE], capture_output=True, text=True)
+        if r.returncode != 0:
+            print("Sem permissao para ler " + ENV_FILE)
+            sys.exit(1)
+        return r.stdout
+    except FileNotFoundError:
+        print("Arquivo " + ENV_FILE + " nao encontrado!")
+        sys.exit(1)
+
+def carregar_env():
+    env = {}
+    for line in _ler_env().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        env[key.strip()] = _parse_valor(value)
+    
+    # Variáveis obrigatórias (sem CERT_PWD pois este script não usa SSL)
+    obrig = ["HOSTNAME_COMPLETO", "NOME_NETBIOS", "REALM", "IP_ESTATICO", "INTERFACE_REDE", "SENHA_ADMIN"]
+    faltando = [k for k in obrig if not env.get(k)]
+    if faltando:
+        print("Variaveis ausentes: " + ', '.join(faltando))
+        sys.exit(1)
+    return env
+
+CFG = carregar_env()
+HOSTNAME_COMPLETO = CFG["HOSTNAME_COMPLETO"]
+NOME_NETBIOS = CFG["NOME_NETBIOS"]
+REALM = CFG["REALM"]
+IP_ESTATICO = CFG["IP_ESTATICO"]
+INTERFACE_REDE = CFG["INTERFACE_REDE"]
+SENHA_ADMIN = CFG["SENHA_ADMIN"]
+
+print("Config carregada de: " + ENV_FILE)
+print("  HOSTNAME: " + HOSTNAME_COMPLETO + " | REALM: " + REALM)
 
 # --- Funções Auxiliares ---
 
