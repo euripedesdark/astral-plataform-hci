@@ -1,28 +1,44 @@
-# IDE
-.idea/
-
+```
 # Python
 __pycache__/
 *.pyc
-env/
-venv/
-.env
+*.pyo
+*.pyd
 
-# OneDrive / editor temp
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Fabric
+fabfile.py
+
+# Logs
+*.log
+
+# Temporary files
 *.tmp
 *.swp
+*~
 .DS_Store
 Thumbs.db
-OneDriveTemp/
 
-# Dados grandes e arquivos gerados
-nameservers.csv
-*.log
-*.sqlite
-*.db
+# Environment variables
+.env
+.env.local
+*.env.*
 
-# chaves e segredos
-*.pem
-*.key
-secrets.*
-!DNS/nameservers.csv
+# Coverage reports
+.coverage
+coverage/
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# Build directories
+build/
+dist/
+*.egg-info/
+```
