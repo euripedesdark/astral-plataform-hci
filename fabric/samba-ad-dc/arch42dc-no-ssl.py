@@ -1,9 +1,8 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 """
-Script final e revisado para automatizar a instalação e configuração de um
-Samba Active Directory Domain Controller no Fedora, com todas as etapas de
-atualização e correção.
+Script para automatizar a instalação e configuração de um
+Samba Active Directory Domain Controller no Arch Linux, sem SSL.
 """
 import os
 import subprocess
@@ -172,8 +171,8 @@ def preparacao_sistema_fedora():
     run_command(["sudo", "systemctl", "stop", "firewalld"], check=False)
     run_command(["sudo", "systemctl", "disable", "firewalld"], check=False)
 
-    packages = ["samba-dc", "samba-client", "bind", "chrony", "iptables-services", "patch", "python3-markdown"]
-    run_command(["sudo", "dnf", "install", "-y"] + packages)
+    packages = ["samba", "bind", "chrony", "iptables", "patch", "python-markdown"]
+    run_command(["sudo", "pacman", "-Sy", "--noconfirm"] + packages)
     print("✅ Preparação do sistema concluída.")
 
 def configurar_iptables_fedora():
@@ -191,7 +190,7 @@ def configurar_iptables_fedora():
 
     run_command(["sudo", "iptables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT"])
     run_command(["sudo", "iptables", "-A", "INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
-    run_command("sudo sh -c 'iptables-save > /etc/sysconfig/iptables'", shell=True)
+    run_command("sudo sh -c 'iptables-save > /etc/iptables/iptables.rules'", shell=True)
     run_command(["sudo", "systemctl", "enable", "iptables"])
     run_command(["sudo", "systemctl", "restart", "iptables"])
     print("✅ Iptables configurado.")
@@ -250,7 +249,7 @@ def configurar_samba_e_bind():
         };
     """)
     create_file_with_content("/etc/named.conf", named_conf_content)
-    create_file_with_content("/etc/sysconfig/named", 'OPTIONS="-4"')
+    create_file_with_content("/etc/conf.d/named", 'OPTIONS="-4"')
     print("✅ Configuração do Samba e BIND concluída.")
 
 def integracao_final():
