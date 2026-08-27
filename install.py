@@ -3,7 +3,8 @@
 """
 Instalador Web Unificado - Fluxo Lógico em 10 Passos
 Executa estritamente dentro do diretório do repositório Git.
-Uso: sudo python3 instalador.py
+Uso: sudo python3 install.py
+Autossuficiente: Instala suas próprias dependências (Flask) se necessário.
 """
 
 import os
@@ -14,12 +15,9 @@ import time
 import json
 import threading
 import re
-from flask import Flask, send_from_directory, request, jsonify, Response
 
 # Configurações Globais
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-# ATENÇÃO: Caminho atualizado para a pasta dentro de 'fabric'
-FRONTEND_PATH = os.path.join(APP_DIR, 'fabric', 'frontend')
 PORT = 5000
 HOST_IP = "0.0.0.0"
 
@@ -28,12 +26,11 @@ class InstallState:
     def __init__(self):
         self.progress = 0
         self.status = "Aguardando conexão..."
-        self.current_package = ""
+        self.package_name = ""
         self.clients = []
         self.lock = threading.Lock()
 
 state = InstallState()
-app = Flask(__name__, static_folder=FRONTEND_PATH, static_url_path='')
 
 def get_local_ip():
     """Passo 2: Captura o IP Real da máquina."""
@@ -48,34 +45,53 @@ def get_local_ip():
     return ip
 
 def detect_distro():
-    """Detecta a distribuição Linux e retorna família e gerenciador de pacotes."""
+    """Detecta a família da distribuição Linux."""
     try:
         with open('/etc/os-release', 'r') as f:
-            content = f.read()
+            content = f.read().lower()
+            if 'debian' in content or 'ubuntu' in content:
+                return 'debian'
+            elif 'rhel' in content or 'fedora' in content or 'almalinux' in content or 'centos' in content:
+                return 'rhel'
+            elif 'arch' in content or 'manjaro' in content:
+                return 'arch'
+    except FileNotFoundError:
+        pass
+    return 'unknown'
 
-        if 'ID_LIKE=' in content:
-            ids = re.search(r'ID_LIKE="?([^"\n]+)"?', content)
-            if ids:
-                ids = ids.group(1).split()
+def ensure_flask_installed():
+    """Verifica e instala o Flask se necessário."""
+    try:
+        import flask
+        print("[OK] Flask já está instalado.")
+        return True
+    except ImportError:
+        print("[!] Flask não encontrado. Instalando automaticamente...")
+        distro = detect_distro()
+        cmd = None
 
-        id_line = re.search(r'^ID="?([^"\n]+)"?', content, re.MULTILINE)
-        distro_id = id_line.group(1) if id_line else ""
-
-        if 'debian' in content or 'ubuntu' in content or distro_id in ['debian', 'ubuntu', 'linuxmint']:
-            return 'DEBIAN', 'apt-get'
-        elif 'rhel' in content or 'fedora' in content or 'almalinux' in content or 'centos' in content or distro_id in ['fedora', 'rhel', 'centos', 'almalinux', 'rocky']:
-            return 'RHEL', 'dnf'
-        elif 'arch' in content or distro_id == 'arch':
-            return 'ARCH', 'pacman'
+        if distro == 'debian':
+            cmd = "apt-get update && apt-get install -y python3-flask"
+        elif distro == 'rhel':
+            cmd = "dnf install -y python3-flask"
+        elif distro == 'arch':
+            cmd = "pacman -Sy --noconfirm python-flask"
         else:
-            # Fallback padrão
-            return 'DEBIAN', 'apt-get'
+            print("[ERRO] Distribuição não suportada para instalação automática do Flask.")
+            print("Por favor, instale manualmente: pip3 install flask")
+            return False
 
-    except Exception:
-        return 'DEBIAN', 'apt-get'
+        try:
+            subprocess.run(cmd, shell=True, check=True)
+            print("[OK] Flask instalado com sucesso.")
+            # Força recarregar o módulo se possível, ou reinicia o script (não necessário aqui pois é importado depois)
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"[ERRO] Falha ao instalar Flask: {e}")
+            return False
 
 def run_command_stream(cmd, shell=True):
-    """Executa comando e captura saída em tempo real para streaming."""
+    """Executa comando capturando saída em tempo real para o stream."""
     process = subprocess.Popen(
         cmd,
         shell=shell,
@@ -85,25 +101,22 @@ def run_command_stream(cmd, shell=True):
         bufsize=1
     )
 
-    output_lines = []
-    for line in iter(process.stdout.readline, ''):
-        if line:
-            clean_line = line.strip()
-            output_lines.append(clean_line)
-            # Tenta identificar pacote sendo instalado (padrão apt/dnf/pacman)
-            pkg_match = re.search(r'(Unpacking|Installing|Processing)\s+([a-zA-Z0-9\-\.]+)', line, re.IGNORECASE)
-            if pkg_match:
-                pkg_name = pkg_match.group(2)
-                with state.lock:
-                    state.current_package = pkg_name
-                    state.status = f"Instalando pacote: {pkg_name}..."
-
+    output_buffer = ""
+    for line in process.stdout:
+        output_buffer += line
+        # Tenta extrair nome do pacote sendo instalado (padrão comum em apt/dnf/pacman)
+        # Ex: "Preparing to unpack .../postgresql_12.deb" ou "Installing postgresql"
+        match = re.search(r'(?:unpacking|installing|upgrading)\s+([a-zA-Z0-9\-_.]+)', line, re.IGNORECASE)
+        if match:
+            pkg_name = match.group(1)
             with state.lock:
-                # Atualiza status genérico se não houver pacote específico
-                if not state.current_package:
-                    state.status = clean_line[:60] # Limita tamanho
+                state.package_name = pkg_name
 
-            time.sleep(0.1) # Pequena pausa para não saturar o stream
+        # Envia para os clientes SSE imediatamente
+        with state.lock:
+            # Atualiza status com o buffer recente se houver pacote, senão mantém anterior
+            current_status = f"Instalando: {state.package_name}" if state.package_name else "Processando instalação..."
+            # Não atualiza o progress bar aqui, isso é feito pela lógica de passos
 
     process.wait()
     return process.returncode == 0
@@ -112,65 +125,70 @@ def update_progress(percent, status_msg):
     """Atualiza estado e notifica clientes SSE."""
     with state.lock:
         state.progress = percent
-        if not state.current_package:
-            state.status = status_msg
+        state.status = status_msg
 
 def installation_thread():
-    """Orquestra os Passos 5 a 8 com detecção de distro."""
-    time.sleep(2)
+    """Orquestra os Passos 5 a 8."""
+    time.sleep(2) # Aguarda cliente conectar
 
-    distro_family, pkg_mgr = detect_distro()
-    print(f"Distro detectada: {distro_family} ({pkg_mgr})")
+    distro = detect_distro()
+    update_cmd = ""
+    install_cmd_base = ""
 
-    # Comandos baseados na distro
-    if distro_family == 'DEBIAN':
-        cmd_update = f"{pkg_mgr} update -qq"
-        cmd_node = f"{pkg_mgr} install -y nodejs npm curl"
-        cmd_pg = f"{pkg_mgr} install -y postgresql postgresql-contrib"
-        svc_pg = "postgresql"
-    elif distro_family == 'RHEL':
-        cmd_update = f"{pkg_mgr} makecache -q"
-        cmd_node = f"{pkg_mgr} install -y nodejs npm curl --quiet"
-        cmd_pg = f"{pkg_mgr} install -y postgresql postgresql-server --quiet"
-        svc_pg = "postgresql" # ou postgresql-setup
-    else: # ARCH
-        cmd_update = f"{pkg_mgr} -Sy --noconfirm"
-        cmd_node = f"{pkg_mgr} -S --noconfirm nodejs npm curl"
-        cmd_pg = f"{pkg_mgr} -S --noconfirm postgresql"
-        svc_pg = "postgresql"
+    if distro == 'debian':
+        update_cmd = "apt-get update"
+        install_cmd_base = "DEBIAN_FRONTEND=noninteractive apt-get install -y"
+    elif distro == 'rhel':
+        update_cmd = "dnf makecache"
+        install_cmd_base = "dnf install -y"
+    elif distro == 'arch':
+        update_cmd = "pacman -Sy"
+        install_cmd_base = "pacman -S --noconfirm"
+    else:
+        update_progress(0, "Erro: Distro não detectada.")
+        return
 
     # Passo 5: Sincronização (0% -> 20%)
     update_progress(5, "Sincronizando repositórios do Linux...")
-    run_command_stream(cmd_update)
+    run_command_stream(update_cmd)
     update_progress(20, "Repositórios sincronizados.")
 
     # Passo 6: Node.js (20% -> 50%)
     update_progress(25, "Configurando ambiente Node.js...")
-    run_command_stream(cmd_node)
+    node_pkg = "nodejs npm curl" if distro != 'arch' else "nodejs npm curl"
+    # Em Arch, nodejs e npm são separados as vezes, mas geralmente ok
+    run_command_stream(f"{install_cmd_base} {node_pkg}")
     update_progress(50, "Node.js instalado.")
 
-    # Passo 7: PostgreSQL (50% -> 90%) - COM STREAMING REAL
-    update_progress(55, "Iniciando instalação do PostgreSQL...")
-    state.current_package = "" # Reset
-    success = run_command_stream(cmd_pg)
+    # Passo 7: PostgreSQL (50% -> 90%)
+    update_progress(55, "Instalando o motor do banco de dados...")
+    pg_pkg = "postgresql postgresql-contrib" if distro != 'arch' else "postgresql postgresql-contrib"
+    # Executa com stream para capturar nomes dos pacotes
+    success = run_command_stream(f"{install_cmd_base} {pg_pkg}")
 
-    if not success:
-        update_progress(90, "Erro na instalação do PostgreSQL (verifique logs).")
-    else:
+    if success:
         update_progress(90, "PostgreSQL instalado.")
+    else:
+        update_progress(90, "Erro na instalação do PostgreSQL (verifique logs).")
 
     # Passo 8: Ativação e Validação (90% -> 100%)
     update_progress(95, "Ativando serviços...")
 
-    # Tentativa de start do serviço (pode variar o nome exato dependendo da distro)
-    run_command_stream(f"systemctl start {svc_pg}", shell=True)
-    # Para RHEL as vezes precisa initdb
-    if distro_family == 'RHEL':
-        run_command_stream("postgresql-setup --initdb", shell=True)
-        run_command_stream("systemctl enable postgresql", shell=True)
+    # Tentar iniciar o serviço (pode variar o nome)
+    svc_name = "postgresql"
+    if distro == 'rhel': svc_name = "postgresql-server" # As vezes precisa de initdb antes no RHEL
+    if distro == 'arch': svc_name = "postgresql"
 
+    # No RHEL/Fedora, às vezes precisa inicializar o DB pela primeira vez
+    if distro == 'rhel':
+        subprocess.run("postgresql-setup --initdb", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    subprocess.run(f"systemctl enable {svc_name}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(f"systemctl start {svc_name}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Validação do Socket
     db_ready = False
-    for _ in range(10):
+    for _ in range(15):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             result = sock.connect_ex(('127.0.0.1', 5432))
@@ -187,22 +205,38 @@ def installation_thread():
     else:
         update_progress(100, "Instalação finalizada (serviço pode estar iniciando).")
 
+# Importação tardia do Flask após verificação
+if not ensure_flask_installed():
+    sys.exit(1)
+
+from flask import Flask, send_from_directory, request, jsonify, Response
+
+app = Flask(__name__, static_folder='fabric/frontend', static_url_path='')
+
 @app.route('/')
 def index():
-    """Passo 4: Serve o HTML estático da nova localização."""
+    """Passo 4: Serve o HTML estático."""
     return send_from_directory('fabric/frontend', 'index.html')
 
 @app.route('/api/stream')
 def stream():
     """Passo 4 & 5+: Handshake SSE e envio de progresso."""
     def generate():
+        last_pkg = ""
         while True:
             with state.lock:
+                # Se tiver um nome de pacote sendo processado, adiciona ao status
+                display_status = state.status
+                if state.package_name and state.package_name != last_pkg:
+                    display_status = f"{state.status} ({state.package_name})"
+                    last_pkg = state.package_name
+
                 data = {
                     "porcentagem": state.progress,
-                    "status": state.status,
-                    "pacote_atual": state.current_package
+                    "status": display_status,
+                    "package": state.package_name
                 }
+
             yield f"data: {json.dumps(data)}\n\n"
             if state.progress >= 100:
                 break
@@ -219,24 +253,24 @@ def setup_db():
     if not username or not password:
         return jsonify({"error": "Dados inválidos"}), 400
 
+    # Comandos seguros usando login shell do usuário postgres
     # 1. Criar Usuário
     cmd_user = f'sudo -i -u postgres psql -c "CREATE USER {username} WITH PASSWORD \'{password}\' SUPERUSER;"'
-
     # 2. Criar Database Astral
     cmd_db = f'sudo -i -u postgres psql -c "CREATE DATABASE astral OWNER {username};"'
 
     try:
-        # Executa Usuário
+        # Executa criação do usuário
         res_user = subprocess.run(cmd_user, shell=True, capture_output=True, text=True)
         if res_user.returncode != 0 and "already exists" not in res_user.stderr:
-            return jsonify({"error": res_user.stderr}), 500
+            return jsonify({"error": f"Erro ao criar usuário: {res_user.stderr}"}), 500
 
-        # Executa Database
+        # Executa criação da database
         res_db = subprocess.run(cmd_db, shell=True, capture_output=True, text=True)
         if res_db.returncode != 0 and "already exists" not in res_db.stderr:
-            return jsonify({"error": res_db.stderr}), 500
+            return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
 
-        return jsonify({"success": True, "message": "Usuário e Database 'astral' criados!"})
+        return jsonify({"success": True, "message": "Usuário e database 'astral' criados com sucesso!"})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -245,13 +279,7 @@ if __name__ == '__main__':
     # Passo 1: Verificação de Root
     if os.geteuid() != 0:
         print("ERRO: Este script deve ser executado com sudo.")
-        print("Uso correto: sudo python3 instalador.py")
-        sys.exit(1)
-
-    # Verifica se a pasta frontend existe no novo caminho
-    if not os.path.exists(FRONTEND_PATH):
-        print(f"ERRO: Pasta frontend não encontrada em {FRONTEND_PATH}")
-        print("Certifique-se de mover a pasta frontend para dentro de fabric/")
+        print("Uso correto: sudo python3 install.py")
         sys.exit(1)
 
     # Passo 2: Captura IP
