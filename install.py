@@ -1,328 +1,283 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
-Instalador Web Unificado - Fluxo Lógico em 10 Passos
-Executa estritamente dentro do diretório do repositório Git.
-Uso: sudo python3 install.py
-Autossuficiente: Instala suas próprias dependências (Flask) se necessário.
-Compatível com Debian, RHEL/CentOS/Alma 10+, e Arch Linux.
+config-wan.py
+
+Este script configura a interface de WAN em sistemas baseados em Fedora/RHEL.
+Pode ser executado de forma interativa ou ser importado como um módulo.
+
+Autor: Eurípedes Batista
+LinkedIn: https://www.linkedin.com/in/euripedes-batista-14235229/
 """
 
-import os
-import sys
-import socket
+import argparse
 import subprocess
-import time
-import json
-import threading
+import sys
+import shlex
+import os
 import re
+import shutil
+from typing import List, Optional
 
-# Configurações Globais
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-PORT = 5000
-HOST_IP = "0.0.0.0"
+# Funções auxiliares
+def run_command(cmd: str, dry_run: bool = False, check: bool = True) -> subprocess.CompletedProcess:
+    """Executa um comando no shell."""
+    print(f"{'[dry-run]' if dry_run else '+'} {cmd}")
+    if dry_run:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+    return subprocess.run(cmd, shell=True, check=check, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-# Estado global para o stream SSE
-class InstallState:
-    def __init__(self):
-        self.progress = 0
-        self.status = "Aguardando conexão..."
-        self.package_name = ""
-        self.clients = []
-        self.lock = threading.Lock()
+def get_command_output(cmd: str, dry_run: bool = False) -> str:
+    """Executa um comando e retorna a saída como string."""
+    p = run_command(cmd, dry_run=dry_run, check=False)
+    return p.stdout.decode().strip() if p.stdout else ""
 
-state = InstallState()
-
-def get_local_ip():
-    """Passo 2: Captura o IP Real da máquina."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = '127.0.0.1'
-    finally:
-        s.close()
-    return ip
-
-def detect_distro():
-    """Detecta a família da distribuição Linux."""
-    try:
-        with open('/etc/os-release', 'r') as f:
-            content = f.read().lower()
-            if 'debian' in content or 'ubuntu' in content:
-                return 'debian'
-            elif 'rhel' in content or 'fedora' in content or 'almalinux' in content or 'centos' in content or 'rocky' in content:
-                return 'rhel'
-            elif 'arch' in content or 'manjaro' in content:
-                return 'arch'
-    except FileNotFoundError:
-        pass
-    return 'unknown'
-
-def ensure_flask_installed():
-    """Verifica e instala o Flask se necessário."""
-    try:
-        import flask
-        print("[OK] Flask já está instalado.")
-        return True
-    except ImportError:
-        print("[!] Flask não encontrado. Instalando automaticamente...")
-        distro = detect_distro()
-        cmd = None
-
-        if distro == 'debian':
-            # Atualiza cache primeiro se possível
-            subprocess.run("apt-get update", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            cmd = "apt-get install -y python3-flask"
-        elif distro == 'rhel':
-            # RHEL 10/CentOS 10 usa python3-flask no AppStream
-            # Tenta limpar cache se falhar, mas geralmente não precisa
-            cmd = "dnf install -y python3-flask"
-        elif distro == 'arch':
-            cmd = "pacman -Sy --noconfirm python-flask"
-        else:
-            print("[ERRO] Distribuição não suportada para instalação automática do Flask.")
-            print("Por favor, instale manualmente: pip3 install flask")
-            return False
-
-        try:
-            # Como o script já roda com sudo, executamos direto
-            result = subprocess.run(cmd, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            print("[OK] Flask instalado com sucesso.")
-            return True
-        except subprocess.CalledProcessError as e:
-            err_msg = e.stderr.decode() if e.stderr else str(e)
-            print(f"[ERRO] Falha ao instalar Flask: {err_msg}")
-            print("[SUGESTÃO] Se for RHEL/CentOS, verifique se o repositório 'AppStream' ou 'CRB' está habilitado.")
-            print("[SUGESTÃO] Tente manualmente: sudo dnf install -y python3-flask")
-            return False
-
-def run_command_stream(cmd, shell=True):
-    """Executa comando capturando saída em tempo real para o stream."""
-    process = subprocess.Popen(
-        cmd,
-        shell=shell,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
-    )
-
-    output_buffer = ""
-    for line in process.stdout:
-        output_buffer += line
-        # Tenta extrair nome do pacote sendo instalado (padrão comum em apt/dnf/pacman)
-        # Ex: "Preparing to unpack .../postgresql_12.deb" ou "Installing postgresql" ou "upgrading python3-"
-        match = re.search(r'(?:unpacking|installing|upgrading|processing)\s+([a-zA-Z0-9\-_.]+)', line, re.IGNORECASE)
-        if match:
-            pkg_name = match.group(1)
-            with state.lock:
-                state.package_name = pkg_name
-
-        # Envia para os clientes SSE imediatamente (lógica simplificada para não travar)
-        # O status detalhado é lido pelo frontend via JSON
-
-    process.wait()
-    return process.returncode == 0
-
-def update_progress(percent, status_msg):
-    """Atualiza estado e notifica clientes SSE."""
-    with state.lock:
-        state.progress = percent
-        state.status = status_msg
-
-def installation_thread():
-    """Orquestra os Passos 5 a 8."""
-    time.sleep(2) # Aguarda cliente conectar
-
-    distro = detect_distro()
-    update_cmd = ""
-    install_cmd_base = ""
-
-    if distro == 'debian':
-        update_cmd = "apt-get update"
-        install_cmd_base = "DEBIAN_FRONTEND=noninteractive apt-get install -y"
-    elif distro == 'rhel':
-        update_cmd = "dnf makecache"
-        install_cmd_base = "dnf install -y"
-    elif distro == 'arch':
-        update_cmd = "pacman -Sy"
-        install_cmd_base = "pacman -S --noconfirm"
-    else:
-        update_progress(0, "Erro: Distro não detectada.")
-        return
-
-    # Passo 5: Sincronização (0% -> 20%)
-    update_progress(5, "Sincronizando repositórios do Linux...")
-    run_command_stream(update_cmd)
-    update_progress(20, "Repositórios sincronizados.")
-
-    # Passo 6: Node.js (20% -> 50%)
-    update_progress(25, "Configurando ambiente Node.js...")
-    node_pkg = "nodejs npm curl"
-    if distro == 'arch':
-        node_pkg = "nodejs npm curl" # No Arch os nomes são iguais
-    run_command_stream(f"{install_cmd_base} {node_pkg}")
-    update_progress(50, "Node.js instalado.")
-
-    # Passo 7: PostgreSQL (50% -> 90%)
-    update_progress(55, "Instalando o motor do banco de dados...")
-    pg_pkg = "postgresql postgresql-contrib"
-    if distro == 'arch':
-        pg_pkg = "postgresql postgresql-contrib"
-
-    # Executa com stream para capturar nomes dos pacotes
-    success = run_command_stream(f"{install_cmd_base} {pg_pkg}")
-
-    if success:
-        update_progress(90, "PostgreSQL instalado.")
-    else:
-        update_progress(90, "Erro na instalação do PostgreSQL (verifique logs).")
-
-    # Passo 8: Ativação e Validação (90% -> 100%)
-    update_progress(95, "Ativando serviços...")
-
-    svc_name = "postgresql"
-
-    # Lógica específica para RHEL/CentOS/Alma/Rocky 10+
-    if distro == 'rhel':
-        svc_name = "postgresql-server"
-        # No RHEL, após instalar, é necessário inicializar o DB pela primeira vez manualmente
-        print("[INFO] Detectado RHEL/Fedora. Inicializando banco de dados pela primeira vez...")
-        init_result = subprocess.run("postgresql-setup --initdb", shell=True, capture_output=True, text=True)
-        if init_result.returncode != 0 and "is not empty" not in init_result.stderr:
-            print(f"[AVISO] Falha ao inicializar DB: {init_result.stderr}")
-
-        # Habilitar e iniciar
-        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
-        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
-
-    elif distro == 'arch':
-        # No Arch, às vezes precisa inicializar manualmente se não for systemd automático
-        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
-        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
-
-    else:
-        # Debian/Ubuntu geralmente iniciam sozinhos
-        subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
-
-    # Validação do Socket
-    db_ready = False
-    print("[INFO] Aguardando PostgreSQL aceitar conexões na porta 5432...")
-    for i in range(20): # Aumenta tentativas para 20s
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('127.0.0.1', 5432))
-            sock.close()
-            if result == 0:
-                db_ready = True
-                print(f"[OK] PostgreSQL respondendo após {i+1} segundos.")
-                break
-        except Exception as e:
-            pass
-        time.sleep(1)
-
-    if db_ready:
-        update_progress(100, "Instalação concluída!")
-    else:
-        update_progress(100, "Instalação finalizada (serviço pode estar iniciando lentamente).")
-
-# Importação tardia do Flask após verificação
-if not ensure_flask_installed():
-    print("\n[CRÍTICO] Não foi possível prosseguir sem o Flask.")
-    sys.exit(1)
-
-from flask import Flask, send_from_directory, request, jsonify, Response
-
-# Configuração do caminho para a pasta frontend dentro de fabric
-app = Flask(__name__, static_folder='fabric/frontend', static_url_path='')
-
-@app.route('/')
-def index():
-    """Passo 4: Serve o HTML estático."""
-    return send_from_directory('fabric/frontend', 'index.html')
-
-@app.route('/api/stream')
-def stream():
-    """Passo 4 & 5+: Handshake SSE e envio de progresso."""
-    def generate():
-        last_pkg = ""
-        while True:
-            with state.lock:
-                # Se tiver um nome de pacote sendo processado, adiciona ao status
-                display_status = state.status
-                if state.package_name and state.package_name != last_pkg:
-                    display_status = f"{state.status} ({state.package_name})"
-                    last_pkg = state.package_name
-
-                data = {
-                    "porcentagem": state.progress,
-                    "status": display_status,
-                    "package": state.package_name
-                }
-
-            yield f"data: {json.dumps(data)}\n\n"
-            if state.progress >= 100:
-                break
-            time.sleep(0.5)
-    return Response(generate(), mimetype='text/event-stream')
-
-@app.route('/api/setup-db', methods=['POST'])
-def setup_db():
-    """Passo 10: Criação do Superuser e Database Astral via Login Shell."""
-    data = request.json
-    username = data.get('username')
-    password = data.get('password')
-
-    if not username or not password:
-        return jsonify({"error": "Dados inválidos"}), 400
-
-    # Comandos seguros usando login shell do usuário postgres
-    # 1. Criar Usuário
-    cmd_user = f'sudo -i -u postgres psql -c "CREATE USER {username} WITH PASSWORD \'{password}\' SUPERUSER;"'
-    # 2. Criar Database Astral
-    cmd_db = f'sudo -i -u postgres psql -c "CREATE DATABASE astral OWNER {username};"'
-
-    try:
-        # Executa criação do usuário
-        res_user = subprocess.run(cmd_user, shell=True, capture_output=True, text=True)
-        if res_user.returncode != 0 and "already exists" not in res_user.stderr:
-            return jsonify({"error": f"Erro ao criar usuário: {res_user.stderr}"}), 500
-
-        # Executa criação da database
-        res_db = subprocess.run(cmd_db, shell=True, capture_output=True, text=True)
-        if res_db.returncode != 0 and "already exists" not in res_db.stderr:
-            return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
-
-        return jsonify({"success": True, "message": "Usuário e database 'astral' criados com sucesso!"})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == '__main__':
-    # Passo 1: Verificação de Root
+def require_root():
+    """Verifica se o script está sendo executado como root."""
     if os.geteuid() != 0:
-        print("ERRO: Este script deve ser executado com sudo.")
-        print("Uso correto: sudo python3 install.py")
+        print("Este script precisa ser executado como root. Use sudo.", file=sys.stderr)
         sys.exit(1)
 
-    # Passo 2: Captura IP
-    local_ip = get_local_ip()
+def ask_question(prompt: str, default: Optional[str] = None) -> str:
+    """Faz uma pergunta ao usuário e retorna a resposta."""
+    if default is not None:
+        prompt = f"{prompt} [{default}]: "
+    else:
+        prompt = f"{prompt}: "
+    val = input(prompt).strip()
+    return val if val else (default if default is not None else "")
 
-    # Passo 3: Sinalização Visual no Terminal
-    print("\n" + "="*60)
-    print("[GIT PROJETO] INSTALADOR WEB ATIVO NA PASTA LOCAL")
-    print("="*60)
-    print(f"[AÇÃO] Abra o navegador em outra máquina e acesse:")
-    print(f"[ENDEREÇO] http://{local_ip}:{PORT}")
-    print("="*60 + "\n")
-    print("Aguardando conexão... (Ctrl+C para cancelar)")
+def ask_yes_no(prompt: str, default: bool = True) -> bool:
+    """Faz uma pergunta de sim/não ao usuário."""
+    d = "Y/n" if default else "y/N"
+    r = input(f"{prompt} ({d}): ").strip().lower()
+    if r == "":
+        return default
+    return r.startswith("y")
 
-    # Inicia thread de instalação em background
-    t = threading.Thread(target=installation_thread)
-    t.daemon = True
-    t.start()
+# Funções de validação
+def is_valid_ip(ip: str) -> bool:
+    """Valida um endereço IP."""
+    return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip))
 
-    # Inicia Servidor Flask
-    app.run(host=HOST_IP, port=PORT, threaded=True)
+def is_valid_cidr(cidr: str) -> bool:
+    """Valida uma máscara de rede CIDR."""
+    return bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$", cidr))
+
+def normalize_mac_address(mac: str) -> Optional[str]:
+    """Normaliza um endereço MAC."""
+    m = mac.strip().lower().replace(":", "")
+    if re.fullmatch(r"[0-9a-f]{12}", m):
+        return ":".join(m[i:i+2] for i in range(0, 12, 2))
+    return None
+
+# Funções de configuração
+def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str]):
+    """Aplica um conjunto robusto de regras de firewall."""
+    print("\n== Aplicando regras avançadas de firewall ==")
+    
+    # Limpa todas as regras existentes para um estado limpo
+    run_command("iptables -F", dry_run=dry_run)
+    run_command("iptables -X", dry_run=dry_run)
+    run_command("iptables -t nat -F", dry_run=dry_run)
+    run_command("iptables -t nat -X", dry_run=dry_run)
+    
+    # Políticas padrão: DROP para segurança máxima
+    run_command("iptables -P INPUT DROP", dry_run=dry_run)
+    run_command("iptables -P FORWARD DROP", dry_run=dry_run)
+    run_command("iptables -P OUTPUT ACCEPT", dry_run=dry_run)
+    
+    # Regras essenciais de INPUT
+    run_command("iptables -A INPUT -i lo -j ACCEPT", dry_run=dry_run)
+    run_command("iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", dry_run=dry_run)
+    
+    # Proteção contra ataques
+    run_command("iptables -A INPUT -p tcp --tcp-flags ALL NONE -j DROP", dry_run=dry_run)
+    run_command("iptables -A INPUT -p tcp ! --syn -m conntrack --ctstate NEW -j DROP", dry_run=dry_run)
+    run_command("iptables -A INPUT -p tcp --tcp-flags ALL ALL -j DROP", dry_run=dry_run)
+    
+    # Proteção contra SYN floods
+    run_command("iptables -N syn_flood", dry_run=dry_run)
+    run_command("iptables -A syn_flood -m limit --limit 1/s --limit-burst 3 -j RETURN", dry_run=dry_run)
+    run_command("iptables -A syn_flood -j DROP", dry_run=dry_run)
+    run_command("iptables -A INPUT -p tcp --syn -j syn_flood", dry_run=dry_run)
+    
+    # Proteção contra port scans
+    run_command("iptables -N port_scan", dry_run=dry_run)
+    run_command("iptables -A port_scan -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 1/s -j RETURN", dry_run=dry_run)
+    run_command("iptables -A port_scan -j DROP", dry_run=dry_run)
+    run_command("iptables -A INPUT -p tcp --tcp-flags SYN,ACK,FIN,RST RST -j port_scan", dry_run=dry_run)
+    
+    # Regras de FORWARD e NAT
+    for lan_iface in lan_ifaces:
+        run_command(f"iptables -A FORWARD -i {shlex.quote(lan_iface)} -o {shlex.quote(wan_iface)} -j ACCEPT", dry_run=dry_run)
+        run_command(f"iptables -A FORWARD -i {shlex.quote(wan_iface)} -o {shlex.quote(lan_iface)} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", dry_run=dry_run)
+    
+    run_command(f"iptables -t nat -A POSTROUTING -o {shlex.quote(wan_iface)} -j MASQUERADE", dry_run=dry_run)
+    
+    # Logging de pacotes bloqueados
+    run_command("iptables -A INPUT -m limit --limit 5/min -j LOG --log-prefix \"iptables-denied: \" --log-level 7", dry_run=dry_run)
+    run_command("iptables -A INPUT -j DROP", dry_run=dry_run)
+    
+    print("✅ Regras de firewall aplicadas.")
+
+def disable_nm_dns_overwrite(dry_run: bool):
+    """Configura o NetworkManager para não sobrescrever o /etc/resolv.conf globalmente."""
+    print("\n== Protegendo /etc/resolv.conf contra alterações do NetworkManager ==")
+    nm_conf_dir = "/etc/NetworkManager/conf.d"
+    dns_conf_file = os.path.join(nm_conf_dir, "90-dns-none.conf")
+    
+    if not dry_run:
+        if not os.path.exists(nm_conf_dir):
+            os.makedirs(nm_conf_dir, exist_ok=True)
+        with open(dns_conf_file, "w") as f:
+            f.write("[main]\ndns=none\n")
+        print(f"Arquivo {dns_conf_file} criado com sucesso (dns=none).")
+        run_command("systemctl reload NetworkManager", dry_run=dry_run)
+    else:
+        print(f"[dry-run] Criaria o arquivo {dns_conf_file} com a instrução '[main]\\ndns=none'")
+        print("[dry-run] Executaria systemctl reload NetworkManager")
+
+def configure_dns(dry_run: bool, wan_iface: str, dns_servers: List[str], protect_dns: bool):
+    """Configura os servidores DNS para a interface WAN."""
+    print(f"\n== Configurando DNS ==")
+    
+    # Se a proteção foi solicitada, aplicamos a trava e escrevemos no arquivo direto.
+    if protect_dns:
+        disable_nm_dns_overwrite(dry_run)
+        print("Escrevendo IPs estáticos diretamente no /etc/resolv.conf...")
+        if not dry_run:
+            with open("/etc/resolv.conf", "w") as f:
+                for server in dns_servers:
+                    f.write(f"nameserver {server}\n")
+    
+    if shutil.which("nmcli"):
+        dns_str = " ".join(dns_servers)
+        print(f"Salvando DNS no perfil do NetworkManager: {dns_str}")
+        
+        # Busca o nome da conexão atrelada ao device físico
+        get_con_cmd = f"nmcli -t -f NAME,DEVICE con show | awk -F: '$2==\"{wan_iface}\" {{print $1}}'"
+        con_name = get_command_output(get_con_cmd, dry_run=dry_run)
+        
+        if con_name:
+            run_command(f"nmcli con mod {shlex.quote(con_name)} ipv4.dns \"{dns_str}\"", dry_run=dry_run)
+            run_command(f"nmcli con mod {shlex.quote(con_name)} ipv4.ignore-auto-dns yes", dry_run=dry_run)
+            run_command(f"nmcli con up {shlex.quote(con_name)}", dry_run=dry_run)
+        else:
+            print(f"Aviso: Não encontrou conexão ativa atrelada ao device {wan_iface}.")
+    elif not protect_dns: # Caso nmcli não exista e não tenhamos protegido o arquivo acima
+        print("NetworkManager (nmcli) não encontrado. Configurando /etc/resolv.conf diretamente.")
+        if not dry_run:
+            with open("/etc/resolv.conf", "w") as f:
+                for server in dns_servers:
+                    f.write(f"nameserver {server}\n")
+        print("Conteúdo de /etc/resolv.conf atualizado.")
+
+def configure_wan_static(dry_run: bool, wan_iface: str, public_ip: str, public_mask: str, public_gw: str, mac_spoof: Optional[str], dns_servers: List[str], protect_dns: bool):
+    """Configura a interface WAN com um IP estático."""
+    print(f"\n== Configurando WAN estática em {wan_iface} ==")
+    if mac_spoof:
+        mac = normalize_mac_address(mac_spoof)
+        if not mac:
+            raise ValueError("Endereço MAC inválido.")
+        print(f"Aplicando MAC spoof {mac} em {wan_iface}")
+        run_command(f"ip link set dev {shlex.quote(wan_iface)} down", dry_run=dry_run)
+        run_command(f"ip link set dev {shlex.quote(wan_iface)} address {mac}", dry_run=dry_run)
+        run_command(f"ip link set dev {shlex.quote(wan_iface)} up", dry_run=dry_run)
+
+    cidr = f"{public_ip}/{public_mask}"
+    print(f"Atribuindo {cidr} a {wan_iface} e definindo gateway {public_gw}")
+    run_command(f"ip addr flush dev {shlex.quote(wan_iface)}", dry_run=dry_run)
+    run_command(f"ip addr add {shlex.quote(cidr)} dev {shlex.quote(wan_iface)}", dry_run=dry_run)
+    run_command(f"ip route replace default via {shlex.quote(public_gw)} dev {shlex.quote(wan_iface)}", dry_run=dry_run)
+
+    if dns_servers:
+        configure_dns(dry_run, wan_iface, dns_servers, protect_dns)
+
+    if shutil.which("nmcli"):
+        print("Reiniciando conexão via NetworkManager...")
+        run_command(f"nmcli device reapply {shlex.quote(wan_iface)} || true", dry_run=dry_run, check=False)
+    else:
+        run_command(f"ip link set dev {shlex.quote(wan_iface)} down && sleep 1 && ip link set dev {shlex.quote(wan_iface)} up", dry_run=dry_run)
+
+    print("Testando ping para o gateway e 8.8.8.8")
+    run_command(f"ping -c 3 {shlex.quote(public_gw)} || true", dry_run=dry_run, check=False)
+    run_command("ping -c 3 8.8.8.8 || true", dry_run=dry_run, check=False)
+
+def main_interactive():
+    """Função principal para execução interativa."""
+    parser = argparse.ArgumentParser(description="Configuração interativa de rede WAN e Firewall (Fedora)")
+    parser.add_argument("--dry-run", action="store_true", help="Mostra as ações sem aplicar")
+    args = parser.parse_args()
+    dry_run = args.dry_run
+
+    require_root()
+    print("➡️  Modo Fedora detectado (usa dnf, /etc/sysconfig/iptables, systemctl iptables)")
+
+    print("\n== Configurar WAN estática ==")
+    wan_iface = ask_question("Qual é a interface WAN (ex: ens160)", default="ens3")
+    public_ip = ask_question("Digite o IP público (ex: 203.0.113.10)")
+    while not is_valid_ip(public_ip):
+        print("IP inválido.")
+        public_ip = ask_question("Digite o IP público")
+
+    public_mask = ask_question("Máscara CIDR (ex: 24)", default="24")
+    while not public_mask.isdigit() or not (0 <= int(public_mask) <= 32):
+        print("Máscara inválida.")
+        public_mask = ask_question("Máscara CIDR (ex: 24)", default="24")
+
+    public_gw = ask_question("Gateway público (ex: 203.0.113.1)")
+    while not is_valid_ip(public_gw):
+        print("Gateway inválido.")
+        public_gw = ask_question("Gateway público")
+
+    dns_servers = []
+    protect_dns = False
+    
+    if ask_yes_no("Deseja configurar servidores DNS?"):
+        dns1 = ask_question("DNS primário (ex: 213.186.33.99)", default="8.8.8.8")
+        while not is_valid_ip(dns1):
+            print("IP de DNS inválido.")
+            dns1 = ask_question("DNS primário")
+        dns_servers.append(dns1)
+
+        if ask_yes_no("Deseja adicionar um DNS secundário?"):
+            dns2 = ask_question("DNS secundário (ex: 8.8.4.4)", default="8.8.4.4")
+            while not is_valid_ip(dns2):
+                print("IP de DNS inválido.")
+                dns2 = ask_question("DNS secundário")
+            dns_servers.append(dns2)
+            
+        protect_dns = ask_yes_no("Deseja proibir permanentemente o NetworkManager de modificar o /etc/resolv.conf?", default=True)
+
+    mac_spoof = None
+    if ask_yes_no("Precisa clonar o MAC na WAN?", default=False):
+        mac_raw = ask_question("MAC (sem ':' ou com):")
+        mac_norm = normalize_mac_address(mac_raw)
+        while not mac_norm:
+            print("MAC inválido.")
+            mac_raw = ask_question("MAC (sem ':' ou com):")
+            mac_norm = normalize_mac_address(mac_raw)
+        mac_spoof = mac_raw
+
+    configure_wan_static(dry_run, wan_iface, public_ip, public_mask, public_gw, mac_spoof, dns_servers, protect_dns)
+    
+    lan_ifaces = []
+    if ask_yes_no("Deseja configurar interfaces de LAN/VLAN?"):
+        ifaces_str = ask_question("Digite as interfaces de LAN/VLAN separadas por vírgula (ex: eth1,eth2.10)")
+        lan_ifaces = [iface.strip() for iface in ifaces_str.split(",")]
+
+    apply_firewall_rules(dry_run, wan_iface, lan_ifaces)
+
+    print("\n✅ Configuração da WAN e do Firewall concluída!")
+
+if __name__ == "__main__":
+    try:
+        main_interactive()
+    except KeyboardInterrupt:
+        print("\nCancelado pelo usuário.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Ocorreu um erro: {e}", file=sys.stderr)
+        sys.exit(2)
