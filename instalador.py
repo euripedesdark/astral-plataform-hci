@@ -1,81 +1,105 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Instalador Web Unificado - Fluxo Lógico em 10 Passos
-Executa estritamente dentro do diretório do repositório Git.
-Uso: sudo python3 instalador.py
-"""
-
 import os
 import sys
 import socket
 import subprocess
-import time
-import json
 import threading
+import time
 import re
-from flask import Flask, send_from_directory, request, jsonify, Response
+import json
+from flask import Flask, render_template_string, request, jsonify, Response
+from queue import Queue
 
-# Configurações Globais
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-PORT = 5000
-HOST_IP = "0.0.0.0"
+# --- Configuração e Detecção de Distro ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(SCRIPT_DIR)
 
-# Detecção da Distribuição
+DISTRO_INFO = {}
+
 def detect_distro():
-    """Detecta a família da distribuição Linux."""
-    if os.path.exists("/etc/os-release"):
-        with open("/etc/os-release") as f:
-            content = f.read()
-            if "ID=debian" in content or "ID=ubuntu" in content or "ID=linuxmint" in content:
-                return "DEBIAN"
-            elif "ID=fedora" in content or "ID=rhel" in content or "ID=centos" in content or "ID=almalinux" in content or "ID=rocky" in content:
-                return "RHEL"
-            elif "ID=arch" in content or "ID=manjaro" in content:
-                return "ARCH"
-    return "UNKNOWN"
+    """Detecta a distribuição Linux e define os comandos/pacotes corretos."""
+    global DISTRO_INFO
+    try:
+        with open('/etc/os-release', 'r') as f:
+            os_release = f.read()
+        
+        distro_id = ""
+        id_like = ""
+        for line in os_release.splitlines():
+            if line.startswith('ID='):
+                distro_id = line.split('=')[1].strip('"\'')
+            elif line.startswith('ID_LIKE='):
+                id_like = line.split('=')[1].strip('"\'')
+        
+        # Lógica de detecção
+        if 'debian' in id_like or distro_id == 'debian' or distro_id == 'ubuntu':
+            DISTRO_INFO = {
+                'family': 'DEBIAN',
+                'update_cmd': ['apt-get', 'update'],
+                'install_cmd': ['apt-get', 'install', '-y'],
+                'packages': {
+                    'nodejs': ['nodejs', 'npm'],
+                    'postgres': ['postgresql', 'postgresql-contrib'],
+                    'service_name': 'postgresql'
+                }
+            }
+        elif 'rhel' in id_like or 'fedora' in id_like or 'almalinux' in id_like or distro_id == 'fedora' or distro_id == 'rhel' or distro_id == 'almalinux':
+            DISTRO_INFO = {
+                'family': 'RHEL',
+                'update_cmd': ['dnf', 'update', '-y'],
+                'install_cmd': ['dnf', 'install', '-y'],
+                'packages': {
+                    'nodejs': ['nodejs', 'npm'],
+                    'postgres': ['postgresql', 'postgresql-server', 'postgresql-contrib'],
+                    'service_name': 'postgresql'
+                }
+            }
+        elif 'arch' in id_like or distro_id == 'arch':
+            DISTRO_INFO = {
+                'family': 'ARCH',
+                'update_cmd': ['pacman', '-Sy', '--noconfirm'],
+                'install_cmd': ['pacman', '-S', '--noconfirm'],
+                'packages': {
+                    'nodejs': ['nodejs', 'npm'],
+                    'postgres': ['postgresql', 'postgresql-libs'],
+                    'service_name': 'postgresql'
+                }
+            }
+        else:
+            # Fallback para Debian
+            DISTRO_INFO = {
+                'family': 'DEBIAN',
+                'update_cmd': ['apt-get', 'update'],
+                'install_cmd': ['apt-get', 'install', '-y'],
+                'packages': {
+                    'nodejs': ['nodejs', 'npm'],
+                    'postgres': ['postgresql', 'postgresql-contrib'],
+                    'service_name': 'postgresql'
+                }
+            }
+        print(f"[SYSTEM] Distro detectada: {DISTRO_INFO['family']}")
+    except Exception as e:
+        print(f"[ERROR] Erro ao detectar distro: {e}. Usando fallback Debian.")
+        DISTRO_INFO = {
+            'family': 'DEBIAN',
+            'update_cmd': ['apt-get', 'update'],
+            'install_cmd': ['apt-get', 'install', '-y'],
+            'packages': {
+                'nodejs': ['nodejs', 'npm'],
+                'postgres': ['postgresql', 'postgresql-contrib'],
+                'service_name': 'postgresql'
+            }
+        }
 
-DISTRO = detect_distro()
-print(f"Distribuição detectada: {DISTRO}")
+detect_distro()
 
-# Mapeamento de Comandos e Pacotes
-PKG_MANAGER = {
-    "DEBIAN": {"install": "apt-get install -y", "update": "apt-get update", "node": ["nodejs", "npm"], "pg": ["postgresql", "postgresql-contrib"]},
-    "RHEL": {"install": "dnf install -y", "update": "dnf check-update", "node": ["nodejs", "npm"], "pg": ["postgresql", "postgresql-server", "postgresql-contrib"]},
-    "ARCH": {"install": "pacman -Sy --noconfirm", "update": "pacman -Sy", "node": ["nodejs", "npm"], "pg": ["postgresql"]}
-}
+app = Flask(__name__)
+clients = []
 
-def get_pkg_cmd(action):
-    if DISTRO == "UNKNOWN":
-        raise Exception("Distribuição não suportada.")
-    return PKG_MANAGER[DISTRO][action]
-
-def get_pg_packages():
-    if DISTRO == "UNKNOWN":
-        raise Exception("Distribuição não suportada.")
-    return " ".join(PKG_MANAGER[DISTRO]["pg"])
-
-def get_node_packages():
-    if DISTRO == "UNKNOWN":
-        raise Exception("Distribuição não suportada.")
-    return " ".join(PKG_MANAGER[DISTRO]["node"])
-
-# Estado global para o stream SSE
-class InstallState:
-    def __init__(self):
-        self.progress = 0
-        self.status = "Aguardando conexão..."
-        self.clients = []
-        self.lock = threading.Lock()
-
-state = InstallState()
-app = Flask(__name__, static_folder='frontend', static_url_path='')
-
-def get_local_ip():
-    """Passo 2: Captura o IP Real da máquina."""
+def get_real_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Não precisa ser alcançável, apenas para rotear a interface correta
         s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
     except Exception:
@@ -84,221 +108,256 @@ def get_local_ip():
         s.close()
     return ip
 
-def run_command_stream(cmd, shell=True):
-    """Executa comando e captura saída em tempo real para stream."""
-    try:
-        process = subprocess.Popen(
-            cmd,
-            shell=shell,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
+def run_command_stream(cmd_list, step_start, step_end):
+    """Executa comando e gera stream de saída em tempo real."""
+    process = subprocess.Popen(
+        cmd_list,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1
+    )
+    
+    current_package = "Desconhecido"
+    
+    for line in process.stdout:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Tenta identificar pacote sendo instalado
+        match = re.search(r'(unpacking|installing|downloading)\s+([a-zA-Z0-9\-_\.]+)', line, re.IGNORECASE)
+        if match:
+            current_package = match.group(2)
         
-        output_lines = []
-        for line in process.stdout:
-            line = line.strip()
-            if line:
-                output_lines.append(line)
-                # Tenta extrair nome do pacote sendo instalado
-                pkg_name = None
-                if DISTRO == "DEBIAN":
-                    # Padrão: Selecting previously unselected package <pkg>
-                    match = re.search(r'Selecting previously unselected package (\S+)', line)
-                    if match:
-                        pkg_name = match.group(1)
-                    # Ou apenas o nome se estiver configurando
-                    elif "Setting up" in line:
-                        match = re.search(r'Setting up (\S+)', line)
-                        if match:
-                            pkg_name = match.group(1)
-                
-                elif DISTRO == "RHEL":
-                    # Padrão: Installing: <pkg>
-                    match = re.search(r'Installing:\s+(\S+)', line)
-                    if match:
-                        pkg_name = match.group(1)
-                    elif "Installed:" in line:
-                        match = re.search(r'Installed:\s+(\S+)', line)
-                        if match:
-                            pkg_name = match.group(1)
-                            
-                elif DISTRO == "ARCH":
-                    # Padrão: installing <pkg>
-                    match = re.search(r'installing (\S+)', line)
-                    if match:
-                        pkg_name = match.group(1)
-                
-                if pkg_name:
-                    update_progress(None, f"Instalando pacote: {pkg_name}")
-                    
-        process.wait()
-        return process.returncode == 0
-    except Exception as e:
-        print(f"Erro ao executar comando: {e}")
-        return False
-
-def run_command(cmd, shell=True):
-    """Executa comando silenciando saída técnica (fallback)."""
-    try:
-        subprocess.run(
-            cmd, 
-            shell=shell, 
-            check=True, 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.DEVNULL
-        )
-        return True
-    except subprocess.CalledProcessError:
-        return False
-
-def update_progress(percent, status_msg):
-    """Atualiza estado e notifica clientes SSE."""
-    with state.lock:
-        state.progress = percent
-        state.status = status_msg
-        # Notificação é feita no momento da requisição SSE
+        # Envia para os clientes SSE
+        for client in list(clients):
+            try:
+                client.put({
+                    "type": "log",
+                    "package": current_package,
+                    "detail": line,
+                    "progress": None # Mantém progresso atual
+                })
+            except:
+                pass
+        
+    process.wait()
+    return process.returncode == 0
 
 def installation_thread():
-    """Orquestra os Passos 5 a 8 com detecção de distro e stream em tempo real."""
     time.sleep(2) # Aguarda cliente conectar
-
-    # Passo 5: Sincronização (0% -> 20%)
-    update_progress(5, "Sincronizando repositórios do Linux...")
-    update_cmd = get_pkg_cmd("update")
-    # Para RHEL, o check-update pode retornar 100 se houver updates, tratamos como sucesso
-    if DISTRO == "RHEL":
-        try:
-            subprocess.run(update_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except subprocess.CalledProcessError as e:
-            if e.returncode != 100: # 100 significa updates disponíveis, não é erro
-                raise e
-    else:
-        run_command(update_cmd)
-    update_progress(20, "Repositórios sincronizados.")
-
-    # Passo 6: Node.js (20% -> 50%)
-    update_progress(25, "Configurando ambiente Node.js...")
-    node_pkgs = get_node_packages()
-    install_cmd = f"{get_pkg_cmd('install')} {node_pkgs}"
-    run_command_stream(install_cmd)
-    update_progress(50, "Node.js instalado.")
-
-    # Passo 7: PostgreSQL (50% -> 90%) - COM STREAM E NOMES DE PACOTES
-    update_progress(55, "Instalando o motor do banco de dados...")
-    pg_pkgs = get_pg_packages()
-    install_cmd = f"{get_pkg_cmd('install')} {pg_pkgs}"
-    run_command_stream(install_cmd)
-    update_progress(90, "PostgreSQL instalado.")
-
-    # Passo 8: Ativação e Validação (90% -> 100%)
-    update_progress(95, "Ativando serviços...")
     
-    # Iniciar serviço depende da distro
-    if DISTRO == "ARCH":
-        run_command("systemctl start postgresql")
-        run_command("postgresql-setup --initdb", check=False) # Init se necessário
-    elif DISTRO == "RHEL":
-        run_command("postgresql-setup --initdb", check=False)
-        run_command("systemctl enable postgresql")
-        run_command("systemctl start postgresql")
-    else: # DEBIAN
-        run_command("systemctl start postgresql")
+    # Passo 1: Update
+    for client in list(clients):
+        client.put({"step": "update", "msg": "Atualizando repositórios...", "progress": 10})
     
-    # Validação do Socket
-    db_ready = False
-    for _ in range(10):
+    run_command_stream(DISTRO_INFO['update_cmd'], 0, 20)
+    
+    # Passo 2: Node.js
+    for client in list(clients):
+        client.put({"step": "nodejs", "msg": "Instalando Node.js e NPM...", "progress": 40})
+    
+    pkgs_node = DISTRO_INFO['packages']['nodejs']
+    run_command_stream(DISTRO_INFO['install_cmd'] + pkgs_node, 20, 50)
+    
+    # Passo 3: PostgreSQL (Com feedback de pacote)
+    for client in list(clients):
+        client.put({"step": "postgres", "msg": "Iniciando instalação do PostgreSQL...", "progress": 60})
+    
+    pkgs_pg = DISTRO_INFO['packages']['postgres']
+    success = run_command_stream(DISTRO_INFO['install_cmd'] + pkgs_pg, 50, 90)
+    
+    if success:
+        # Iniciar serviço
+        svc_name = DISTRO_INFO['packages']['service_name']
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('127.0.0.1', 5432))
-            sock.close()
-            if result == 0:
-                db_ready = True
-                break
+            subprocess.run(['systemctl', 'start', svc_name], check=True)
+            subprocess.run(['systemctl', 'enable', svc_name], check=True)
         except:
-            pass
-        time.sleep(1)
-    
-    if db_ready:
-        update_progress(100, "Instalação concluída!")
+            pass # Ignora erro se systemctl não estiver disponível
+            
+        for client in list(clients):
+            client.put({"step": "done_install", "msg": "PostgreSQL instalado e iniciado!", "progress": 100})
     else:
-        update_progress(100, "Instalação finalizada (verifique logs se houver erros).")
+        for client in list(clients):
+            client.put({"step": "error", "msg": "Erro na instalação do PostgreSQL.", "progress": 100})
 
 @app.route('/')
 def index():
-    """Passo 4: Serve o HTML estático."""
-    return send_from_directory('frontend', 'index.html')
+    return render_template_string(HTML_TEMPLATE, ip_addr=get_real_ip())
 
 @app.route('/api/stream')
 def stream():
-    """Passo 4 & 5+: Handshake SSE e envio de progresso."""
-    def generate():
-        while True:
-            with state.lock:
-                data = {
-                    "porcentagem": state.progress,
-                    "status": state.status
-                }
-            yield f"data: {json.dumps(data)}\n\n"
-            if state.progress >= 100:
-                break
-            time.sleep(0.5)
-    return Response(generate(), mimetype='text/event-stream')
+    def event_stream():
+        q = Queue()
+        clients.append(q)
+        try:
+            while True:
+                data = q.get(timeout=30)
+                yield f"data: {json.dumps(data)}\n\n"
+                if data.get('step') == 'done_install' or data.get('step') == 'error':
+                    break
+        except:
+            pass
+        finally:
+            if q in clients:
+                clients.remove(q)
+    return Response(event_stream(), mimetype='text/event-stream')
 
 @app.route('/api/setup-db', methods=['POST'])
 def setup_db():
-    """Passo 10: Criação do Superuser via Login Shell."""
     data = request.json
-    username = data.get('username')
+    user = data.get('user')
     password = data.get('password')
-
-    if not username or not password:
-        return jsonify({"error": "Dados inválidos"}), 400
-
-    # Comando seguro usando login shell do usuário postgres
-    cmd = f'sudo -i -u postgres psql -c "CREATE USER {username} WITH PASSWORD \'{password}\' SUPERUSER;"'
     
+    if not user or not password:
+        return jsonify({"error": "Dados inválidos"}), 400
+    
+    # Cria usuário superuser no Postgres
+    cmd = f"sudo -i -u postgres psql -c \"CREATE USER {user} WITH PASSWORD '{password}' SUPERUSER;\""
     try:
-        # Executa o comando no servidor local
-        result = subprocess.run(
-            cmd, 
-            shell=True, 
-            capture_output=True, 
-            text=True
-        )
-        
-        if result.returncode == 0 or "already exists" in result.stderr:
-            return jsonify({"success": True, "message": "Usuário criado com sucesso!"})
-        else:
-            return jsonify({"error": result.stderr}), 500
-            
+        subprocess.run(cmd, shell=True, check=True, capture_output=True)
+        return jsonify({"success": True, "message": "Usuário criado com sucesso!"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Passo 1: Verificação de Root
-    if os.geteuid() != 0:
-        print("ERRO: Este script deve ser executado com sudo.")
-        print("Uso correto: sudo python3 instalador.py")
-        sys.exit(1)
-
-    # Passo 2: Captura IP
-    local_ip = get_local_ip()
-
-    # Passo 3: Sinalização Visual no Terminal
-    print("\n" + "="*60)
-    print("[GIT PROJETO] INSTALADOR WEB ATIVO NA PASTA LOCAL")
+    threading.Thread(target=installation_thread, daemon=True).start()
+    
+    ip = get_real_ip()
     print("="*60)
-    print(f"[AÇÃO] Abra o navegador em outra máquina e acesse:")
-    print(f"[ENDEREÇO] http://{local_ip}:{PORT}")
-    print("="*60 + "\n")
-    print("Aguardando conexão... (Ctrl+C para cancelar)")
+    print(f"SERVIDOR ONLINE! ACESSE EM OUTRA MÁQUINA:")
+    print(f"http://{ip}:5000")
+    print("="*60)
+    
+    app.run(host='0.0.0.0', port=5000, threaded=True)
 
-    # Inicia thread de instalação em background
-    t = threading.Thread(target=installation_thread)
-    t.daemon = True
-    t.start()
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Instalador do Sistema</title>
+    <style>
+        body { font-family: sans-serif; background: #f0f2f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 400px; text-align: center; }
+        .progress-bar { width: 100%; background: #e0e0e0; height: 20px; border-radius: 10px; overflow: hidden; margin: 20px 0; }
+        .progress-fill { height: 100%; background: #4caf50; width: 0%; transition: width 0.3s; }
+        input { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; }
+        button:hover { background: #0056b3; }
+        .hidden { display: none; }
+        #log-area { font-size: 12px; color: #666; text-align: left; height: 100px; overflow-y: auto; background: #f9f9f9; padding: 5px; margin-top: 10px; border: 1px solid #eee; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2 id="title">Instalação do Sistema</h2>
+        
+        <!-- Tela de Progresso -->
+        <div id="progress-screen">
+            <p id="status-msg">Conectando...</p>
+            <p id="pkg-msg" style="font-size: 0.9em; color: #555;"></p>
+            <div class="progress-bar">
+                <div class="progress-fill" id="fill"></div>
+            </div>
+            <div id="log-area"></div>
+        </div>
 
-    # Inicia Servidor Flask
-    app.run(host=HOST_IP, port=PORT, threaded=True)
+        <!-- Tela de Formulário -->
+        <div id="form-screen" class="hidden">
+            <p>Configuração do Banco de Dados</p>
+            <input type="text" id="db-user" placeholder="Usuário Administrador">
+            <input type="password" id="db-pass" placeholder="Senha Master">
+            <button onclick="submitData()">Salvar e Inicializar</button>
+        </div>
+
+        <!-- Tela Final -->
+        <div id="final-screen" class="hidden">
+            <h3 style="color: green">Sucesso!</h3>
+            <p>Banco configurado.</p>
+            <button onclick="finish()">Concluir e Iniciar Sistema</button>
+        </div>
+        
+        <!-- Dashboard Simulado -->
+        <div id="dashboard-screen" class="hidden">
+            <h3>Dashboard do Sistema</h3>
+            <nav class="sidebar" style="text-align:left; border-top:1px solid #eee; padding-top:10px;">
+                <ul>
+                    <li>Visão Geral</li>
+                    <li>Usuários</li>
+                    <li>Relatórios</li>
+                    <li>Configurações</li>
+                </ul>
+            </nav>
+        </div>
+    </div>
+
+    <script>
+        const source = new EventSource('/api/stream');
+        const fill = document.getElementById('fill');
+        const statusMsg = document.getElementById('status-msg');
+        const pkgMsg = document.getElementById('pkg-msg');
+        const logArea = document.getElementById('log-area');
+
+        source.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            if (data.progress !== undefined) {
+                fill.style.width = data.progress + '%';
+            }
+            if (data.msg) {
+                statusMsg.innerText = data.msg;
+            }
+            if (data.package && data.type === 'log') {
+                pkgMsg.innerText = "Instalando pacote: " + data.package;
+            }
+            if (data.detail) {
+                const line = document.createElement('div');
+                line.textContent = "> " + data.detail;
+                logArea.appendChild(line);
+                logArea.scrollTop = logArea.scrollHeight;
+            }
+
+            if (data.step === 'done_install') {
+                source.close();
+                document.getElementById('progress-screen').classList.add('hidden');
+                document.getElementById('form-screen').classList.remove('hidden');
+            }
+            if (data.step === 'error') {
+                source.close();
+                statusMsg.innerText = "ERRO: " + data.msg;
+                statusMsg.style.color = "red";
+            }
+        };
+
+        function submitData() {
+            const user = document.getElementById('db-user').value;
+            const pass = document.getElementById('db-pass').value;
+            
+            fetch('/api/setup-db', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user: user, password: pass})
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('form-screen').classList.add('hidden');
+                    document.getElementById('final-screen').classList.remove('hidden');
+                } else {
+                    alert('Erro: ' + data.error);
+                }
+            });
+        }
+
+        function finish() {
+            document.getElementById('final-screen').classList.add('hidden');
+            document.getElementById('dashboard-screen').classList.remove('hidden');
+            document.getElementById('title').innerText = "Sistema Online";
+        }
+    </script>
+</body>
+</html>
+"""
