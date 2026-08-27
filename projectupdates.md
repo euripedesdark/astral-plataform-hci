@@ -1,7 +1,7 @@
 # Astral PLATAFORM & HCI – Reference and Updates Document
 #  
-**Living Document – Version 1.2**  
-**Last updated:** January 2, 2026  
+**Living Document – Version 1.3**  
+**Last updated:** AUGUST 27, 2026  
 
 ---
 
@@ -18,23 +18,54 @@
 ### **DECEMBER 20, 2025 – Version 1.0**  
 *(unchanged)*  
 
-### **JANUARY 2, 2026 – Version 1.2**  
-**New Feature**: **Context-Aware DNS Classification and Selection**  
-- **Reason**: Enable offline, auditable, user-controlled DNS selection aligned with Astral principles  
-- **Source Data**: Public DNS list from `public-dns.info` (CSV-based, no live API calls)  
-- **Classification Criteria**:  
-  - ✅ **Cloud Provider** (via `as_org`: Google, Cloudflare, AWS, etc.)  
-  - ✅ **Country** (via `country_code`)  
-  - ✅ **Reliability ≥ 0.95 + DNSSEC = true**  
-- **Integration**:  
-  - Fully embedded in **Layer 4 (Network)** and **Layer 5 (Firewall)**  
-  - User selects DNS interactively during setup  
-  - Selection propagates to **Pi-hole**, **dnsmasq**, and **firewall policies**  
-- **Philosophy Alignment**:  
-  - ✅ **Fallback over Dependency**: All data stored locally  
-  - ✅ **Human Authority**: User chooses DNS  
-  - ✅ **Auditability**: Selected DNS logged in PostgreSQL  
+### **JANUARY 2, 2026 – Version 1.2**
+**New Feature**: **Context-Aware DNS Classification and Selection**
+- **Reason**: Enable offline, auditable, user-controlled DNS selection aligned with Astral principles
+- **Source Data**: Public DNS list from `public-dns.info` (CSV-based, no live API calls)
+- **Classification Criteria**: 
+- ✅ **Cloud Provider** (via `as_org`: Google, Cloudflare, AWS, etc.) 
+- ✅ **Country** (via `country_code`) 
+- ✅ **Reliability ≥ 0.95 + DNSSEC = true**
+- **Integration**: 
+- Fully embedded in **Layer 4 (Network)** and **Layer 5 (Firewall)** 
+- User selects DNS interactively during setup 
+- Selection propagates to **Pi-hole**, **dnsmasq**, and **firewall policies**
+- **Philosophy Alignment**: 
+- ✅ **Fallback over Dependency**: All data stored locally 
+- ✅ **Human Authority**: User chooses DNS 
+- ✅ **Auditability**: Selected DNS logged in PostgreSQL
 
+### **AUGUST 27, 2026 – Version 1.3 (Current)**
+**New Feature**: **Samba AD DC Multi-Distro Scripts & Unified Web Installer**
+- **Reason**: Expand identity layer support to major Linux families and streamline initial setup via web UI.
+- **Samba AD DC Scripts**: 
+- ✅ **Fedora/AlmaLinux**: `fedoradc-SSL.py` (with SSL/Step-CA) and `fedora42dc.py` (without SSL). 
+- ✅ **Arch Linux**: `arch-DC-SSL.py` (with SSL) and `arch42dc-no-ssl.py` (without SSL). 
+- ✅ **Debian 13**: `debian13-dc-ssl.py` (with SSL, AppArmor, modular BIND) and `debian13-dc-no-ssl.py` (without SSL). 
+- 🔐 **Standardization**: All scripts now use `auth.env` for sensitive configurations (`HOSTNAME_COMPLETO`, `REALM`, `SENHA_ADMIN`, `CERT_PWD`, etc.). 
+- 🛡️ **Distro-Specific Security**:
+- Fedora/RHEL: SELinux configuration included. 
+- Debian: Custom AppArmor profiles for Samba and BIND. 
+- Arch: Path and package adjustments (`pacman`, `iptables-services`).
+
+- **Unified Web Installer (`instalador.py` + `frontend/index.html`)**:
+- 🚀 **Execution**: Runs via `sudo python3 instalador.py` directly from the Git repository root. 
+- 🌐 **Remote Access**: Built-in Flask server accessible via a browser on another machine (`http://SERVER_IP:5000`). 
+- 🔄 **10-Step Workflow**:
+1. Execution with `sudo` in the Git directory. 
+2. Automatic machine IP detection. 
+3. Access address displayed in the terminal. 
+4. SSE (Server-Sent Events) handshake with the frontend. 
+5. Repository synchronization (`apt-get update` / `dnf makecache` / `pacman -Sy`). 
+6. Silent installation of Node.js and NPM. 
+7. **PostgreSQL installation with real-time feedback** (displays the package name being installed and a progress bar). 
+8. Socket validation on port 5432 and service startup. 
+9. Transition to the credentials form (Admin User and Master Password). 
+10. Creation of the superuser and the **`astral`** database via `sudo -i -u postgres psql`. 
+- 🧠 **Automatic Distro Detection**:
+- Reads `/etc/os-release` to identify Debian/Ubuntu, RHEL/Fedora/Alma, or Arch Linux. - Automatically adapts commands (`apt`, `dnf`, `pacman`) and package names. 
+- 🗄️ **`astral` Database Creation**: The installer automatically creates the application's main database and grants full privileges to the created user. 
+- 🎨 **React-like Frontend**: A clean interface featuring an animated progress bar, a real-time installation log, and a smooth transition to the final dashboard.
 ---
 
 ## 🎯 FUNDAMENTAL PRINCIPLES (IMMUTABLE)  
@@ -98,10 +129,10 @@ gantt
   Firewall + NM Integration       :m1_1, 2026-02-01, 2026-03-30
 
   section M2 - Identity
-  AD + Hybrid DNS Automation      :m2_1, 2026-04-01, 2026-05-30
+  AD + Hybrid DNS Automation      :m2_1, 2026-09-01, 2026-10-30
 
   section Milestones
-  Functional MVP Target           :crit, mvp, 2026-06-01, 2026-06-30
+  Functional MVP Target           :crit, mvp, 2026-08-01, 2026-11-30
 
 ```
 
