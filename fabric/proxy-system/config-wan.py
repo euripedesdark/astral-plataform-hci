@@ -27,7 +27,6 @@ from typing import List, Optional, Tuple
 # DETECÇÃO DE SISTEMA E GERENCIADOR DE PACOTES
 # ==========================================
 def detect_os_family() -> str:
-    """Detecta a família da distribuição baseando-se no /etc/os-release."""
     os_id = ""
     os_like = ""
     try:
@@ -54,7 +53,6 @@ def detect_os_family() -> str:
         return "unknown"
 
 def install_packages(packages: List[str], os_family: str, dry_run: bool):
-    """Instala pacotes usando o gerenciador nativo da distribuição."""
     if not packages:
         return
     pkgs_str = " ".join(packages)
@@ -76,10 +74,8 @@ def install_packages(packages: List[str], os_family: str, dry_run: bool):
 # EXTERMÍNIO DE SERVIÇOS CONFLITANTES
 # ==========================================
 def nuke_resolved_and_netplan(dry_run: bool):
-    """Remove systemd-resolved e Netplan, deixando apenas o NetworkManager."""
     print("\n== Exterminando systemd-resolved, Netplan e systemd-networkd ==")
 
-    # Mata o systemd-resolved
     run_command("systemctl stop systemd-resolved || true", dry_run=dry_run, check=False)
     run_command("systemctl disable systemd-resolved || true", dry_run=dry_run, check=False)
 
@@ -88,18 +84,15 @@ def nuke_resolved_and_netplan(dry_run: bool):
             os.unlink("/etc/resolv.conf")
         print("🔗 Symlink do /etc/resolv.conf removido para evitar sequestro de DNS.")
 
-    # Mata o systemd-networkd (Usado pelo Netplan no Ubuntu)
     run_command("systemctl stop systemd-networkd || true", dry_run=dry_run, check=False)
     run_command("systemctl disable systemd-networkd || true", dry_run=dry_run, check=False)
 
-    # Invalida configurações do Netplan
     if os.path.exists("/etc/netplan"):
         print("🗑️  Desativando configurações do Netplan...")
         if not dry_run:
             os.makedirs("/etc/netplan/backup_disabled", exist_ok=True)
         run_command("mv /etc/netplan/*.yaml /etc/netplan/backup_disabled/ 2>/dev/null || true", dry_run=dry_run, check=False)
 
-    # Garante que o NetworkManager é o único responsável
     run_command("systemctl enable NetworkManager", dry_run=dry_run, check=False)
     run_command("systemctl start NetworkManager", dry_run=dry_run, check=False)
     print("✅ NetworkManager definido como o único gerenciador de rede.")
@@ -256,7 +249,8 @@ def setup_kea_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, str,
     kea_pkg = "kea-dhcp4-server" if os_family == "debian" else "kea"
     kea_svc = "kea-dhcp4-server" if os_family == "debian" else "kea-dhcp4"
 
-    if not os.path.exists(f"/usr/sbin/{kea_svc}") and not os.path.exists("/etc/kea"):
+    # CORREÇÃO AQUI: Verifica estritamente a existência do binário executável.
+    if not shutil.which(kea_svc) and not os.path.exists(f"/usr/sbin/{kea_svc}"):
         install_packages([kea_pkg], os_family, dry_run)
 
     kea_conf_dir = "/etc/kea"
@@ -290,6 +284,8 @@ def setup_kea_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, str,
         os.makedirs(kea_conf_dir, exist_ok=True)
         os.makedirs("/var/lib/kea", exist_ok=True)
         with open(kea_conf_file, "w") as f: f.write(json_output)
+
+        # Habilita e reinicia o serviço
         run_command(f"systemctl enable {kea_svc}", dry_run=dry_run)
         run_command(f"systemctl restart {kea_svc}", dry_run=dry_run)
         print(f"✅ Kea DHCP configurado ({kea_svc})!")
@@ -351,7 +347,6 @@ def main_interactive():
         if not ask_yes_no("Não foi possível determinar a distribuição. O comportamento de persistência do firewall e instalação de pacotes pode falhar. Deseja continuar?", default=False):
             sys.exit(1)
 
-    # Extermina os gerenciadores indesejados antes de começar a configurar o NM
     nuke_resolved_and_netplan(dry_run)
 
     if not check_open_ports():
