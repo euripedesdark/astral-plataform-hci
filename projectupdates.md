@@ -146,17 +146,20 @@ gantt
 flowchart LR
     D1["Nov 2024<br/>Decision: PostgreSQL as<br/>Primary Database"] 
     D2["Dec 01, 2025<br/>Decision: Python as<br/>Core Execution Language"]
-    D3["Dec 09, 2025<br/>Decision: GPLv3 Licensing"]
+    D3["Dec 09, 2025<br/>Decision: GPLv2 Licensing"]
+    D4["Aug 27, 2026<br/>Decision: Multi-Distro<br/>Installer via Web"]
 
     D1 --> D2
     D2 --> D3
+    D3 --> D4
 
     click D1 "Context: ACID compliance, Open Source. Replaced SQL Server."
     click D2 "Context: Sysadmin friendly, mature libraries."
     click D3 "Context: Software freedom, anti-vendor lock-in."
+    click D4 "Context: Simplify setup across Debian, RHEL, Arch without manual intervention."
 
     classDef decisions fill:#f0f9ff,stroke:#007bff,color:#000;
-    class D1,D2,D3 decisions;
+    class D1,D2,D3,D4 decisions;
 ```
 
 ---
