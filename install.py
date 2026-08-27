@@ -5,6 +5,7 @@ Instalador Web Unificado - Fluxo Lógico em 10 Passos
 Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
 Autossuficiente: Instala suas próprias dependências (Flask) se necessário.
+Compatível com Debian, RHEL/CentOS/Alma 10+, e Arch Linux.
 """
 
 import os
@@ -51,7 +52,7 @@ def detect_distro():
             content = f.read().lower()
             if 'debian' in content or 'ubuntu' in content:
                 return 'debian'
-            elif 'rhel' in content or 'fedora' in content or 'almalinux' in content or 'centos' in content:
+            elif 'rhel' in content or 'fedora' in content or 'almalinux' in content or 'centos' in content or 'rocky' in content:
                 return 'rhel'
             elif 'arch' in content or 'manjaro' in content:
                 return 'arch'
@@ -71,8 +72,12 @@ def ensure_flask_installed():
         cmd = None
 
         if distro == 'debian':
-            cmd = "apt-get update && apt-get install -y python3-flask"
+            # Atualiza cache primeiro se possível
+            subprocess.run("apt-get update", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cmd = "apt-get install -y python3-flask"
         elif distro == 'rhel':
+            # RHEL 10/CentOS 10 usa python3-flask no AppStream
+            # Tenta limpar cache se falhar, mas geralmente não precisa
             cmd = "dnf install -y python3-flask"
         elif distro == 'arch':
             cmd = "pacman -Sy --noconfirm python-flask"
@@ -82,12 +87,15 @@ def ensure_flask_installed():
             return False
 
         try:
-            subprocess.run(cmd, shell=True, check=True)
+            # Como o script já roda com sudo, executamos direto
+            result = subprocess.run(cmd, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             print("[OK] Flask instalado com sucesso.")
-            # Força recarregar o módulo se possível, ou reinicia o script (não necessário aqui pois é importado depois)
             return True
         except subprocess.CalledProcessError as e:
-            print(f"[ERRO] Falha ao instalar Flask: {e}")
+            err_msg = e.stderr.decode() if e.stderr else str(e)
+            print(f"[ERRO] Falha ao instalar Flask: {err_msg}")
+            print("[SUGESTÃO] Se for RHEL/CentOS, verifique se o repositório 'AppStream' ou 'CRB' está habilitado.")
+            print("[SUGESTÃO] Tente manualmente: sudo dnf install -y python3-flask")
             return False
 
 def run_command_stream(cmd, shell=True):
@@ -105,18 +113,15 @@ def run_command_stream(cmd, shell=True):
     for line in process.stdout:
         output_buffer += line
         # Tenta extrair nome do pacote sendo instalado (padrão comum em apt/dnf/pacman)
-        # Ex: "Preparing to unpack .../postgresql_12.deb" ou "Installing postgresql"
-        match = re.search(r'(?:unpacking|installing|upgrading)\s+([a-zA-Z0-9\-_.]+)', line, re.IGNORECASE)
+        # Ex: "Preparing to unpack .../postgresql_12.deb" ou "Installing postgresql" ou "upgrading python3-"
+        match = re.search(r'(?:unpacking|installing|upgrading|processing)\s+([a-zA-Z0-9\-_.]+)', line, re.IGNORECASE)
         if match:
             pkg_name = match.group(1)
             with state.lock:
                 state.package_name = pkg_name
 
-        # Envia para os clientes SSE imediatamente
-        with state.lock:
-            # Atualiza status com o buffer recente se houver pacote, senão mantém anterior
-            current_status = f"Instalando: {state.package_name}" if state.package_name else "Processando instalação..."
-            # Não atualiza o progress bar aqui, isso é feito pela lógica de passos
+        # Envia para os clientes SSE imediatamente (lógica simplificada para não travar)
+        # O status detalhado é lido pelo frontend via JSON
 
     process.wait()
     return process.returncode == 0
@@ -155,14 +160,18 @@ def installation_thread():
 
     # Passo 6: Node.js (20% -> 50%)
     update_progress(25, "Configurando ambiente Node.js...")
-    node_pkg = "nodejs npm curl" if distro != 'arch' else "nodejs npm curl"
-    # Em Arch, nodejs e npm são separados as vezes, mas geralmente ok
+    node_pkg = "nodejs npm curl"
+    if distro == 'arch':
+        node_pkg = "nodejs npm curl" # No Arch os nomes são iguais
     run_command_stream(f"{install_cmd_base} {node_pkg}")
     update_progress(50, "Node.js instalado.")
 
     # Passo 7: PostgreSQL (50% -> 90%)
     update_progress(55, "Instalando o motor do banco de dados...")
-    pg_pkg = "postgresql postgresql-contrib" if distro != 'arch' else "postgresql postgresql-contrib"
+    pg_pkg = "postgresql postgresql-contrib"
+    if distro == 'arch':
+        pg_pkg = "postgresql postgresql-contrib"
+
     # Executa com stream para capturar nomes dos pacotes
     success = run_command_stream(f"{install_cmd_base} {pg_pkg}")
 
@@ -174,43 +183,59 @@ def installation_thread():
     # Passo 8: Ativação e Validação (90% -> 100%)
     update_progress(95, "Ativando serviços...")
 
-    # Tentar iniciar o serviço (pode variar o nome)
     svc_name = "postgresql"
-    if distro == 'rhel': svc_name = "postgresql-server" # As vezes precisa de initdb antes no RHEL
-    if distro == 'arch': svc_name = "postgresql"
 
-    # No RHEL/Fedora, às vezes precisa inicializar o DB pela primeira vez
+    # Lógica específica para RHEL/CentOS/Alma/Rocky 10+
     if distro == 'rhel':
-        subprocess.run("postgresql-setup --initdb", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        svc_name = "postgresql-server"
+        # No RHEL, após instalar, é necessário inicializar o DB pela primeira vez manualmente
+        print("[INFO] Detectado RHEL/Fedora. Inicializando banco de dados pela primeira vez...")
+        init_result = subprocess.run("postgresql-setup --initdb", shell=True, capture_output=True, text=True)
+        if init_result.returncode != 0 and "is not empty" not in init_result.stderr:
+            print(f"[AVISO] Falha ao inicializar DB: {init_result.stderr}")
 
-    subprocess.run(f"systemctl enable {svc_name}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(f"systemctl start {svc_name}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Habilitar e iniciar
+        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
+        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
+
+    elif distro == 'arch':
+        # No Arch, às vezes precisa inicializar manualmente se não for systemd automático
+        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
+        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
+
+    else:
+        # Debian/Ubuntu geralmente iniciam sozinhos
+        subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
 
     # Validação do Socket
     db_ready = False
-    for _ in range(15):
+    print("[INFO] Aguardando PostgreSQL aceitar conexões na porta 5432...")
+    for i in range(20): # Aumenta tentativas para 20s
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             result = sock.connect_ex(('127.0.0.1', 5432))
             sock.close()
             if result == 0:
                 db_ready = True
+                print(f"[OK] PostgreSQL respondendo após {i+1} segundos.")
                 break
-        except:
+        except Exception as e:
             pass
         time.sleep(1)
 
     if db_ready:
         update_progress(100, "Instalação concluída!")
     else:
-        update_progress(100, "Instalação finalizada (serviço pode estar iniciando).")
+        update_progress(100, "Instalação finalizada (serviço pode estar iniciando lentamente).")
 
 # Importação tardia do Flask após verificação
 if not ensure_flask_installed():
+    print("\n[CRÍTICO] Não foi possível prosseguir sem o Flask.")
     sys.exit(1)
 
 from flask import Flask, send_from_directory, request, jsonify, Response
 
+# Configuração do caminho para a pasta frontend dentro de fabric
 app = Flask(__name__, static_folder='fabric/frontend', static_url_path='')
 
 @app.route('/')
