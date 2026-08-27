@@ -122,14 +122,41 @@ def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str]):
 
     print("✅ Regras de firewall aplicadas.")
 
-def configure_dns(dry_run: bool, wan_iface: str, dns_servers: List[str]):
+def disable_nm_dns_overwrite(dry_run: bool):
+    """Configura o NetworkManager para não sobrescrever o /etc/resolv.conf globalmente."""
+    print("\n== Protegendo /etc/resolv.conf contra alterações do NetworkManager ==")
+    nm_conf_dir = "/etc/NetworkManager/conf.d"
+    dns_conf_file = os.path.join(nm_conf_dir, "90-dns-none.conf")
+
+    if not dry_run:
+        if not os.path.exists(nm_conf_dir):
+            os.makedirs(nm_conf_dir, exist_ok=True)
+        with open(dns_conf_file, "w") as f:
+            f.write("[main]\ndns=none\n")
+        print(f"Arquivo {dns_conf_file} criado com sucesso (dns=none).")
+        run_command("systemctl reload NetworkManager", dry_run=dry_run)
+    else:
+        print(f"[dry-run] Criaria o arquivo {dns_conf_file} com a instrução '[main]\\ndns=none'")
+        print("[dry-run] Executaria systemctl reload NetworkManager")
+
+def configure_dns(dry_run: bool, wan_iface: str, dns_servers: List[str], protect_dns: bool):
     """Configura os servidores DNS para a interface WAN."""
-    print(f"\n== Configurando DNS em {wan_iface} ==")
+    print(f"\n== Configurando DNS ==")
+
+    # Se a proteção foi solicitada, aplicamos a trava e escrevemos no arquivo direto.
+    if protect_dns:
+        disable_nm_dns_overwrite(dry_run)
+        print("Escrevendo IPs estáticos diretamente no /etc/resolv.conf...")
+        if not dry_run:
+            with open("/etc/resolv.conf", "w") as f:
+                for server in dns_servers:
+                    f.write(f"nameserver {server}\n")
+
     if shutil.which("nmcli"):
         dns_str = " ".join(dns_servers)
-        print(f"Configurando DNS via NetworkManager: {dns_str}")
+        print(f"Salvando DNS no perfil do NetworkManager: {dns_str}")
 
-        # Busca o nome da conexão atrelada ao device
+        # Busca o nome da conexão atrelada ao device físico
         get_con_cmd = f"nmcli -t -f NAME,DEVICE con show | awk -F: '$2==\"{wan_iface}\" {{print $1}}'"
         con_name = get_command_output(get_con_cmd, dry_run=dry_run)
 
@@ -139,17 +166,15 @@ def configure_dns(dry_run: bool, wan_iface: str, dns_servers: List[str]):
             run_command(f"nmcli con up {shlex.quote(con_name)}", dry_run=dry_run)
         else:
             print(f"Aviso: Não encontrou conexão ativa atrelada ao device {wan_iface}.")
-    else:
+    elif not protect_dns: # Caso nmcli não exista e não tenhamos protegido o arquivo acima
         print("NetworkManager (nmcli) não encontrado. Configurando /etc/resolv.conf diretamente.")
-        resolv_conf_content = ""
-        for server in dns_servers:
-            resolv_conf_content += f"nameserver {server}\n"
         if not dry_run:
             with open("/etc/resolv.conf", "w") as f:
-                f.write(resolv_conf_content)
+                for server in dns_servers:
+                    f.write(f"nameserver {server}\n")
         print("Conteúdo de /etc/resolv.conf atualizado.")
 
-def configure_wan_static(dry_run: bool, wan_iface: str, public_ip: str, public_mask: str, public_gw: str, mac_spoof: Optional[str], dns_servers: List[str]):
+def configure_wan_static(dry_run: bool, wan_iface: str, public_ip: str, public_mask: str, public_gw: str, mac_spoof: Optional[str], dns_servers: List[str], protect_dns: bool):
     """Configura a interface WAN com um IP estático."""
     print(f"\n== Configurando WAN estática em {wan_iface} ==")
     if mac_spoof:
@@ -168,7 +193,7 @@ def configure_wan_static(dry_run: bool, wan_iface: str, public_ip: str, public_m
     run_command(f"ip route replace default via {shlex.quote(public_gw)} dev {shlex.quote(wan_iface)}", dry_run=dry_run)
 
     if dns_servers:
-        configure_dns(dry_run, wan_iface, dns_servers)
+        configure_dns(dry_run, wan_iface, dns_servers, protect_dns)
 
     if shutil.which("nmcli"):
         print("Reiniciando conexão via NetworkManager...")
@@ -208,6 +233,8 @@ def main_interactive():
         public_gw = ask_question("Gateway público")
 
     dns_servers = []
+    protect_dns = False
+
     if ask_yes_no("Deseja configurar servidores DNS?"):
         dns1 = ask_question("DNS primário (ex: 213.186.33.99)", default="8.8.8.8")
         while not is_valid_ip(dns1):
@@ -222,8 +249,10 @@ def main_interactive():
                 dns2 = ask_question("DNS secundário")
             dns_servers.append(dns2)
 
+        protect_dns = ask_yes_no("Deseja proibir permanentemente o NetworkManager de modificar o /etc/resolv.conf?", default=True)
+
     mac_spoof = None
-    if ask_yes_no("Precisa clonar o MAC na WAN?"):
+    if ask_yes_no("Precisa clonar o MAC na WAN?", default=False):
         mac_raw = ask_question("MAC (sem ':' ou com):")
         mac_norm = normalize_mac_address(mac_raw)
         while not mac_norm:
@@ -232,7 +261,7 @@ def main_interactive():
             mac_norm = normalize_mac_address(mac_raw)
         mac_spoof = mac_raw
 
-    configure_wan_static(dry_run, wan_iface, public_ip, public_mask, public_gw, mac_spoof, dns_servers)
+    configure_wan_static(dry_run, wan_iface, public_ip, public_mask, public_gw, mac_spoof, dns_servers, protect_dns)
 
     lan_ifaces = []
     if ask_yes_no("Deseja configurar interfaces de LAN/VLAN?"):
