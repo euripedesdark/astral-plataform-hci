@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instalador do Sistema</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 400px;
+            text-align: center;
+        }
+        h2 { color: #333; margin-bottom: 1.5rem; }
+        
+        /* Barra de Progresso */
+        .progress-container {
+            background-color: #e0e0e0;
+            border-radius: 20px;
+            height: 20px;
+            width: 100%;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+        .progress-bar {
+            background-color: #4caf50;
+            height: 100%;
+            width: 0%;
+            transition: width 0.5s ease;
+            border-radius: 20px;
+        }
+        .status-text {
+            color: #666;
+            font-size: 0.9rem;
+            margin-top: 10px;
+        }
+
+        /* Formulário */
+        .form-group {
+            margin-bottom: 15px;
+            text-align: left;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #333;
+            font-weight: bold;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 1rem;
+            margin-top: 10px;
+        }
+        button:hover { background-color: #0056b3; }
+        
+        .hidden { display: none; }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <!-- Tela de Progresso (Passos 4-8) -->
+        <div id="progress-screen">
+            <h2>Instalando Sistema...</h2>
+            <div class="progress-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <p class="status-text" id="status-text">Conectando...</p>
+        </div>
+
+        <!-- Tela de Formulário (Passo 9) -->
+        <div id="form-screen" class="hidden">
+            <h2>Configuração Final</h2>
+            <p style="color: #666; font-size: 0.9rem;">Crie o usuário administrador do banco de dados.</p>
+            
+            <div class="form-group">
+                <label for="username">Usuário Administrador</label>
+                <input type="text" id="username" placeholder="ex: admin">
+            </div>
+            
+            <div class="form-group">
+                <label for="password">Senha Master do Banco</label>
+                <input type="password" id="password" placeholder="••••••••">
+            </div>
+
+            <button onclick="submitData()">Salvar e Inicializar Sistema</button>
+            <p id="form-message" style="margin-top: 10px;"></p>
+        </div>
+
+        <!-- Tela de Sucesso (Passo 10 - Dashboard Simulado) -->
+        <div id="dashboard-screen" class="hidden">
+            <h2 class="success">Sistema Pronto!</h2>
+            <p>Bem-vindo ao seu novo ambiente.</p>
+            <div style="text-align: left; background: #f9f9f9; padding: 15px; border-radius: 5px; margin-top: 20px;">
+                <strong>Menu Principal:</strong>
+                <ul>
+                    <li>Dashboard</li>
+                    <li>Configurações</li>
+                    <li>Relatórios</li>
+                    <li>Usuários</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const progressBar = document.getElementById('progress-bar');
+        const statusText = document.getElementById('status-text');
+        const progressScreen = document.getElementById('progress-screen');
+        const formScreen = document.getElementById('form-screen');
+        const dashboardScreen = document.getElementById('dashboard-screen');
+        const formMessage = document.getElementById('form-message');
+
+        // Passo 4: Conexão SSE
+        const eventSource = new EventSource('/api/stream');
+
+        eventSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            // Atualiza barra e texto
+            progressBar.style.width = data.porcentagem + '%';
+            statusText.textContent = data.status;
+
+            // Passo 9: Transição para Formulário ao atingir 100%
+            if (data.porcentagem >= 100) {
+                eventSource.close();
+                setTimeout(() => {
+                    progressScreen.classList.add('hidden');
+                    formScreen.classList.remove('hidden');
+                }, 1000);
+            }
+        };
+
+        eventSource.onerror = function() {
+            statusText.textContent = "Erro de conexão. Recarregue a página.";
+            statusText.classList.add('error');
+        };
+
+        // Passo 10: Envio de Dados
+        async function submitData() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                formMessage.textContent = "Preencha todos os campos!";
+                formMessage.className = "error";
+                return;
+            }
+
+            formMessage.textContent = "Processando...";
+            formMessage.className = "";
+
+            try {
+                const response = await fetch('/api/setup-db', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    formScreen.classList.add('hidden');
+                    dashboardScreen.classList.remove('hidden');
+                } else {
+                    formMessage.textContent = "Erro: " + result.error;
+                    formMessage.className = "error";
+                }
+            } catch (error) {
+                formMessage.textContent = "Erro de rede: " + error.message;
+                formMessage.className = "error";
+            }
+        }
+    </script>
+</body>
+</html>
