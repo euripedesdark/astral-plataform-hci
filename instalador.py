@@ -13,12 +13,52 @@ import subprocess
 import time
 import json
 import threading
+import re
 from flask import Flask, send_from_directory, request, jsonify, Response
 
 # Configurações Globais
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PORT = 5000
 HOST_IP = "0.0.0.0"
+
+# Detecção da Distribuição
+def detect_distro():
+    """Detecta a família da distribuição Linux."""
+    if os.path.exists("/etc/os-release"):
+        with open("/etc/os-release") as f:
+            content = f.read()
+            if "ID=debian" in content or "ID=ubuntu" in content or "ID=linuxmint" in content:
+                return "DEBIAN"
+            elif "ID=fedora" in content or "ID=rhel" in content or "ID=centos" in content or "ID=almalinux" in content or "ID=rocky" in content:
+                return "RHEL"
+            elif "ID=arch" in content or "ID=manjaro" in content:
+                return "ARCH"
+    return "UNKNOWN"
+
+DISTRO = detect_distro()
+print(f"Distribuição detectada: {DISTRO}")
+
+# Mapeamento de Comandos e Pacotes
+PKG_MANAGER = {
+    "DEBIAN": {"install": "apt-get install -y", "update": "apt-get update", "node": ["nodejs", "npm"], "pg": ["postgresql", "postgresql-contrib"]},
+    "RHEL": {"install": "dnf install -y", "update": "dnf check-update", "node": ["nodejs", "npm"], "pg": ["postgresql", "postgresql-server", "postgresql-contrib"]},
+    "ARCH": {"install": "pacman -Sy --noconfirm", "update": "pacman -Sy", "node": ["nodejs", "npm"], "pg": ["postgresql"]}
+}
+
+def get_pkg_cmd(action):
+    if DISTRO == "UNKNOWN":
+        raise Exception("Distribuição não suportada.")
+    return PKG_MANAGER[DISTRO][action]
+
+def get_pg_packages():
+    if DISTRO == "UNKNOWN":
+        raise Exception("Distribuição não suportada.")
+    return " ".join(PKG_MANAGER[DISTRO]["pg"])
+
+def get_node_packages():
+    if DISTRO == "UNKNOWN":
+        raise Exception("Distribuição não suportada.")
+    return " ".join(PKG_MANAGER[DISTRO]["node"])
 
 # Estado global para o stream SSE
 class InstallState:
@@ -44,8 +84,63 @@ def get_local_ip():
         s.close()
     return ip
 
+def run_command_stream(cmd, shell=True):
+    """Executa comando e captura saída em tempo real para stream."""
+    try:
+        process = subprocess.Popen(
+            cmd,
+            shell=shell,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        
+        output_lines = []
+        for line in process.stdout:
+            line = line.strip()
+            if line:
+                output_lines.append(line)
+                # Tenta extrair nome do pacote sendo instalado
+                pkg_name = None
+                if DISTRO == "DEBIAN":
+                    # Padrão: Selecting previously unselected package <pkg>
+                    match = re.search(r'Selecting previously unselected package (\S+)', line)
+                    if match:
+                        pkg_name = match.group(1)
+                    # Ou apenas o nome se estiver configurando
+                    elif "Setting up" in line:
+                        match = re.search(r'Setting up (\S+)', line)
+                        if match:
+                            pkg_name = match.group(1)
+                
+                elif DISTRO == "RHEL":
+                    # Padrão: Installing: <pkg>
+                    match = re.search(r'Installing:\s+(\S+)', line)
+                    if match:
+                        pkg_name = match.group(1)
+                    elif "Installed:" in line:
+                        match = re.search(r'Installed:\s+(\S+)', line)
+                        if match:
+                            pkg_name = match.group(1)
+                            
+                elif DISTRO == "ARCH":
+                    # Padrão: installing <pkg>
+                    match = re.search(r'installing (\S+)', line)
+                    if match:
+                        pkg_name = match.group(1)
+                
+                if pkg_name:
+                    update_progress(None, f"Instalando pacote: {pkg_name}")
+                    
+        process.wait()
+        return process.returncode == 0
+    except Exception as e:
+        print(f"Erro ao executar comando: {e}")
+        return False
+
 def run_command(cmd, shell=True):
-    """Executa comando silenciando saída técnica."""
+    """Executa comando silenciando saída técnica (fallback)."""
     try:
         subprocess.run(
             cmd, 
@@ -66,28 +161,50 @@ def update_progress(percent, status_msg):
         # Notificação é feita no momento da requisição SSE
 
 def installation_thread():
-    """Orquestra os Passos 5 a 8."""
+    """Orquestra os Passos 5 a 8 com detecção de distro e stream em tempo real."""
     time.sleep(2) # Aguarda cliente conectar
 
     # Passo 5: Sincronização (0% -> 20%)
     update_progress(5, "Sincronizando repositórios do Linux...")
-    run_command("apt-get update")
+    update_cmd = get_pkg_cmd("update")
+    # Para RHEL, o check-update pode retornar 100 se houver updates, tratamos como sucesso
+    if DISTRO == "RHEL":
+        try:
+            subprocess.run(update_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except subprocess.CalledProcessError as e:
+            if e.returncode != 100: # 100 significa updates disponíveis, não é erro
+                raise e
+    else:
+        run_command(update_cmd)
     update_progress(20, "Repositórios sincronizados.")
 
     # Passo 6: Node.js (20% -> 50%)
     update_progress(25, "Configurando ambiente Node.js...")
-    # Instalação simplificada para exemplo (pode exigir setup do repo nodesource)
-    run_command("apt-get install -y nodejs npm curl") 
+    node_pkgs = get_node_packages()
+    install_cmd = f"{get_pkg_cmd('install')} {node_pkgs}"
+    run_command_stream(install_cmd)
     update_progress(50, "Node.js instalado.")
 
-    # Passo 7: PostgreSQL (50% -> 90%)
+    # Passo 7: PostgreSQL (50% -> 90%) - COM STREAM E NOMES DE PACOTES
     update_progress(55, "Instalando o motor do banco de dados...")
-    run_command("apt-get install -y postgresql postgresql-contrib")
+    pg_pkgs = get_pg_packages()
+    install_cmd = f"{get_pkg_cmd('install')} {pg_pkgs}"
+    run_command_stream(install_cmd)
     update_progress(90, "PostgreSQL instalado.")
 
     # Passo 8: Ativação e Validação (90% -> 100%)
     update_progress(95, "Ativando serviços...")
-    run_command("systemctl start postgresql")
+    
+    # Iniciar serviço depende da distro
+    if DISTRO == "ARCH":
+        run_command("systemctl start postgresql")
+        run_command("postgresql-setup --initdb", check=False) # Init se necessário
+    elif DISTRO == "RHEL":
+        run_command("postgresql-setup --initdb", check=False)
+        run_command("systemctl enable postgresql")
+        run_command("systemctl start postgresql")
+    else: # DEBIAN
+        run_command("systemctl start postgresql")
     
     # Validação do Socket
     db_ready = False
