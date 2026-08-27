@@ -3,200 +3,369 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Instalador do Sistema</title>
+    <title>Instalador Web Unificado - Astral Platform</title>
     <style>
+        :root {
+            --primary-color: #2563eb;
+            --success-color: #16a34a;
+            --bg-color: #f3f4f6;
+            --card-bg: #ffffff;
+            --text-color: #1f2937;
+        }
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f0f2f5;
+            background-color: var(--bg-color);
+            color: var(--text-color);
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
         }
+
         .container {
-            background: white;
+            background-color: var(--card-bg);
             padding: 2rem;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            width: 400px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            width: 100%;
+            max-width: 500px;
             text-align: center;
         }
-        h2 { color: #333; margin-bottom: 1.5rem; }
-        
+
+        h1 {
+            color: var(--primary-color);
+            margin-bottom: 1.5rem;
+            font-size: 1.8rem;
+        }
+
         /* Barra de Progresso */
         .progress-container {
-            background-color: #e0e0e0;
-            border-radius: 20px;
-            height: 20px;
+            background-color: #e5e7eb;
+            border-radius: 9999px;
+            height: 24px;
             width: 100%;
-            margin: 20px 0;
+            margin: 1.5rem 0;
             overflow: hidden;
+            position: relative;
         }
+
         .progress-bar {
-            background-color: #4caf50;
+            background-color: var(--primary-color);
             height: 100%;
             width: 0%;
-            transition: width 0.5s ease;
-            border-radius: 20px;
+            border-radius: 9999px;
+            transition: width 0.4s ease, background-color 0.4s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 0.75rem;
+            font-weight: bold;
         }
+
+        .progress-bar.success {
+            background-color: var(--success-color);
+        }
+
         .status-text {
-            color: #666;
-            font-size: 0.9rem;
-            margin-top: 10px;
+            font-size: 0.95rem;
+            color: #4b5563;
+            margin-bottom: 1rem;
+            min-height: 1.5em;
+        }
+
+        .package-log {
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.85rem;
+            color: #6b7280;
+            background: #f9fafb;
+            padding: 0.5rem;
+            border-radius: 6px;
+            margin-top: 0.5rem;
+            border: 1px solid #e5e7eb;
+            display: none; /* Escondido até começar a instalar pacotes */
         }
 
         /* Formulário */
         .form-group {
-            margin-bottom: 15px;
+            margin-bottom: 1rem;
             text-align: left;
         }
+
         label {
             display: block;
-            margin-bottom: 5px;
-            color: #333;
-            font-weight: bold;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            font-size: 0.9rem;
         }
-        input {
+
+        input[type="text"],
+        input[type="password"] {
             width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            box-sizing: border-box;
+            padding: 0.75rem;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 1rem;
+            box-sizing: border-box; /* Garante que padding não estoure a largura */
         }
+
+        input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
         button {
-            background-color: #007bff;
+            background-color: var(--primary-color);
             color: white;
             border: none;
-            padding: 12px 20px;
-            border-radius: 5px;
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            border-radius: 6px;
             cursor: pointer;
             width: 100%;
-            font-size: 1rem;
-            margin-top: 10px;
+            font-weight: 600;
+            transition: background-color 0.2s;
         }
-        button:hover { background-color: #0056b3; }
-        
-        .hidden { display: none; }
-        .success { color: green; }
-        .error { color: red; }
+
+        button:hover {
+            background-color: #1d4ed8;
+        }
+
+        button:disabled {
+            background-color: #9ca3af;
+            cursor: not-allowed;
+        }
+
+        /* Utilitários de Visibilidade */
+        .hidden {
+            display: none !important;
+        }
+
+        /* Dashboard Simulado */
+        .dashboard-preview {
+            text-align: left;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 1rem;
+        }
+        .dash-header {
+            background: #1f2937;
+            color: white;
+            padding: 1rem;
+            font-weight: bold;
+        }
+        .dash-body {
+            padding: 1rem;
+            display: flex;
+            gap: 1rem;
+        }
+        .sidebar {
+            width: 30%;
+            background: #f3f4f6;
+            padding: 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+        .sidebar ul { list-style: none; padding: 0; }
+        .sidebar li { margin-bottom: 0.5rem; color: #4b5563; }
+        .content-area {
+            width: 70%;
+            background: white;
+            border: 1px dashed #d1d5db;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #9ca3af;
+            border-radius: 4px;
+        }
+
     </style>
 </head>
 <body>
 
     <div class="container">
-        <!-- Tela de Progresso (Passos 4-8) -->
-        <div id="progress-screen">
-            <h2>Instalando Sistema...</h2>
+        <!-- Tela de Instalação -->
+        <div id="install-screen">
+            <h1>Instalando Sistema</h1>
+            
+            <div class="status-text" id="status-text">Conectando ao servidor...</div>
+            
             <div class="progress-container">
-                <div class="progress-bar" id="progress-bar"></div>
+                <div class="progress-bar" id="progress-bar">0%</div>
             </div>
-            <p class="status-text" id="status-text">Conectando...</p>
+
+            <div class="package-log" id="package-log">
+                Instalando pacote: ...
+            </div>
         </div>
 
-        <!-- Tela de Formulário (Passo 9) -->
-        <div id="form-screen" class="hidden">
-            <h2>Configuração Final</h2>
-            <p style="color: #666; font-size: 0.9rem;">Crie o usuário administrador do banco de dados.</p>
+        <!-- Tela de Credenciais -->
+        <div id="credential-screen" class="hidden">
+            <h1>Configuração do Banco</h1>
+            <p style="color: #6b7280; font-size: 0.9rem; margin-bottom: 1.5rem;">
+                O PostgreSQL foi instalado com sucesso. Defina o usuário mestre e a senha para a database <strong>astral</strong>.
+            </p>
             
-            <div class="form-group">
-                <label for="username">Usuário Administrador</label>
-                <input type="text" id="username" placeholder="ex: admin">
-            </div>
-            
-            <div class="form-group">
-                <label for="password">Senha Master do Banco</label>
-                <input type="password" id="password" placeholder="••••••••">
-            </div>
+            <form id="setup-form">
+                <div class="form-group">
+                    <label for="username">Usuário Administrador</label>
+                    <input type="text" id="username" name="username" required placeholder="ex: admin">
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Senha Master</label>
+                    <input type="password" id="password" name="password" required placeholder="••••••••">
+                </div>
 
-            <button onclick="submitData()">Salvar e Inicializar Sistema</button>
-            <p id="form-message" style="margin-top: 10px;"></p>
+                <button type="submit" id="btn-save">Salvar e Inicializar Sistema</button>
+            </form>
+            <p id="form-error" style="color: #dc2626; font-size: 0.85rem; margin-top: 1rem;" class="hidden"></p>
         </div>
 
-        <!-- Tela de Sucesso (Passo 10 - Dashboard Simulado) -->
-        <div id="dashboard-screen" class="hidden">
-            <h2 class="success">Sistema Pronto!</h2>
-            <p>Bem-vindo ao seu novo ambiente.</p>
-            <div style="text-align: left; background: #f9f9f9; padding: 15px; border-radius: 5px; margin-top: 20px;">
-                <strong>Menu Principal:</strong>
-                <ul>
-                    <li>Dashboard</li>
-                    <li>Configurações</li>
-                    <li>Relatórios</li>
-                    <li>Usuários</li>
-                </ul>
+        <!-- Tela de Sucesso / Dashboard -->
+        <div id="success-screen" class="hidden">
+            <h1 style="color: var(--success-color);">Sistema Pronto!</h1>
+            <p>Configuração concluída com sucesso.</p>
+            
+            <button onclick="location.reload()" style="background-color: var(--success-color); margin-top: 1rem;">
+                Concluir e Iniciar Sistema
+            </button>
+
+            <!-- Preview do Dashboard Desbloqueado -->
+            <div class="dashboard-preview">
+                <div class="dash-header">Astral Platform Dashboard</div>
+                <div class="dash-body">
+                    <div class="sidebar">
+                        <ul>
+                            <li>📊 Visão Geral</li>
+                            <li>👥 Usuários</li>
+                            <li>⚙️ Configurações</li>
+                            <li>🔒 Segurança</li>
+                        </ul>
+                    </div>
+                    <div class="content-area">
+                        Área de Conteúdo Principal
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        const progressBar = document.getElementById('progress-bar');
         const statusText = document.getElementById('status-text');
-        const progressScreen = document.getElementById('progress-screen');
-        const formScreen = document.getElementById('form-screen');
-        const dashboardScreen = document.getElementById('dashboard-screen');
-        const formMessage = document.getElementById('form-message');
+        const progressBar = document.getElementById('progress-bar');
+        const packageLog = document.getElementById('package-log');
+        
+        const installScreen = document.getElementById('install-screen');
+        const credentialScreen = document.getElementById('credential-screen');
+        const successScreen = document.getElementById('success-screen');
+        
+        const setupForm = document.getElementById('setup-form');
+        const formError = document.getElementById('form-error');
 
-        // Passo 4: Conexão SSE
-        const eventSource = new EventSource('/api/stream');
+        let eventSource = null;
 
-        eventSource.onmessage = function(event) {
-            const data = JSON.parse(event.data);
-            
-            // Atualiza barra e texto
-            progressBar.style.width = data.porcentagem + '%';
-            statusText.textContent = data.status;
+        function connectSSE() {
+            eventSource = new EventSource('/api/stream');
 
-            // Passo 9: Transição para Formulário ao atingir 100%
-            if (data.porcentagem >= 100) {
-                eventSource.close();
-                setTimeout(() => {
-                    progressScreen.classList.add('hidden');
-                    formScreen.classList.remove('hidden');
-                }, 1000);
-            }
-        };
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                
+                // Atualiza texto de status
+                statusText.textContent = data.status;
 
-        eventSource.onerror = function() {
-            statusText.textContent = "Erro de conexão. Recarregue a página.";
-            statusText.classList.add('error');
-        };
+                // Atualiza barra de progresso
+                progressBar.style.width = data.porcentagem + '%';
+                progressBar.textContent = data.porcentagem + '%';
 
-        // Passo 10: Envio de Dados
-        async function submitData() {
+                // Lógica específica para instalação de pacotes (Passo 7)
+                if (data.status.includes("Instalando pacote:") || data.status.includes("postgresql")) {
+                    packageLog.style.display = 'block';
+                    packageLog.textContent = data.status;
+                    
+                    // Se chegou em 90% ou mais e o status indica conclusão da instalação do PG
+                    if (data.porcentagem >= 90 && data.status.includes("instalado")) {
+                         // Pequeno delay para UX antes de trocar de tela
+                         setTimeout(() => {
+                             showCredentials();
+                         }, 1000);
+                    }
+                }
+
+                // Conclusão total da instalação (antes do form)
+                if (data.porcentagem === 100 && data.status === "Instalação concluída!") {
+                    progressBar.classList.add('success');
+                    packageLog.style.display = 'none';
+                    showCredentials();
+                }
+            };
+
+            eventSource.onerror = function(err) {
+                console.error("Erro no SSE:", err);
+                // Não fecha automaticamente para permitir reconexão se o backend reiniciar, 
+                // mas no nosso fluxo ele fecha ao chegar em 100%
+                if (eventSource.readyState === EventSource.CLOSED) {
+                    // Se fechou e não estamos na tela de creds/sucesso, algo deu errado
+                    if (!credentialScreen.classList.contains('hidden') || !successScreen.classList.contains('hidden')) {
+                        return; // Já terminou
+                    }
+                    statusText.textContent = "Conexão perdida. Recarregue a página.";
+                    statusText.style.color = "#dc2626";
+                }
+            };
+        }
+
+        function showCredentials() {
+            if (eventSource) eventSource.close();
+            installScreen.classList.add('hidden');
+            credentialScreen.classList.remove('hidden');
+        }
+
+        function showSuccess() {
+            credentialScreen.classList.add('hidden');
+            successScreen.classList.remove('hidden');
+        }
+
+        setupForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
+            const btn = document.getElementById('btn-save');
 
-            if (!username || !password) {
-                formMessage.textContent = "Preencha todos os campos!";
-                formMessage.className = "error";
-                return;
-            }
-
-            formMessage.textContent = "Processando...";
-            formMessage.className = "";
+            btn.disabled = true;
+            btn.textContent = "Processando...";
+            formError.classList.add('hidden');
 
             try {
                 const response = await fetch('/api/setup-db', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
                     body: JSON.stringify({ username, password })
                 });
 
                 const result = await response.json();
 
-                if (response.ok) {
-                    formScreen.classList.add('hidden');
-                    dashboardScreen.classList.remove('hidden');
+                if (response.ok && result.success) {
+                    showSuccess();
                 } else {
-                    formMessage.textContent = "Erro: " + result.error;
-                    formMessage.className = "error";
+                    throw new Error(result.error || "Falha ao criar usuário");
                 }
             } catch (error) {
-                formMessage.textContent = "Erro de rede: " + error.message;
-                formMessage.className = "error";
+                formError.textContent = error.message;
+                formError.classList.remove('hidden');
+                btn.disabled = false;
+                btn.textContent = "Salvar e Inicializar Sistema";
             }
-        }
+        });
+
+        // Inicia conexão ao carregar
+        connectSSE();
     </script>
 </body>
 </html>
