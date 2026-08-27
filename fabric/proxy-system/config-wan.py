@@ -76,50 +76,50 @@ def normalize_mac_address(mac: str) -> Optional[str]:
 def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str]):
     """Aplica um conjunto robusto de regras de firewall."""
     print("\n== Aplicando regras avançadas de firewall ==")
-    
+
     # Limpa todas as regras existentes para um estado limpo
     run_command("iptables -F", dry_run=dry_run)
     run_command("iptables -X", dry_run=dry_run)
     run_command("iptables -t nat -F", dry_run=dry_run)
     run_command("iptables -t nat -X", dry_run=dry_run)
-    
+
     # Políticas padrão: DROP para segurança máxima
     run_command("iptables -P INPUT DROP", dry_run=dry_run)
     run_command("iptables -P FORWARD DROP", dry_run=dry_run)
     run_command("iptables -P OUTPUT ACCEPT", dry_run=dry_run)
-    
+
     # Regras essenciais de INPUT
     run_command("iptables -A INPUT -i lo -j ACCEPT", dry_run=dry_run)
     run_command("iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", dry_run=dry_run)
-    
+
     # Proteção contra ataques
     run_command("iptables -A INPUT -p tcp --tcp-flags ALL NONE -j DROP", dry_run=dry_run)
     run_command("iptables -A INPUT -p tcp ! --syn -m conntrack --ctstate NEW -j DROP", dry_run=dry_run)
     run_command("iptables -A INPUT -p tcp --tcp-flags ALL ALL -j DROP", dry_run=dry_run)
-    
+
     # Proteção contra SYN floods
     run_command("iptables -N syn_flood", dry_run=dry_run)
     run_command("iptables -A syn_flood -m limit --limit 1/s --limit-burst 3 -j RETURN", dry_run=dry_run)
     run_command("iptables -A syn_flood -j DROP", dry_run=dry_run)
     run_command("iptables -A INPUT -p tcp --syn -j syn_flood", dry_run=dry_run)
-    
+
     # Proteção contra port scans
     run_command("iptables -N port_scan", dry_run=dry_run)
     run_command("iptables -A port_scan -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 1/s -j RETURN", dry_run=dry_run)
     run_command("iptables -A port_scan -j DROP", dry_run=dry_run)
     run_command("iptables -A INPUT -p tcp --tcp-flags SYN,ACK,FIN,RST RST -j port_scan", dry_run=dry_run)
-    
+
     # Regras de FORWARD e NAT
     for lan_iface in lan_ifaces:
         run_command(f"iptables -A FORWARD -i {shlex.quote(lan_iface)} -o {shlex.quote(wan_iface)} -j ACCEPT", dry_run=dry_run)
         run_command(f"iptables -A FORWARD -i {shlex.quote(wan_iface)} -o {shlex.quote(lan_iface)} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", dry_run=dry_run)
-    
+
     run_command(f"iptables -t nat -A POSTROUTING -o {shlex.quote(wan_iface)} -j MASQUERADE", dry_run=dry_run)
-    
+
     # Logging de pacotes bloqueados
     run_command("iptables -A INPUT -m limit --limit 5/min -j LOG --log-prefix \"iptables-denied: \" --log-level 7", dry_run=dry_run)
     run_command("iptables -A INPUT -j DROP", dry_run=dry_run)
-    
+
     print("✅ Regras de firewall aplicadas.")
 
 def configure_dns(dry_run: bool, wan_iface: str, dns_servers: List[str]):
@@ -128,9 +128,17 @@ def configure_dns(dry_run: bool, wan_iface: str, dns_servers: List[str]):
     if shutil.which("nmcli"):
         dns_str = " ".join(dns_servers)
         print(f"Configurando DNS via NetworkManager: {dns_str}")
-        run_command(f"nmcli con mod {shlex.quote(wan_iface)} ipv4.dns \"{dns_str}\"", dry_run=dry_run)
-        run_command(f"nmcli con mod {shlex.quote(wan_iface)} ipv4.ignore-auto-dns yes", dry_run=dry_run)
-        run_command(f"nmcli con up {shlex.quote(wan_iface)}", dry_run=dry_run)
+
+        # Busca o nome da conexão atrelada ao device
+        get_con_cmd = f"nmcli -t -f NAME,DEVICE con show | awk -F: '$2==\"{wan_iface}\" {{print $1}}'"
+        con_name = get_command_output(get_con_cmd, dry_run=dry_run)
+
+        if con_name:
+            run_command(f"nmcli con mod {shlex.quote(con_name)} ipv4.dns \"{dns_str}\"", dry_run=dry_run)
+            run_command(f"nmcli con mod {shlex.quote(con_name)} ipv4.ignore-auto-dns yes", dry_run=dry_run)
+            run_command(f"nmcli con up {shlex.quote(con_name)}", dry_run=dry_run)
+        else:
+            print(f"Aviso: Não encontrou conexão ativa atrelada ao device {wan_iface}.")
     else:
         print("NetworkManager (nmcli) não encontrado. Configurando /etc/resolv.conf diretamente.")
         resolv_conf_content = ""
@@ -225,7 +233,7 @@ def main_interactive():
         mac_spoof = mac_raw
 
     configure_wan_static(dry_run, wan_iface, public_ip, public_mask, public_gw, mac_spoof, dns_servers)
-    
+
     lan_ifaces = []
     if ask_yes_no("Deseja configurar interfaces de LAN/VLAN?"):
         ifaces_str = ask_question("Digite as interfaces de LAN/VLAN separadas por vírgula (ex: eth1,eth2.10)")
