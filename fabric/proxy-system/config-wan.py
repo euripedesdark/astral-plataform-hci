@@ -59,7 +59,7 @@ def install_packages(packages: List[str], os_family: str, dry_run: bool):
     print(f"📦 Instalando pacotes nativos ({pkgs_str})...")
 
     if os_family == "redhat":
-        run_command(f"dnf install -y {pkgs_str}", dry_run=dry_run)
+        run_command(f"yum install -y {pkgs_str}", dry_run=dry_run)
     elif os_family == "debian":
         run_command("apt-get update", dry_run=dry_run, check=False)
         run_command(f"DEBIAN_FRONTEND=noninteractive apt-get install -y {pkgs_str}", dry_run=dry_run)
@@ -249,7 +249,6 @@ def setup_kea_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, str,
     kea_pkg = "kea-dhcp4-server" if os_family == "debian" else "kea"
     kea_svc = "kea-dhcp4-server" if os_family == "debian" else "kea-dhcp4"
 
-    # CORREÇÃO AQUI: Verifica estritamente a existência do binário executável.
     if not shutil.which(kea_svc) and not os.path.exists(f"/usr/sbin/{kea_svc}"):
         install_packages([kea_pkg], os_family, dry_run)
 
@@ -283,9 +282,13 @@ def setup_kea_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, str,
     if not dry_run:
         os.makedirs(kea_conf_dir, exist_ok=True)
         os.makedirs("/var/lib/kea", exist_ok=True)
-        with open(kea_conf_file, "w") as f: f.write(json_output)
 
-        # Habilita e reinicia o serviço
+        # Corrige permissões caso o pacote crie o usuário kea
+        run_command("chown -R kea:kea /var/lib/kea /etc/kea 2>/dev/null || true", dry_run=dry_run, check=False)
+
+        with open(kea_conf_file, "w") as f:
+            f.write(json_output)
+
         run_command(f"systemctl enable {kea_svc}", dry_run=dry_run)
         run_command(f"systemctl restart {kea_svc}", dry_run=dry_run)
         print(f"✅ Kea DHCP configurado ({kea_svc})!")
@@ -326,7 +329,7 @@ def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str], s
         install_packages(["iptables-nft"], os_family, dry_run)
         run_command("mkdir -p /etc/iptables && iptables-save > /etc/iptables/iptables.rules", dry_run=dry_run)
         run_command("systemctl enable iptables", dry_run=dry_run)
-    else: # RedHat, SUSE
+    else:
         run_command("mkdir -p /etc/sysconfig && iptables-save > /etc/sysconfig/iptables", dry_run=dry_run)
         run_command("systemctl enable iptables || true", dry_run=dry_run, check=False)
 
