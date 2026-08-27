@@ -167,7 +167,7 @@ def disable_nm_dns_overwrite(dry_run: bool, dns_servers: List[str]):
             for server in dns_servers:
                 f.write(f"nameserver {server}\n")
 
-        run_command("systemctl reload NetworkManager", dry_run=dry_run)
+        run_command("systemctl reload NetworkManager", dry_run=dry_run, check=False)
     else:
         print(f"[dry-run] Criaria o arquivo {dns_conf_file} com a instrução '[main]\\ndns=none'")
 
@@ -246,11 +246,13 @@ def process_lan_vlan(dry_run: bool, iface: str) -> str:
 def setup_kea_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, str, str, str]], dns_servers: List[str], domain_name: str, os_family: str):
     print("\n== Configurando Servidor DHCP (Kea) ==")
 
-    kea_pkg = "kea-dhcp4-server" if os_family == "debian" else "kea"
+    kea_pkgs = "kea-dhcp4-server" if os_family == "debian" else "kea kea-dhcp4"
     kea_svc = "kea-dhcp4-server" if os_family == "debian" else "kea-dhcp4"
 
-    if not shutil.which(kea_svc) and not os.path.exists(f"/usr/sbin/{kea_svc}"):
-        install_packages([kea_pkg], os_family, dry_run)
+    # Checagem blindada no Systemd em vez de olhar arquivo solto
+    svc_check = run_command(f"systemctl list-unit-files {kea_svc}.service", check=False, dry_run=dry_run)
+    if svc_check.returncode != 0:
+        install_packages(kea_pkgs.split(), os_family, dry_run)
 
     kea_conf_dir = "/etc/kea"
     kea_conf_file = os.path.join(kea_conf_dir, "kea-dhcp4.conf")
@@ -283,15 +285,20 @@ def setup_kea_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, str,
         os.makedirs(kea_conf_dir, exist_ok=True)
         os.makedirs("/var/lib/kea", exist_ok=True)
 
-        # Corrige permissões caso o pacote crie o usuário kea
-        run_command("chown -R kea:kea /var/lib/kea /etc/kea 2>/dev/null || true", dry_run=dry_run, check=False)
+        # Garante que o arquivo de leases não tome erro de permissão
+        run_command("chmod 777 /var/lib/kea", dry_run=dry_run, check=False)
 
         with open(kea_conf_file, "w") as f:
             f.write(json_output)
 
-        run_command(f"systemctl enable {kea_svc}", dry_run=dry_run)
-        run_command(f"systemctl restart {kea_svc}", dry_run=dry_run)
-        print(f"✅ Kea DHCP configurado ({kea_svc})!")
+        # Configurado para NÃO crashear o script se o Kea falhar
+        run_command(f"systemctl enable {kea_svc}", dry_run=dry_run, check=False)
+        restart_check = run_command(f"systemctl restart {kea_svc}", dry_run=dry_run, check=False)
+
+        if restart_check.returncode == 0:
+            print(f"✅ Kea DHCP configurado e rodando ({kea_svc})!")
+        else:
+            print(f"❌ Aviso: Kea DHCP falhou ao iniciar. Verifique com: journalctl -xeu {kea_svc}")
     else:
         print(f"[dry-run] Criaria o arquivo {kea_conf_file} com configuração JSON.")
 
@@ -324,11 +331,11 @@ def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str], s
     if os_family == "debian":
         install_packages(["iptables-persistent"], os_family, dry_run)
         run_command("mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4", dry_run=dry_run)
-        run_command("systemctl enable netfilter-persistent", dry_run=dry_run)
+        run_command("systemctl enable netfilter-persistent", dry_run=dry_run, check=False)
     elif os_family == "arch":
         install_packages(["iptables-nft"], os_family, dry_run)
         run_command("mkdir -p /etc/iptables && iptables-save > /etc/iptables/iptables.rules", dry_run=dry_run)
-        run_command("systemctl enable iptables", dry_run=dry_run)
+        run_command("systemctl enable iptables", dry_run=dry_run, check=False)
     else:
         run_command("mkdir -p /etc/sysconfig && iptables-save > /etc/sysconfig/iptables", dry_run=dry_run)
         run_command("systemctl enable iptables || true", dry_run=dry_run, check=False)
