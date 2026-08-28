@@ -7,7 +7,7 @@ Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
 Inclui abertura de firewall (exclusivo via iptables), Node.js/React, Oracle Java 21, Nginx e PostgreSQL.
-Autodestruição blindada ativada na criação do banco (1 minuto).
+Configura Nginx para servir frontend estático e proxy apenas para /api/.
 """
 
 import os
@@ -265,7 +265,7 @@ def installation_thread():
     success_nginx = True
 
     if nginx_installed:
-        print("[INFO] Nginx já está instalado no sistema. Pulando download do pacote.")
+        print("[INFO] Nginx já está instalado no sistema. Pulando download.")
     else:
         success_nginx = run_command_stream(f"{install_cmd_base} nginx")
 
@@ -273,23 +273,32 @@ def installation_thread():
         subprocess.run("systemctl disable --now httpd", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run("systemctl disable --now apache2", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+        # Elimina a escuta IPv6 do arquivo padrão de fábrica para evitar o erro 97
+        subprocess.run("sed -i 's/.*listen.*\\[::\\]:80.*/#&/' /etc/nginx/nginx.conf 2>/dev/null", shell=True)
+
         print("[INFO] Gerando configuração avançada do Nginx via Python...")
         host_fqdn = socket.getfqdn()
         frontend_path = os.path.join(APP_DIR, "fabric", "frontend")
+
+        # Ajuste de Permissões SELinux para RHEL (Permite ler frontend e fazer Proxy)
+        if distro == 'rhel':
+            subprocess.run("setsebool -P httpd_can_network_connect 1 2>/dev/null", shell=True)
+            subprocess.run(f"chcon -Rt httpd_sys_content_t {frontend_path} 2>/dev/null", shell=True)
 
         nginx_conf = f"""server {{
     listen 80;
     server_name {host_fqdn};
 
-    # Servir arquivos estáticos do frontend (login.html, css, js, imagens)
+    # Servir arquivos estáticos do frontend nativamente (HTML/CSS/JS/Imagens)
     root {frontend_path};
-    index login.html;
+    index login.html index.html;
 
+    # Se acessar a raiz, entrega o login.html
     location / {{
         try_files $uri $uri/ /login.html;
     }}
 
-    # Requisições de API vão para o backend Spring Boot
+    # Requisições de API vão para o backend Spring Boot (ainda desligado)
     location /api/ {{
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
@@ -406,7 +415,7 @@ def installation_thread():
 
         subprocess.run("systemctl enable nginx", shell=True, capture_output=True)
         subprocess.run("systemctl restart nginx", shell=True, capture_output=True)
-        print("[OK] Nginx inicializado e configurado.")
+        print("[OK] Nginx inicializado e configurado (Estático + Proxy).")
 
     update_progress(80, "Nginx configurado.")
 
@@ -551,7 +560,6 @@ if __name__ == '__main__':
             if res_db.returncode != 0 and "already exists" not in res_db.stderr:
                 return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
 
-            # Bomba-relógio programada: 1 minuto (60 segundos) após finalizar com sucesso, o script desliga.
             print("\n[INFO] Banco de dados configurado! Agendando encerramento do instalador para 1 minuto...")
             threading.Timer(60.0, lambda: os._exit(0)).start()
 
