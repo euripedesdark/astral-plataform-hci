@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Instalador Web Unificado - Fluxo Lógico
+Instalador Web Unificado - Fluxo Lógico e Autossuficiente de Dependências
 Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
-Autossuficiente: Instala pip e flask se necessário.
-Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
-Inclui abertura de firewall (exclusivo via iptables), Node.js/React, Oracle Java 21, Nginx e PostgreSQL.
-Configura Nginx apontando a raiz para /fabric/frontend/login nativamente.
+Garante drivers e dependências para Python (Flask/Psycopg2), Node.js (Express/PG) e Java (Spring/PostgreSQL JDBC).
 """
 
 import os
@@ -82,7 +79,7 @@ def detect_pg_service():
     return "postgresql"
 
 def configure_firewall():
-    ports_to_open = [22, 80, 443, 3000, PORT, 5173, 5432, EXTRA_PORT]
+    ports_to_open = [22, 80, 443, 3000, PORT, 5173, 5432, 8081, EXTRA_PORT]
 
     print("[INFO] Exterminando firewalld/ufw para uso exclusivo do iptables...")
     subprocess.run("systemctl stop firewalld ufw 2>/dev/null || true", shell=True)
@@ -109,47 +106,77 @@ def configure_firewall():
     except Exception as e:
         print(f"[AVISO] Falha ao injetar portas no iptables: {e}")
 
-def ensure_flask_installed():
-    try:
-        import flask
-        print("[OK] Flask já está instalado.")
-        return True
-    except ImportError:
-        print("[!] Flask não encontrado. Instalando automaticamente...")
-        distro = detect_distro()
+def ensure_dependencies_installed():
+    print("[INFO] Assegurando dependências globais de Python (Flask, Psycopg2)...")
+    distro = detect_distro()
 
-        pip_install_cmd = ""
-        if distro == 'debian':
-            pip_install_cmd = "apt-get update && apt-get install -y python3-pip"
-        elif distro == 'rhel':
-            pip_install_cmd = "dnf install -y python3-pip"
-        elif distro == 'arch':
-            pip_install_cmd = "pacman -Sy --noconfirm python-pip"
-        else:
-            print("[ERRO] Distribuição não suportada para instalação automática.")
-            return False
+    pip_install_cmd = "apt-get update && apt-get install -y python3-pip python3-psycopg2"
+    if distro == 'rhel':
+        pip_install_cmd = "dnf install -y python3-pip python3-psycopg2"
+    elif distro == 'arch':
+        pip_install_cmd = "pacman -Sy --noconfirm python-pip python-psycopg2"
 
-        print(f"[INFO] Instalando pip ({distro})...")
-        res_pip = subprocess.run(pip_install_cmd, shell=True, capture_output=True, text=True)
-        if res_pip.returncode != 0:
-            print(f"[ERRO] Falha ao instalar pip: {res_pip.stderr}")
-            return False
+    subprocess.run(pip_install_cmd, shell=True, capture_output=True)
+    subprocess.run("pip3 install flask psycopg2-binary --break-system-packages 2>/dev/null || true", shell=True)
 
-        pip_flask_cmd = "pip3 install flask --break-system-packages"
-        print("[INFO] Instalando Flask via pip...")
-        res_flask = subprocess.run(pip_flask_cmd, shell=True, capture_output=True, text=True)
-
-        if res_flask.returncode != 0:
-            res_flask_retry = subprocess.run(
-                "pip3 install flask --break-system-packages --trusted-host pypi.org --trusted-host files.pythonhosted.org",
-                shell=True, capture_output=True, text=True
-            )
-            if res_flask_retry.returncode != 0:
-                print(f"[ERRO] Falha ao instalar Flask via pip: {res_flask_retry.stderr}")
-                return False
-
-        print("[OK] Flask instalado com sucesso via pip.")
-        return True
+def inject_java_pom_template():
+    """Cria um pom.xml padrão na raiz se não existir, garantindo as libs do PostgreSQL e Web para Java."""
+    pom_path = os.path.join(APP_DIR, "pom.xml")
+    if not os.path.exists(pom_path):
+        print("[INFO] Injetando template de dependências Maven (pom.xml) para Java/Spring Boot/PostgreSQL...")
+        pom_content = """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+        <relativePath/>
+    </parent>
+    <groupId>com.astral</groupId>
+    <artifactId>astral-platform</artifactId>
+    <version>1.0.0</version>
+    <name>astral-platform</name>
+    <description>Astral Platform Backend</description>
+    <properties>
+        <java.version>21</java.version>
+    </properties>
+    <dependencies>
+        <!-- Spring Boot Web para APIs REST -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- Spring Data JPA para Banco de Dados -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <!-- Driver PostgreSQL JDBC -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+"""
+        try:
+            with open(pom_path, "w") as f:
+                f.write(pom_content)
+            print("[OK] pom.xml injetado com sucesso na raiz do projeto.")
+        except Exception as e:
+            print(f"[AVISO] Não foi possível criar o pom.xml automático: {e}")
 
 def run_command_stream(cmd, shell=True):
     print(f"\n[SISTEMA] Executando: {cmd}")
@@ -181,6 +208,8 @@ def installation_thread():
     time.sleep(2)
 
     configure_firewall()
+    ensure_dependencies_installed()
+    inject_java_pom_template()
 
     distro = detect_distro()
     update_cmd = ""
@@ -203,33 +232,18 @@ def installation_thread():
     run_command_stream(update_cmd)
     update_progress(15, "Repositórios sincronizados.")
 
-    update_progress(20, "Verificando ambiente Node.js e ReactJS...")
+    update_progress(20, "Verificando Node.js, NPM e dependências JS (pg/express)...")
     node_installed = shutil.which("node") or shutil.which("nodejs")
     npm_installed = shutil.which("npm")
 
-    success_node = True
-    if node_installed and npm_installed:
-        print("[INFO] Node.js e NPM já estão instalados.")
-    else:
-        print("[INFO] Instalando pacotes base do Node.js...")
-        if distro == 'debian':
-            node_pkg = "nodejs npm curl"
-        elif distro == 'rhel':
-            node_pkg = "nodejs nodejs-npm curl"
-        else:
-            node_pkg = "nodejs npm curl"
+    if not (node_installed and npm_installed):
+        print("[INFO] Instalando Node.js e NPM...")
+        node_pkg = "nodejs npm curl" if distro != 'rhel' else "nodejs nodejs-npm curl"
+        run_command_stream(f"{install_cmd_base} {node_pkg}")
 
-        success_node = run_command_stream(f"{install_cmd_base} {node_pkg}")
-
-    if success_node:
-        if shutil.which("npm"):
-            cra_installed = shutil.which("create-react-app")
-            vite_installed = shutil.which("vite")
-
-            if not (cra_installed and vite_installed):
-                print("[INFO] Instalando ambiente ReactJS globalmente...")
-                subprocess.run("npm install -g create-react-app vite", shell=True, capture_output=True)
-    update_progress(35, "Node.js e ReactJS prontos.")
+    # Instala dependência nativa de banco para JavaScript globalmente ou na pasta
+    subprocess.run("npm install -g pg express cors 2>/dev/null || true", shell=True)
+    update_progress(35, "Ambiente JS e dependências prontos.")
 
     update_progress(40, "Avaliando instalação do Oracle Java 21 LTS...")
     java_check = subprocess.run("java -version", shell=True, capture_output=True, text=True)
@@ -265,7 +279,7 @@ def installation_thread():
     success_nginx = True
 
     if nginx_installed:
-        print("[INFO] Nginx já está instalado no sistema. Pulando download do pacote.")
+        print("[INFO] Nginx já está instalado no sistema. Pulando download.")
     else:
         success_nginx = run_command_stream(f"{install_cmd_base} nginx")
 
@@ -282,18 +296,15 @@ def installation_thread():
         # Garante permissão recursiva para o Nginx conseguir ler pastas, CSS, imagens e JS
         subprocess.run(f"chmod -R 755 {frontend_path} 2>/dev/null", shell=True)
 
-        # Garante a permissão de travessia do Linux (DAC) para o Nginx chegar até o /home/user/...
         current_path = frontend_path
         while current_path != '/':
             subprocess.run(f"chmod o+x {current_path} 2>/dev/null", shell=True)
             current_path = os.path.dirname(current_path)
 
-        # Ajuste de Permissões SELinux para RHEL
         if distro == 'rhel':
             subprocess.run("setsebool -P httpd_can_network_connect 1 2>/dev/null", shell=True)
             subprocess.run(f"chcon -Rt httpd_sys_content_t {frontend_path} 2>/dev/null", shell=True)
 
-        # Ajuste de Permissões AppArmor para Debian/Ubuntu
         if distro == 'debian':
             aa_profile = "/etc/apparmor.d/usr.sbin.nginx"
             aa_override = "/etc/apparmor.d/local/usr.sbin.nginx"
@@ -315,112 +326,95 @@ def installation_thread():
                 except Exception as e:
                     print(f"[AVISO] Falha ao ajustar regras do AppArmor: {e}")
 
-        # AQUI O ROOT APONTA PARA A PASTA LOGIN
         nginx_conf = f"""server {{
     listen 80 default_server;
     server_name _;
 
-    # Servir arquivos estáticos do frontend (Login)
     root {frontend_path}/login;
     index index.html;
 
-    # Se acessar a raiz, entrega o arquivo e impede o erro de loop 500
     location / {{
         try_files $uri $uri/ =404;
     }}
 
-    # Requisições de API vão para o backend Spring Boot (ainda desligado)
     location /api/ {{
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Tela inicial (dashboard Astral Platform)
     location /inicio {{
         proxy_pass http://127.0.0.1:8082;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # DNS Management
     location /dns {{
         proxy_pass http://127.0.0.1:8053;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Sublocação Pi-hole dentro de DNS
     location /dns/pihole {{
         proxy_pass http://127.0.0.1:8081/admin;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Firewall
     location /firewall {{
         proxy_pass http://127.0.0.1:8040;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Proxy System
     location /proxy {{
         proxy_pass http://127.0.0.1:8085;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Domain Controllers
     location /domain {{
         proxy_pass http://127.0.0.1:8090;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # PostgreSQL Admin
     location /postgres {{
         proxy_pass http://127.0.0.1:5433;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Web Server Admin
     location /web {{
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Virtual Machines
     location /vm {{
         proxy_pass http://127.0.0.1:8070;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Storage
     location /storage {{
         proxy_pass http://127.0.0.1:8060;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Network Config & VLAN
     location /network {{
         proxy_pass http://127.0.0.1:8024;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # System Alerts
     location /alerts {{
         proxy_pass http://127.0.0.1:8010;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
-    # Database Telemetry
     location /telemetry {{
         proxy_pass http://127.0.0.1:8015;
         proxy_set_header Host $host;
@@ -446,7 +440,7 @@ def installation_thread():
 
         subprocess.run("systemctl enable nginx", shell=True, capture_output=True)
         subprocess.run("systemctl restart nginx", shell=True, capture_output=True)
-        print("[OK] Nginx inicializado e configurado (Estático + Proxy).")
+        print("[OK] Nginx inicializado e configurado.")
 
     update_progress(80, "Nginx configurado.")
 
@@ -504,7 +498,7 @@ def installation_thread():
         time.sleep(1)
 
     if db_ready:
-        update_progress(100, "Instalação concluída!")
+        update_progress(100, "Instalação concluída com dependências de banco configuradas!")
     else:
         update_progress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.")
 
@@ -530,19 +524,15 @@ if __name__ == '__main__':
             print(f"\n[ERRO] Sem internet e script de rede auxiliar não encontrado: {wan_script}")
             sys.exit(1)
 
-    if not ensure_flask_installed():
-        print("\n[CRÍTICO] Não foi possível prosseguir sem o Flask.")
-        sys.exit(1)
-
     frontend_dir = os.path.join(APP_DIR, 'fabric', 'frontend')
 
+    import flask
     from flask import Flask, send_from_directory, request, jsonify, Response
 
     app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
 
     @app.route('/')
     def index():
-        # O Flask serve especificamente o arquivo install.html
         return send_from_directory(frontend_dir, 'install.html')
 
     @app.route('/api/stream')
@@ -613,13 +603,11 @@ if __name__ == '__main__':
     local_ip = get_local_ip()
 
     print("\n" + "="*60)
-    print("[GIT PROJETO] INSTALADOR WEB ATIVO NA PASTA LOCAL")
+    print("[GIT PROJETO] INSTALADOR WEB ATIVO COM SUPORTE A DEPENDENCIAS DE BANCO")
     print("="*60)
-    print(f"[AÇÃO] Abra o navegador em outra máquina e acesse:")
+    print(f"[AÇÃO] Abra o navegador e acesse:")
     print(f"[ENDEREÇO] http://{local_ip}:{PORT}")
-    print(f"[EXTRA]  Portas 22, 80, 443, 3000, 5000, 5173, 5432 e 9090 verificadas/liberadas.")
     print("="*60 + "\n")
-    print("Aguardando conexão... (Ctrl+C para cancelar)")
 
     t = threading.Thread(target=installation_thread)
     t.daemon = True
