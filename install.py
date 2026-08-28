@@ -62,62 +62,48 @@ def detect_distro():
     return 'unknown'
 
 def configure_firewall():
-    """Abre as portas essenciais (22, 5000, 5432, 9090) no firewall evitando duplicidades."""
+    """Abre as portas essenciais no firewall limpando regras antigas duplicadas."""
     ports_to_open = [22, PORT, 5432, EXTRA_PORT]
     print(f"[INFO] Verificando firewall para as portas {ports_to_open}...")
 
-    # Tenta usar firewalld primeiro (padrão RHEL/Fedora)
     try:
         result = subprocess.run(['systemctl', 'is-active', '--quiet', 'firewalld'])
         if result.returncode == 0:
             print("[INFO] Firewalld detectado. Analisando regras...")
             needs_reload = False
             for p in ports_to_open:
-                # Verifica se a porta já está aberta
                 check = subprocess.run(['firewall-cmd', '--query-port', f'{p}/tcp'], capture_output=True)
                 if check.returncode != 0:
-                    print(f"       -> Abrindo porta {p}/tcp no firewalld...")
                     subprocess.run(['firewall-cmd', '--permanent', '--add-port', f'{p}/tcp'], check=True, capture_output=True)
                     needs_reload = True
-                else:
-                    print(f"       -> Porta {p}/tcp já estava aberta.")
 
             if needs_reload:
                 subprocess.run(['firewall-cmd', '--reload'], check=True, capture_output=True)
-                print("[OK] Firewalld atualizado.")
-            else:
-                print("[OK] Nenhuma alteração necessária no firewalld.")
+            print("[OK] Firewalld configurado.")
             return
     except Exception:
         pass
 
-    # Fallback para iptables
-    print("[INFO] Tentando configurar via iptables...")
+    print("[INFO] Configurando via iptables (limpando duplicidades)...")
     try:
         rules_changed = False
         for p in ports_to_open:
-            # Verifica se a regra já existe (-C verifica a existência da regra)
-            check = subprocess.run(['iptables', '-C', 'INPUT', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], capture_output=True)
-            if check.returncode != 0:
-                print(f"       -> Adicionando regra para porta {p}/tcp no iptables...")
-                subprocess.run(['iptables', '-I', 'INPUT', '1', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], check=True, capture_output=True)
-                rules_changed = True
-            else:
-                print(f"       -> Regra para porta {p}/tcp já existe.")
+            # Loop forçando a exclusão da regra caso exista múltiplas vezes
+            while True:
+                del_check = subprocess.run(['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], capture_output=True)
+                if del_check.returncode != 0:
+                    break
+
+            # Insere a regra de forma limpa e única no topo
+            subprocess.run(['iptables', '-I', 'INPUT', '1', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], check=True, capture_output=True)
+            rules_changed = True
 
         if rules_changed:
             if os.path.exists('/etc/init.d/iptables-persistent') or os.path.exists('/usr/sbin/netfilter-persistent'):
                 subprocess.run(['sh', '-c', 'iptables-save > /etc/iptables/rules.v4'], check=True, capture_output=True)
-                print("[OK] Regras salvas em /etc/iptables/rules.v4")
             elif os.path.exists('/etc/sysconfig/iptables'):
                 subprocess.run(['sh', '-c', 'iptables-save > /etc/sysconfig/iptables'], check=True, capture_output=True)
-                print("[OK] Regras salvas em /etc/sysconfig/iptables")
-            else:
-                print("[AVISO] Regras aplicadas temporariamente. Persistência não detectada.")
-        else:
-            print("[OK] Nenhuma alteração necessária no iptables.")
-
-        print("[OK] Verificação do iptables concluída.")
+        print("[OK] Verificação do iptables concluída e regras aplicadas limpas.")
     except Exception as e:
         print(f"[AVISO] Falha ao configurar firewall automaticamente: {e}")
 
@@ -246,17 +232,24 @@ def installation_thread():
         print("[INFO] Detectado RHEL/Fedora. Inicializando banco de dados...")
         subprocess.run(f"systemctl stop {svc_name}", shell=True, capture_output=True)
 
-        # Verifica se o diretório PGDATA já foi inicializado
+        # O initdb pode falhar se a pasta não estiver com permissão para o usuário postgres
         pgdata_check = subprocess.run("ls -A /var/lib/pgsql/data", shell=True, capture_output=True, text=True)
         if not pgdata_check.stdout.strip():
-            print("[INFO] Inicializando diretório PGDATA limpo...")
-            subprocess.run("/usr/bin/postgresql-setup --initdb", shell=True, capture_output=True)
+            print("[INFO] Inicializando diretório PGDATA...")
+            # Força o setup como o usuário root via binário apropriado e garante chown
+            subprocess.run("chown -R postgres:postgres /var/lib/pgsql", shell=True, capture_output=True)
+            init_res = subprocess.run("/usr/bin/postgresql-setup --initdb", shell=True, capture_output=True, text=True)
+            if init_res.returncode != 0:
+                print(f"[ERRO] Falha no initdb: {init_res.stderr}")
         else:
             print("[INFO] Diretório PGDATA já possui arquivos. Pulando initdb.")
 
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
     elif distro == 'arch':
+        # Arch requer initdb manual geralmente
+        if not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
+            subprocess.run("sudo -u postgres initdb -D /var/lib/postgres/data", shell=True, capture_output=True)
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
     else:
