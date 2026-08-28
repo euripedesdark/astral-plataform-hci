@@ -14,6 +14,7 @@ CORREÇÕES APLICADAS (v2):
 - Erros de systemctl não são mais silenciados (stderr + journalctl visíveis).
 - listen_addresses/pg_hba aplicados de forma idempotente mesmo se o PGDATA já existir.
 - Permissões do PGDATA corrigidas (chown postgres / chmod 700) antes do start.
+- Node.js, NPM e Curl restaurados no fluxo de instalação.
 """
 
 import os
