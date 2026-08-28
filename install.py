@@ -36,7 +36,6 @@ class InstallState:
 state = InstallState()
 
 def check_internet():
-    """Verifica se há conectividade testando a porta DNS do Google."""
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=3)
         return True
@@ -82,7 +81,6 @@ def detect_pg_service():
     return "postgresql"
 
 def configure_firewall():
-    """Força o uso exclusivo do iptables e abre as portas da aplicação."""
     ports_to_open = [22, 80, 443, 3000, PORT, 5173, 5432, EXTRA_PORT]
 
     print("[INFO] Exterminando firewalld/ufw para uso exclusivo do iptables...")
@@ -93,13 +91,11 @@ def configure_firewall():
     try:
         rules_changed = False
         for p in ports_to_open:
-            # Loop forçando a exclusão da regra caso exista múltiplas vezes
             while True:
                 del_check = subprocess.run(['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], capture_output=True)
                 if del_check.returncode != 0:
                     break
 
-            # Insere a regra de forma limpa e única no topo
             subprocess.run(['iptables', '-I', 'INPUT', '1', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], check=True, capture_output=True)
             rules_changed = True
 
@@ -202,12 +198,10 @@ def installation_thread():
         update_progress(0, "Erro: Distro não detectada.")
         return
 
-    # Passo 1: Sincronização
     update_progress(5, "Sincronizando repositórios do Linux...")
     run_command_stream(update_cmd)
     update_progress(15, "Repositórios sincronizados.")
 
-    # Passo 2: Node.js, NPM e React
     update_progress(20, "Verificando ambiente Node.js e ReactJS...")
     node_installed = shutil.which("node") or shutil.which("nodejs")
     npm_installed = shutil.which("npm")
@@ -236,7 +230,6 @@ def installation_thread():
                 subprocess.run("npm install -g create-react-app vite", shell=True, capture_output=True)
     update_progress(35, "Node.js e ReactJS prontos.")
 
-    # Passo 3: Oracle Java 21 LTS
     update_progress(40, "Avaliando instalação do Oracle Java 21 LTS...")
     java_check = subprocess.run("java -version", shell=True, capture_output=True, text=True)
 
@@ -257,7 +250,6 @@ def installation_thread():
 
     update_progress(50, "Oracle Java configurado.")
 
-    # Passo 4: PostgreSQL
     update_progress(55, "Instalando o motor de banco de dados (PostgreSQL)...")
     pg_pkg = "postgresql postgresql-contrib"
     if distro == 'rhel':
@@ -266,13 +258,19 @@ def installation_thread():
     run_command_stream(f"{install_cmd_base} {pg_pkg}")
     update_progress(65, "PostgreSQL instalado.")
 
-    # Passo 5: Nginx e Proxy
     update_progress(70, "Instalando e configurando proxy Nginx...")
-    success_nginx = run_command_stream(f"{install_cmd_base} nginx")
+
+    nginx_installed = shutil.which("nginx")
+    success_nginx = True
+
+    if nginx_installed:
+        print("[INFO] Nginx já está instalado no sistema. Pulando download do pacote.")
+    else:
+        success_nginx = run_command_stream(f"{install_cmd_base} nginx")
 
     if success_nginx:
-        subprocess.run("systemctl disable --now httpd", shell=True, capture_output=True, stderr=subprocess.DEVNULL)
-        subprocess.run("systemctl disable --now apache2", shell=True, capture_output=True, stderr=subprocess.DEVNULL)
+        subprocess.run("systemctl disable --now httpd", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run("systemctl disable --now apache2", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         print("[INFO] Gerando configuração avançada do Nginx via Python...")
         host_fqdn = socket.getfqdn()
@@ -388,7 +386,6 @@ def installation_thread():
 
     update_progress(80, "Nginx configurado.")
 
-    # Passo 6: Configuração do Banco e SELinux
     update_progress(85, "Ativando serviços de dados e ajustando SELinux...")
 
     svc_name = "postgresql"
@@ -428,7 +425,6 @@ def installation_thread():
     else:
         subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
 
-    # Validação do Socket
     update_progress(90, "Aguardando o serviço de banco de dados iniciar...")
     db_ready = False
     for i in range(30):
@@ -453,7 +449,6 @@ if __name__ == '__main__':
         print("ERRO: Este script deve ser executado com sudo.")
         sys.exit(1)
 
-    # Checagem de conectividade antes de iniciar qualquer serviço
     if not check_internet():
         print("\n[AVISO] Conexão com a internet não detectada!")
         wan_script = os.path.join(APP_DIR, "fabric", "network-firewall", "config-wan.py")
@@ -462,7 +457,6 @@ if __name__ == '__main__':
             print(f"[INFO] Delegando configuração de rede e firewall para: {wan_script}")
             subprocess.run([sys.executable, wan_script])
 
-            # Revalida a internet após o script config-wan.py rodar
             if not check_internet():
                 print("\n[ERRO] A internet ainda não está acessível após a configuração. Abortando.")
                 sys.exit(1)
@@ -472,7 +466,6 @@ if __name__ == '__main__':
             print(f"\n[ERRO] Sem internet e script de rede auxiliar não encontrado: {wan_script}")
             sys.exit(1)
 
-    # Verifica Flask para subir o instalador
     if not ensure_flask_installed():
         print("\n[CRÍTICO] Não foi possível prosseguir sem o Flask.")
         sys.exit(1)
