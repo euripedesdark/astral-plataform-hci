@@ -7,6 +7,13 @@ Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
 Inclui abertura automática de firewall e configuração SELinux/PostgreSQL.
+
+CORREÇÕES APLICADAS (v2):
+- RHEL/Fedora/Rocky: a unit correta do systemd é "postgresql" (não "postgresql-server").
+- Detecção automática da unit (postgresql, postgresql-16, etc. via systemctl cat).
+- Erros de systemctl não são mais silenciados (stderr + journalctl visíveis).
+- listen_addresses/pg_hba aplicados de forma idempotente mesmo se o PGDATA já existir.
+- Permissões do PGDATA corrigidas (chown postgres / chmod 700) antes do start.
 """
 
 import os
@@ -61,6 +68,22 @@ def detect_distro():
     except FileNotFoundError:
         pass
     return 'unknown'
+
+def detect_pg_service():
+    """CORREÇÃO: Descobre o nome real da unit do PostgreSQL neste sistema.
+    Em RHEL/Fedora/Rocky/Alma a unit é 'postgresql'; com repo PGDG pode ser
+    'postgresql-15'/'postgresql-16' etc."""
+    candidates = [
+        "postgresql",
+        "postgresql-server",
+        "postgresql-16", "postgresql-15", "postgresql-14",
+        "postgresql-13", "postgresql-12",
+    ]
+    for name in candidates:
+        r = subprocess.run(["systemctl", "cat", name], capture_output=True)
+        if r.returncode == 0:
+            return name
+    return "postgresql"
 
 def configure_firewall():
     """Abre as portas essenciais no firewall limpando regras antigas duplicadas."""
@@ -229,8 +252,9 @@ def installation_thread():
 
     # Correção robusta para inicialização no RHEL/Fedora com SELinux e Bind de Porta
     if distro == 'rhel':
-        svc_name = "postgresql-server"
-        print("[INFO] Detectado RHEL/Fedora. Inicializando banco de dados...")
+        # CORREÇÃO: a unit no RHEL/Fedora/Rocky é "postgresql", não "postgresql-server"
+        svc_name = detect_pg_service()
+        print(f"[INFO] Detectado RHEL/Fedora. Serviço identificado: {svc_name}")
         subprocess.run(f"systemctl stop {svc_name}", shell=True, capture_output=True)
 
         pgdata_check = subprocess.run("ls -A /var/lib/pgsql/data", shell=True, capture_output=True, text=True)
@@ -250,28 +274,52 @@ def installation_thread():
             init_res = subprocess.run("/usr/bin/postgresql-setup --initdb", shell=True, capture_output=True, text=True)
             if init_res.returncode != 0:
                 print(f"[ERRO] Falha no initdb: {init_res.stderr}")
-            else:
-                # ====================================================
-                # CORREÇÃO NETWORK: Configura para escutar externamente
-                # ====================================================
-                print("[INFO] Configurando banco para escutar em todas as interfaces...")
-                subprocess.run("echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
-                subprocess.run("echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/pgsql/data/pg_hba.conf", shell=True)
         else:
             print("[INFO] Diretório PGDATA já possui arquivos. Pulando initdb.")
 
-        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
-        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
+        # CORREÇÃO: garante dono/permissão corretos do data directory antes do start
+        subprocess.run("chown -R postgres:postgres /var/lib/pgsql/data", shell=True, capture_output=True)
+        subprocess.run("chmod 700 /var/lib/pgsql/data", shell=True, capture_output=True)
+
+        # ====================================================
+        # CORREÇÃO NETWORK: idempotente (grep || echo), roda mesmo se PGDATA já existir
+        # ====================================================
+        print("[INFO] Configurando banco para escutar em todas as interfaces...")
+        subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql.conf || "
+                       "echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
+        subprocess.run("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || "
+                       "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/pgsql/data/pg_hba.conf", shell=True)
+
+        r = subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[ERRO] systemctl enable {svc_name} falhou: {r.stderr}")
+
+        # CORREÇÃO: não silenciar mais o erro de start (era aqui que o bug se escondia)
+        r = subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[ERRO] Falha ao iniciar {svc_name}: {r.stderr}")
+            log = subprocess.run(f"journalctl -u {svc_name} --no-pager -n 40", shell=True, capture_output=True, text=True)
+            print(log.stdout)
     elif distro == 'arch':
         if not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
             subprocess.run("sudo -u postgres initdb -D /var/lib/postgres/data", shell=True, capture_output=True)
-            subprocess.run("echo \"listen_addresses = '*'\" >> /var/lib/postgres/data/postgresql.conf", shell=True)
-            subprocess.run("echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/postgres/data/pg_hba.conf", shell=True)
-        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
-        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
+            subprocess.run("grep -q \"^listen_addresses\" /var/lib/postgres/data/postgresql.conf || "
+                           "echo \"listen_addresses = '*'\" >> /var/lib/postgres/data/postgresql.conf", shell=True)
+            subprocess.run("grep -q '0.0.0.0/0' /var/lib/postgres/data/pg_hba.conf || "
+                           "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/postgres/data/pg_hba.conf", shell=True)
+        r = subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[ERRO] systemctl enable {svc_name} falhou: {r.stderr}")
+        r = subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[ERRO] Falha ao iniciar {svc_name}: {r.stderr}")
+            log = subprocess.run(f"journalctl -u {svc_name} --no-pager -n 40", shell=True, capture_output=True, text=True)
+            print(log.stdout)
     else:
         # Debian/Ubuntu config paths are different, usually handled automatically during install
-        subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
+        r = subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"[ERRO] Falha ao reiniciar {svc_name}: {r.stderr}")
 
     # Validação do Socket
     db_ready = False
