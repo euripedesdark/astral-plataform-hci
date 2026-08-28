@@ -7,7 +7,7 @@ Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
 Inclui abertura de firewall (exclusivo via iptables), Node.js/React, Oracle Java 21, Nginx e PostgreSQL.
-Configura Nginx (default_server) para servir frontend estático e trata SELinux/AppArmor nativamente.
+Configura Nginx (default_server) para servir index.html (Login) e Flask serve install.html (Instalador).
 """
 
 import os
@@ -312,14 +312,14 @@ def installation_thread():
                 except Exception as e:
                     print(f"[AVISO] Falha ao ajustar regras do AppArmor: {e}")
 
-        # NOTE O DEFAULT_SERVER E O SERVER_NAME _; AQUI
+        # Nginx configurado para buscar o index.html (Login)
         nginx_conf = f"""server {{
     listen 80 default_server;
     server_name _;
 
     # Servir arquivos estáticos do frontend nativamente (HTML/CSS/JS/Imagens)
     root {frontend_path};
-    index login.html index.html;
+    index index.html;
 
     # Se acessar a raiz, entrega o arquivo e impede o erro de loop 500
     location / {{
@@ -539,7 +539,8 @@ if __name__ == '__main__':
 
     @app.route('/')
     def index():
-        return send_from_directory(frontend_dir, 'index.html')
+        # O Flask serve especificamente o arquivo install.html
+        return send_from_directory(frontend_dir, 'install.html')
 
     @app.route('/api/stream')
     def stream():
