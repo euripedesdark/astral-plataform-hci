@@ -107,17 +107,26 @@ def configure_firewall():
         print(f"[AVISO] Falha ao injetar portas no iptables: {e}")
 
 def ensure_dependencies_installed():
+    """CORREÇÃO: Esta função agora é chamada ANTES do import do Flask."""
     print("[INFO] Assegurando dependências globais de Python (Flask, Psycopg2)...")
     distro = detect_distro()
 
-    pip_install_cmd = "apt-get update && apt-get install -y python3-pip python3-psycopg2"
-    if distro == 'rhel':
+    pip_install_cmd = ""
+    if distro == 'debian':
+        pip_install_cmd = "apt-get update && apt-get install -y python3-pip python3-psycopg2"
+    elif distro == 'rhel':
         pip_install_cmd = "dnf install -y python3-pip python3-psycopg2"
     elif distro == 'arch':
         pip_install_cmd = "pacman -Sy --noconfirm python-pip python-psycopg2"
 
-    subprocess.run(pip_install_cmd, shell=True, capture_output=True)
-    subprocess.run("pip3 install flask psycopg2-binary --break-system-packages 2>/dev/null || true", shell=True)
+    if pip_install_cmd:
+        subprocess.run(pip_install_cmd, shell=True, capture_output=True)
+
+    # Tenta instalar com --break-system-packages (PEP 668) e cai para o padrão se falhar
+    res = subprocess.run("pip3 install flask psycopg2-binary --break-system-packages", shell=True, capture_output=True, text=True)
+    if res.returncode != 0:
+        print("[AVISO] Tentando instalação pip sem flag --break-system-packages...")
+        subprocess.run("pip3 install flask psycopg2-binary", shell=True, capture_output=True)
 
 def inject_java_pom_template():
     """Cria um pom.xml padrão na raiz se não existir, garantindo as libs do PostgreSQL e Web para Java."""
@@ -144,17 +153,14 @@ def inject_java_pom_template():
         <java.version>21</java.version>
     </properties>
     <dependencies>
-        <!-- Spring Boot Web para APIs REST -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
-        <!-- Spring Data JPA para Banco de Dados -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
-        <!-- Driver PostgreSQL JDBC -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -208,7 +214,6 @@ def installation_thread():
     time.sleep(2)
 
     configure_firewall()
-    ensure_dependencies_installed()
     inject_java_pom_template()
 
     distro = detect_distro()
@@ -241,7 +246,6 @@ def installation_thread():
         node_pkg = "nodejs npm curl" if distro != 'rhel' else "nodejs nodejs-npm curl"
         run_command_stream(f"{install_cmd_base} {node_pkg}")
 
-    # Instala dependência nativa de banco para JavaScript globalmente ou na pasta
     subprocess.run("npm install -g pg express cors 2>/dev/null || true", shell=True)
     update_progress(35, "Ambiente JS e dependências prontos.")
 
@@ -287,13 +291,11 @@ def installation_thread():
         subprocess.run("systemctl disable --now httpd", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run("systemctl disable --now apache2", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # Elimina a escuta IPv6 do arquivo padrão de fábrica para evitar o erro 97
         subprocess.run("sed -i 's/.*listen.*\\[::\\]:80.*/#&/' /etc/nginx/nginx.conf 2>/dev/null", shell=True)
 
         print("[INFO] Gerando configuração avançada do Nginx via Python...")
         frontend_path = os.path.join(APP_DIR, "fabric", "frontend")
 
-        # Garante permissão recursiva para o Nginx conseguir ler pastas, CSS, imagens e JS
         subprocess.run(f"chmod -R 755 {frontend_path} 2>/dev/null", shell=True)
 
         current_path = frontend_path
@@ -505,7 +507,14 @@ def installation_thread():
 if __name__ == '__main__':
     if os.geteuid() != 0:
         print("ERRO: Este script deve ser executado com sudo.")
+        print("Uso correto: sudo python3 install.py")
         sys.exit(1)
+
+    # ==========================================
+    # CORREÇÃO CRÍTICA: INSTALAR FLASK ANTES DO IMPORT
+    # ==========================================
+    print("[INFO] Verificando e instalando dependências Python essenciais (Flask)...")
+    ensure_dependencies_installed()
 
     if not check_internet():
         print("\n[AVISO] Conexão com a internet não detectada!")
@@ -526,14 +535,23 @@ if __name__ == '__main__':
 
     frontend_dir = os.path.join(APP_DIR, 'fabric', 'frontend')
 
-    import flask
-    from flask import Flask, send_from_directory, request, jsonify, Response
+    # Agora é 100% seguro importar o Flask, pois ele já foi instalado acima
+    try:
+        import flask
+        from flask import Flask, send_from_directory, request, jsonify, Response
+    except ImportError:
+        print("\n[CRÍTICO] Falha ao importar o Flask mesmo após a tentativa de instalação.")
+        print("Tente instalar manualmente com: pip3 install flask psycopg2-binary --break-system-packages")
+        sys.exit(1)
 
     app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
 
     @app.route('/')
     def index():
-        return send_from_directory(frontend_dir, 'install.html')
+        # Fallback para index.html caso install.html não exista na pasta
+        if os.path.exists(os.path.join(frontend_dir, 'install.html')):
+            return send_from_directory(frontend_dir, 'install.html')
+        return send_from_directory(frontend_dir, 'index.html')
 
     @app.route('/api/stream')
     def stream():
