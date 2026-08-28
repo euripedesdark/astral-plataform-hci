@@ -327,12 +327,13 @@
 
                     // Injeta a URL de redirecionamento no botão verde
                     btnFinish.onclick = () => {
-                        if (result.redirect_url) {
-                            window.location.href = result.redirect_url;
-                        } else {
-                            // Fallback caso a URL não venha por algum motivo
-                            window.location.reload();
-                        }
+                        fetch('/api/shutdown', { method: 'POST' }).finally(() => {
+                            if (result.redirect_url) {
+                                window.location.href = result.redirect_url;
+                            } else {
+                                window.location.reload();
+                            }
+                        });
                     };
                 } else {
                     throw new Error(result.error || "Falha ao criar usuário");

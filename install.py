@@ -7,7 +7,7 @@ Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
 Inclui abertura de firewall (exclusivo via iptables), Node.js/React, Oracle Java 21, Nginx e PostgreSQL.
-Auto-desligamento ativado no final da configuração.
+Autodestruição blindada ativada na criação do banco.
 """
 
 import os
@@ -471,157 +471,15 @@ if __name__ == '__main__':
         print("\n[CRÍTICO] Não foi possível prosseguir sem o Flask.")
         sys.exit(1)
 
-    # Verifica se os assets do frontend existem, se não, usa uma string embutida
     frontend_dir = os.path.join(APP_DIR, 'fabric', 'frontend')
-    has_frontend = os.path.isdir(frontend_dir) and os.path.exists(os.path.join(frontend_dir, 'index.html'))
 
     from flask import Flask, send_from_directory, request, jsonify, Response
 
-    app = Flask(__name__, static_folder=frontend_dir if has_frontend else None)
+    app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
 
     @app.route('/')
     def index():
-        if has_frontend:
-            return send_from_directory(frontend_dir, 'index.html')
-
-        # HTML Inline embutido para evitar erros de diretório
-        html_content = """<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Instalador Web Unificado - Astral Platform</title>
-    <style>
-        :root { --primary-color: #2563eb; --success-color: #16a34a; --bg-color: #f3f4f6; --card-bg: #ffffff; --text-color: #1f2937; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: var(--bg-color); color: var(--text-color); display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-        .container { background-color: var(--card-bg); padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); width: 100%; max-width: 500px; text-align: center; }
-        h1 { color: var(--primary-color); margin-bottom: 1.5rem; font-size: 1.8rem; }
-        .progress-container { background-color: #e5e7eb; border-radius: 9999px; height: 24px; width: 100%; margin: 1.5rem 0; overflow: hidden; position: relative; }
-        .progress-bar { background-color: var(--primary-color); height: 100%; width: 0%; border-radius: 9999px; transition: width 0.4s ease; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.75rem; font-weight: bold; }
-        .progress-bar.success { background-color: var(--success-color); }
-        .status-text { font-size: 0.95rem; color: #4b5563; margin-bottom: 1rem; min-height: 1.5em; }
-        .package-log { font-family: 'Courier New', monospace; font-size: 0.85rem; color: #6b7280; background: #f9fafb; padding: 0.5rem; border-radius: 6px; margin-top: 0.5rem; border: 1px solid #e5e7eb; display: none; }
-        .form-group { margin-bottom: 1rem; text-align: left; }
-        label { display: block; margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem; }
-        input { width: 100%; padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 1rem; box-sizing: border-box; }
-        button { background-color: var(--primary-color); color: white; border: none; padding: 0.75rem 1.5rem; font-size: 1rem; border-radius: 6px; cursor: pointer; width: 100%; font-weight: 600; transition: background-color 0.2s; }
-        button:hover { background-color: #1d4ed8; }
-        button:disabled { background-color: #9ca3af; cursor: not-allowed; }
-        .hidden { display: none !important; }
-        .dashboard-preview { text-align: left; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; margin-top: 1rem; }
-        .dash-header { background: #1f2937; color: white; padding: 1rem; font-weight: bold; }
-        .dash-body { padding: 1rem; display: flex; gap: 1rem; }
-        .sidebar { width: 30%; background: #f3f4f6; padding: 0.5rem; border-radius: 4px; font-size: 0.8rem; }
-        .sidebar ul { list-style: none; padding: 0; }
-        .sidebar li { margin-bottom: 0.5rem; color: #4b5563; }
-        .content-area { width: 70%; background: white; border: 1px dashed #d1d5db; display: flex; align-items: center; justify-content: center; color: #9ca3af; border-radius: 4px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div id="install-screen">
-            <h1>Instalando Sistema</h1>
-            <div class="status-text" id="status-text">Conectando ao servidor...</div>
-            <div class="progress-container"><div class="progress-bar" id="progress-bar">0%</div></div>
-            <div class="package-log" id="package-log">Instalando pacote: ...</div>
-        </div>
-        <div id="credential-screen" class="hidden">
-            <h1>Configuração do Banco</h1>
-            <p style="color: #6b7280; font-size: 0.9rem; margin-bottom: 1.5rem;">O PostgreSQL foi instalado. Defina o usuário mestre e a senha para a database <strong>astral</strong>.</p>
-            <form id="setup-form">
-                <div class="form-group"><label>Usuário Administrador</label><input type="text" id="username" required></div>
-                <div class="form-group"><label>Senha Master</label><input type="password" id="password" required></div>
-                <button type="submit" id="btn-save">Salvar e Inicializar Sistema</button>
-            </form>
-            <p id="form-error" style="color: #dc2626; font-size: 0.85rem; margin-top: 1rem;" class="hidden"></p>
-        </div>
-        <div id="success-screen" class="hidden">
-            <h1 style="color: var(--success-color);">Sistema Pronto!</h1>
-            <p>Configuração concluída com sucesso.</p>
-            <button id="btn-finish" style="background-color: var(--success-color); margin-top: 1rem;">Concluir e Iniciar Sistema</button>
-            <div class="dashboard-preview">
-                <div class="dash-header">Astral Platform Dashboard</div>
-                <div class="dash-body">
-                    <div class="sidebar"><ul><li>📊 Visão Geral</li><li>👥 Usuários</li><li>⚙️ Configurações</li><li>🔒 Segurança</li></ul></div>
-                    <div class="content-area">Área de Conteúdo Principal</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <script>
-        const statusText = document.getElementById('status-text');
-        const progressBar = document.getElementById('progress-bar');
-        const packageLog = document.getElementById('package-log');
-        const installScreen = document.getElementById('install-screen');
-        const credentialScreen = document.getElementById('credential-screen');
-        const successScreen = document.getElementById('success-screen');
-        const setupForm = document.getElementById('setup-form');
-        const formError = document.getElementById('form-error');
-        const btnFinish = document.getElementById('btn-finish');
-        let eventSource = null;
-
-        function connectSSE() {
-            eventSource = new EventSource('/api/stream');
-            eventSource.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                statusText.textContent = data.status;
-                progressBar.style.width = data.porcentagem + '%';
-                progressBar.textContent = data.porcentagem + '%';
-
-                if (data.status.includes("Instalando pacote:") || data.status.includes("postgresql")) {
-                    packageLog.style.display = 'block';
-                    packageLog.textContent = data.status;
-                    if (data.porcentagem >= 90 && data.status.includes("instalado")) {
-                         setTimeout(() => { installScreen.classList.add('hidden'); credentialScreen.classList.remove('hidden'); }, 1000);
-                    }
-                }
-
-                if (data.porcentagem === 100 && data.status === "Instalação concluída!") {
-                    progressBar.classList.add('success');
-                    packageLog.style.display = 'none';
-                    if (eventSource) eventSource.close();
-                    installScreen.classList.add('hidden');
-                    credentialScreen.classList.remove('hidden');
-                }
-            };
-        }
-
-        setupForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            const btn = document.getElementById('btn-save');
-            btn.disabled = true; btn.textContent = "Processando..."; formError.classList.add('hidden');
-
-            try {
-                const response = await fetch('/api/setup-db', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
-                const result = await response.json();
-
-                if (response.ok && result.success) {
-                    credentialScreen.classList.add('hidden');
-                    successScreen.classList.remove('hidden');
-
-                    // Botão verde: Dá shutdown e redireciona
-                    btnFinish.onclick = () => {
-                        fetch('/api/shutdown', { method: 'POST' }).finally(() => {
-                            if (result.redirect_url) {
-                                window.location.href = result.redirect_url;
-                            } else {
-                                window.location.reload();
-                            }
-                        });
-                    };
-                } else { throw new Error(result.error || "Falha ao criar usuário"); }
-            } catch (error) {
-                formError.textContent = error.message; formError.classList.remove('hidden');
-                btn.disabled = false; btn.textContent = "Salvar e Inicializar Sistema";
-            }
-        });
-        connectSSE();
-    </script>
-</body>
-</html>"""
-        return html_content
+        return send_from_directory(frontend_dir, 'index.html')
 
     @app.route('/api/stream')
     def stream():
@@ -670,6 +528,10 @@ if __name__ == '__main__':
             if res_db.returncode != 0 and "already exists" not in res_db.stderr:
                 return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
 
+            # Bomba-relógio programada: 3 segundos após finalizar com sucesso, o script desliga.
+            print("\n[INFO] Banco de dados configurado! Agendando autodestruição do instalador para 3 segundos...")
+            threading.Timer(60.0, lambda: os._exit(0)).start()
+
             return jsonify({
                 "success": True,
                 "message": "Usuário e database 'astral' criados com sucesso!",
@@ -681,10 +543,9 @@ if __name__ == '__main__':
 
     @app.route('/api/shutdown', methods=['POST'])
     def shutdown():
-        # Agenda o encerramento do script (os._exit) para 1 segundo após retornar o "OK" pro browser
-        print("\n[INFO] Sinal de encerramento recebido. Desligando instalador web em 1s...")
+        print("\n[INFO] Sinal de encerramento manual recebido. Desligando...")
         threading.Timer(1.0, lambda: os._exit(0)).start()
-        return jsonify({"success": True, "message": "Desligando servidor Flask..."})
+        return jsonify({"success": True})
 
     local_ip = get_local_ip()
 
