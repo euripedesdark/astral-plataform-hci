@@ -118,7 +118,7 @@ def configure_firewall():
                 subprocess.run(['sh', '-c', 'iptables-save > /etc/sysconfig/iptables'], check=True, capture_output=True)
         print("[OK] Verificação do iptables concluída e regras aplicadas limpas.")
     except Exception as e:
-        print(f"[AVISO] Falha ao configurar firewall automaticamente: {e}")
+        print(f"[AVISO] Falha ao configurar firewall automatically: {e}")
 
 def ensure_flask_installed():
     """Verifica e instala o Flask se necessário."""
@@ -165,7 +165,8 @@ def ensure_flask_installed():
         return True
 
 def run_command_stream(cmd, shell=True):
-    """Executa comando capturando saída em tempo real para o stream."""
+    """Executa comando capturando saída em tempo real para o stream E imprime no terminal."""
+    print(f"\n[SISTEMA] Executando: {cmd}")
     process = subprocess.Popen(
         cmd,
         shell=shell,
@@ -219,27 +220,43 @@ def installation_thread():
     update_progress(20, "Repositórios sincronizados.")
 
     # Passo: Instalação Node.js, NPM e React
-    update_progress(25, "Instalando ambiente Node.js e ReactJS...")
+    update_progress(25, "Verificando ambiente Node.js e ReactJS...")
 
-    # Na família RHEL, o NPM é instalado juntamente com o pacote 'nodejs' ou usando 'npm' explícito.
-    if distro == 'debian':
-        node_pkg = "nodejs npm curl"
+    node_installed = shutil.which("node") or shutil.which("nodejs")
+    npm_installed = shutil.which("npm")
+
+    success_node = True
+    if node_installed and npm_installed:
+        print("[INFO] Node.js e NPM já estão instalados. Pulando instalação do pacote base.")
     else:
-        node_pkg = "nodejs curl"
+        print("[INFO] Node.js e/ou NPM não encontrados. Instalando pacotes base...")
+        if distro == 'debian':
+            node_pkg = "nodejs npm curl"
+        elif distro == 'rhel':
+            node_pkg = "nodejs nodejs-npm curl"
+        else:
+            node_pkg = "nodejs npm curl"
 
-    print(f"[INFO] Instalando pacotes base: {node_pkg}")
-    success_node = run_command_stream(f"{install_cmd_base} {node_pkg}")
+        success_node = run_command_stream(f"{install_cmd_base} {node_pkg}")
 
     if success_node:
-        print("[INFO] Instalando ambiente ReactJS via NPM (create-react-app e vite)...")
-        # Instala ferramentas do react globalmente para uso futuro
-        npm_res = subprocess.run("npm install -g create-react-app vite", shell=True, capture_output=True, text=True)
-        if npm_res.returncode == 0:
-            print("[OK] ReactJS e Node.js instalados.")
+        if shutil.which("npm"):
+            cra_installed = shutil.which("create-react-app")
+            vite_installed = shutil.which("vite")
+
+            if cra_installed and vite_installed:
+                print("[INFO] Pacotes ReactJS e Vite globais já instalados. Pulando npm install.")
+            else:
+                print("[INFO] NPM detectado. Instalando ambiente ReactJS globalmente...")
+                npm_res = subprocess.run("npm install -g create-react-app vite", shell=True, capture_output=True, text=True)
+                if npm_res.returncode == 0:
+                    print("[OK] ReactJS, Vite e Node.js verificados/instalados com sucesso.")
+                else:
+                    print(f"[AVISO] NPM falhou ao instalar pacotes globais: {npm_res.stderr}")
         else:
-            print(f"[AVISO] Node.js instalou, mas NPM falhou ao instalar React: {npm_res.stderr}")
+            print("[AVISO] Binário do NPM não encontrado no sistema após a instalação do pacote.")
     else:
-        print("[ERRO] Falha ao instalar o pacote Node.js. Verifique os repositórios.")
+        print("[ERRO] Falha ao instalar o pacote Node.js e NPM. Verifique os repositórios do SO.")
 
     update_progress(50, "Node.js e ReactJS processados.")
 
