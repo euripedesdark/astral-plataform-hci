@@ -4,9 +4,10 @@
 """
 config-wan.py
 
-Script Universal de configuração de rede (WAN/LAN/VLAN), DHCP (dnsmasq) e Firewall.
+Script Universal de configuração de rede (WAN/LAN/VLAN), DHCP e Firewall.
 Suporta: RHEL, Fedora, Nobara, Arch, EndeavourOS, Debian, Ubuntu, Pop!_OS e SUSE.
-Força o uso exclusivo do NetworkManager, exterminando systemd-resolved e netplan.
+Força o uso exclusivo do NetworkManager, migra firewalls nativos para iptables
+e prepara terreno para injeção DNS via Pi-hole.
 
 Autor: Eurípedes Batista
 LinkedIn: https://www.linkedin.com/in/euripedes-batista-14235229/
@@ -20,6 +21,7 @@ import os
 import re
 import shutil
 import ipaddress
+import socket
 from typing import List, Optional, Tuple
 
 # ==========================================
@@ -97,7 +99,7 @@ def nuke_resolved_and_netplan(dry_run: bool):
     print("✅ NetworkManager definido como o único gerenciador de rede.")
 
 # ==========================================
-# FUNÇÕES AUXILIARES COMUNS
+# FUNÇÕES AUXILIARES COMUNS E AUTODETECÇÃO
 # ==========================================
 def run_command(cmd: str, dry_run: bool = False, check: bool = True) -> subprocess.CompletedProcess:
     print(f"{'[dry-run]' if dry_run else '+'} {cmd}")
@@ -141,6 +143,28 @@ def get_network_details(cidr_ip: str) -> Tuple[str, str, str, str]:
     base_ip = ".".join(str(iface_obj.network.network_address).split('.')[:3])
     return network_cidr, router_ip, f"{base_ip}.100", f"{base_ip}.199"
 
+def check_internet() -> bool:
+    try:
+        socket.create_connection(("8.8.8.8", 53), timeout=3)
+        return True
+    except OSError:
+        return False
+
+def auto_detect_wan() -> Tuple[str, str, str, str]:
+    out = get_command_output("ip route show default")
+    if out:
+        match = re.search(r"dev\s+(\S+)", out)
+        if match:
+            wan = match.group(1)
+            gw_match = re.search(r"via\s+([0-9\.]+)", out)
+            gw = gw_match.group(1) if gw_match else ""
+
+            ip_out = get_command_output(f"ip -4 addr show dev {wan}")
+            ip_match = re.search(r"inet\s+([0-9\.]+)/(\d+)", ip_out)
+            if ip_match:
+                return wan, ip_match.group(1), ip_match.group(2), gw
+    return "", "", "", ""
+
 def check_open_ports() -> bool:
     print("\n== Verificando portas abertas (Serviços em escuta) ==")
     out = get_command_output("ss -tulpn | grep LISTEN")
@@ -148,6 +172,95 @@ def check_open_ports() -> bool:
         print(out)
         return ask_yes_no("\n⚠️  Foram encontrados serviços em escuta. Deseja continuar com as alterações de rede e firewall?", default=False)
     return True
+
+# ==========================================
+# VERIFICAÇÃO DE FIREWALL E MIGRAÇÃO
+# ==========================================
+def check_and_migrate_firewall(os_family: str, dry_run: bool):
+    print("\n== Analisando Regras Atuais e Migração de Firewall ==")
+
+    nat_rules = get_command_output("iptables -t nat -S")
+    has_masq = "MASQUERADE" in nat_rules
+
+    active_fw = None
+    for fw in ["firewalld", "ufw"]:
+        if get_command_output(f"systemctl is-active {fw}") == "active":
+            active_fw = fw
+            break
+
+    if active_fw:
+        print(f"⚠️  Firewall '{active_fw}' detectado. Ele pode estar gerenciando suas portas.")
+        print("💾 Realizando backup em memória de todas as regras atuais...")
+        run_command("iptables-save > /tmp/fw_migration.rules", dry_run=dry_run)
+
+        print("📦 Instalando módulos persistentes do iptables...")
+        if os_family == "debian":
+            install_packages(["iptables-persistent"], os_family, dry_run)
+        elif os_family == "arch":
+            install_packages(["iptables-nft"], os_family, dry_run)
+        else:
+            install_packages(["iptables-services"], os_family, dry_run)
+
+        print(f"🛑 Desabilitando {active_fw}...")
+        run_command(f"systemctl stop {active_fw}", dry_run=dry_run)
+        run_command(f"systemctl disable {active_fw}", dry_run=dry_run)
+
+        print("🔄 Inicializando iptables com as configurações extraídas do firewall antigo...")
+        run_command("iptables-restore < /tmp/fw_migration.rules", dry_run=dry_run)
+
+        if os_family == "debian":
+            run_command("iptables-save > /etc/iptables/rules.v4", dry_run=dry_run)
+            run_command("systemctl enable netfilter-persistent", dry_run=dry_run, check=False)
+        elif os_family == "arch":
+            run_command("iptables-save > /etc/iptables/iptables.rules", dry_run=dry_run)
+            run_command("systemctl enable iptables", dry_run=dry_run, check=False)
+        else:
+            run_command("iptables-save > /etc/sysconfig/iptables", dry_run=dry_run)
+            run_command("systemctl enable iptables", dry_run=dry_run, check=False)
+
+        print("✅ Migração para iptables puro concluída preservando MASQUERADE e rotas ativas.")
+    else:
+        print("👉 Nenhum gerenciador concorrente detectado (firewalld/ufw). O iptables está livre.")
+        if has_masq:
+            print("✅ Regra de MASQUERADE (NAT) já ativa no iptables.")
+
+# ==========================================
+# EXTRAÇÃO DE ARTEFATOS DHCP PARA O PI-HOLE
+# ==========================================
+def backup_existing_dhcp():
+    print("\n== Auditando serviços DHCP para Integração Pi-hole ==")
+    dhcp_files = [
+        "/etc/dnsmasq.conf",
+        "/etc/dhcp/dhcpd.conf",
+        "/etc/kea/kea-dhcp4.conf"
+    ]
+
+    if os.path.exists("/etc/dnsmasq.d"):
+        for f in os.listdir("/etc/dnsmasq.d"):
+            if f.endswith(".conf"):
+                dhcp_files.append(os.path.join("/etc/dnsmasq.d", f))
+
+    found_configs = [f for f in dhcp_files if os.path.isfile(f)]
+
+    if found_configs:
+        print(f"🔍 Encontrados artefatos DHCP: {', '.join(found_configs)}")
+        dest_dir = "/fabric/DNS"
+        os.makedirs(dest_dir, exist_ok=True)
+        dest_file = os.path.join(dest_dir, "dns.env")
+
+        with open(dest_file, "w") as outfile:
+            for f in found_configs:
+                outfile.write(f"\n# === BACKUP DE: {f} ===\n")
+                try:
+                    with open(f, "r") as infile:
+                        outfile.write(infile.read())
+                except Exception as e:
+                    outfile.write(f"# Falha ao exportar {f}: {e}\n")
+
+        print(f"💾 Snapshot de configuração exportado para: {dest_file}")
+        print("⚠️  ATENÇÃO: Nenhum serviço DHCP foi desinstalado ou parado. Preparado para handover do Pi-hole.")
+    else:
+        print("👉 Nenhum serviço DHCP existente encontrado no servidor.")
 
 # ==========================================
 # CONFIGURAÇÃO CORE (REDE E SERVIÇOS)
@@ -296,7 +409,6 @@ def setup_dnsmasq_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, 
 def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str], setup_dhcp: bool, os_family: str):
     print("\n== Aplicando regras avançadas de firewall e habilitando IP Forwarding ==")
 
-    # Habilita o IP Forwarding no Kernel para o roteamento funcionar
     run_command("echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-ipforward.conf", dry_run=dry_run)
     run_command("sysctl -p /etc/sysctl.d/99-ipforward.conf", dry_run=dry_run, check=False)
 
@@ -353,20 +465,36 @@ def main_interactive():
         if not ask_yes_no("Não foi possível determinar a distribuição. O comportamento de persistência do firewall e instalação de pacotes pode falhar. Deseja continuar?", default=False):
             sys.exit(1)
 
+    # 1. Elimina systemd-resolved e netplan antes de qualquer configuração de rede
     nuke_resolved_and_netplan(dry_run)
+
+    # 2. Diagnóstico de Conectividade
+    if check_internet():
+        print("🌐 Conectividade com a Internet: ATIVA")
+    else:
+        print("🌐 Conectividade com a Internet: OFFLINE")
+
+    # 3. Extração de artefatos de DHCP para o Pi-hole
+    backup_existing_dhcp()
+
+    # 4. Migração e Backup de Firewall
+    check_and_migrate_firewall(os_family, dry_run)
 
     if not check_open_ports():
         print("\nConfiguração cancelada pelo usuário.")
         sys.exit(0)
 
+    # Detecção Automática da interface WAN
+    auto_wan, auto_ip, auto_mask, auto_gw = auto_detect_wan()
+
     print("\n== Configurar WAN estática ==")
-    wan_iface = ask_question("Qual é a interface WAN (ex: ens160)", default="ens3")
-    public_ip = ask_question("Digite o IP público (ex: 203.0.113.10)")
+    wan_iface = ask_question("Qual é a interface WAN (ex: ens160)", default=auto_wan if auto_wan else "ens3")
+    public_ip = ask_question("Digite o IP público (ex: 203.0.113.10)", default=auto_ip)
     while not is_valid_ip(public_ip):
         public_ip = ask_question("IP inválido. Digite o IP público")
 
-    public_mask = ask_question("Máscara CIDR (ex: 24)", default="24")
-    public_gw = ask_question("Gateway público (ex: 203.0.113.1)")
+    public_mask = ask_question("Máscara CIDR (ex: 24)", default=auto_mask if auto_mask else "24")
+    public_gw = ask_question("Gateway público (ex: 203.0.113.1)", default=auto_gw)
 
     dns_servers = []
     protect_dns = False
