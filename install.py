@@ -7,7 +7,7 @@ Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
 Inclui abertura de firewall (exclusivo via iptables), Node.js/React, Oracle Java 21, Nginx e PostgreSQL.
-Configura Nginx para servir frontend estático e proxy apenas para /api/.
+Configura Nginx (default_server) para servir frontend estático e trata SELinux/AppArmor nativamente.
 """
 
 import os
@@ -265,7 +265,7 @@ def installation_thread():
     success_nginx = True
 
     if nginx_installed:
-        print("[INFO] Nginx já está instalado no sistema. Pulando download.")
+        print("[INFO] Nginx já está instalado no sistema. Pulando download do pacote.")
     else:
         success_nginx = run_command_stream(f"{install_cmd_base} nginx")
 
@@ -277,25 +277,53 @@ def installation_thread():
         subprocess.run("sed -i 's/.*listen.*\\[::\\]:80.*/#&/' /etc/nginx/nginx.conf 2>/dev/null", shell=True)
 
         print("[INFO] Gerando configuração avançada do Nginx via Python...")
-        host_fqdn = socket.getfqdn()
         frontend_path = os.path.join(APP_DIR, "fabric", "frontend")
 
-        # Ajuste de Permissões SELinux para RHEL (Permite ler frontend e fazer Proxy)
+        # Garante a permissão de travessia do Linux (DAC) para o Nginx chegar até o /home/user/...
+        current_path = frontend_path
+        while current_path != '/':
+            subprocess.run(f"chmod o+x {current_path} 2>/dev/null", shell=True)
+            current_path = os.path.dirname(current_path)
+
+        # Ajuste de Permissões SELinux para RHEL
         if distro == 'rhel':
             subprocess.run("setsebool -P httpd_can_network_connect 1 2>/dev/null", shell=True)
             subprocess.run(f"chcon -Rt httpd_sys_content_t {frontend_path} 2>/dev/null", shell=True)
 
+        # Ajuste de Permissões AppArmor para Debian/Ubuntu
+        if distro == 'debian':
+            aa_profile = "/etc/apparmor.d/usr.sbin.nginx"
+            aa_override = "/etc/apparmor.d/local/usr.sbin.nginx"
+            if os.path.exists(aa_profile):
+                print("[INFO] Ajustando AppArmor para permitir leitura do frontend pelo Nginx...")
+                rule = f"\n  {frontend_path}/ r,\n  {frontend_path}/** r,\n"
+                try:
+                    os.makedirs(os.path.dirname(aa_override), exist_ok=True)
+                    content = ""
+                    if os.path.exists(aa_override):
+                        with open(aa_override, "r") as f:
+                            content = f.read()
+
+                    if frontend_path not in content:
+                        with open(aa_override, "a") as f:
+                            f.write(rule)
+
+                    subprocess.run("apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx 2>/dev/null", shell=True)
+                except Exception as e:
+                    print(f"[AVISO] Falha ao ajustar regras do AppArmor: {e}")
+
+        # NOTE O DEFAULT_SERVER E O SERVER_NAME _; AQUI
         nginx_conf = f"""server {{
-    listen 80;
-    server_name {host_fqdn};
+    listen 80 default_server;
+    server_name _;
 
     # Servir arquivos estáticos do frontend nativamente (HTML/CSS/JS/Imagens)
     root {frontend_path};
     index login.html index.html;
 
-    # Se acessar a raiz, entrega o login.html
+    # Se acessar a raiz, entrega o arquivo e impede o erro de loop 500
     location / {{
-        try_files $uri $uri/ /login.html;
+        try_files $uri $uri/ =404;
     }}
 
     # Requisições de API vão para o backend Spring Boot (ainda desligado)
