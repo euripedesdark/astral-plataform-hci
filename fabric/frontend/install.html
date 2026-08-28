@@ -1,353 +1,325 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-br">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Instalador Web Unificado - Astral Platform</title>
     <style>
-        :root {
-            --primary-color: #2563eb;
-            --success-color: #16a34a;
-            --bg-color: #f3f4f6;
-            --card-bg: #ffffff;
-            --text-color: #1f2937;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, sans-serif; }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
             min-height: 100vh;
-            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
         }
         .container {
-            background-color: var(--card-bg);
-            padding: 2rem;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            width: 100%;
-            max-width: 500px;
-            text-align: center;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 16px;
+            padding: 40px;
+            width: 90%;
+            max-width: 600px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
         }
-        h1 {
-            color: var(--primary-color);
-            margin-bottom: 1.5rem;
-            font-size: 1.8rem;
-        }
-        /* Barra de Progresso */
+        h1 { font-size: 24px; margin-bottom: 10px; text-align: center; }
+        h2 { font-size: 20px; margin-bottom: 20px; text-align: center; font-weight: 500; }
+        .subtitle { text-align: center; opacity: 0.8; margin-bottom: 30px; }
+
+        /* Tela de instalação */
+        #install-screen { display: block; }
         .progress-container {
-            background-color: #e5e7eb;
-            border-radius: 9999px;
-            height: 24px;
-            width: 100%;
-            margin: 1.5rem 0;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
             overflow: hidden;
+            height: 30px;
+            margin: 20px 0;
             position: relative;
         }
         .progress-bar {
-            background-color: var(--primary-color);
+            background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
             height: 100%;
             width: 0%;
-            border-radius: 9999px;
-            transition: width 0.4s ease, background-color 0.4s ease;
+            transition: width 0.4s ease;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: white;
-            font-size: 0.75rem;
             font-weight: bold;
-        }
-        .progress-bar.success {
-            background-color: var(--success-color);
+            color: #fff;
         }
         .status-text {
-            font-size: 0.95rem;
-            color: #4b5563;
-            margin-bottom: 1rem;
-            min-height: 1.5em;
-        }
-        .package-log {
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 0.85rem;
-            color: #6b7280;
-            background: #f9fafb;
-            padding: 0.5rem;
-            border-radius: 6px;
-            margin-top: 0.5rem;
-            border: 1px solid #e5e7eb;
-            display: none;
-        }
-        /* Formulário */
-        .form-group {
-            margin-bottom: 1rem;
-            text-align: left;
-        }
-        label {
-            display: block;
-            margin-bottom: 0.5rem;
-            font-weight: 600;
-            font-size: 0.9rem;
-        }
-        input[type="text"],
-        input[type="password"] {
-            width: 100%;
-            padding: 0.75rem;
-            border: 1px solid #d1d5db;
-            border-radius: 6px;
-            font-size: 1rem;
-            box-sizing: border-box;
-        }
-        input:focus {
-            outline: none;
-            border-color: var(--primary-color);
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-        }
-        button {
-            background-color: var(--primary-color);
-            color: white;
-            border: none;
-            padding: 0.75rem 1.5rem;
-            font-size: 1rem;
-            border-radius: 6px;
-            cursor: pointer;
-            width: 100%;
-            font-weight: 600;
-            transition: background-color 0.2s;
-        }
-        button:hover {
-            background-color: #1d4ed8;
-        }
-        button:disabled {
-            background-color: #9ca3af;
-            cursor: not-allowed;
-        }
-        /* Utilitários de Visibilidade */
-        .hidden {
-            display: none !important;
-        }
-        /* Dashboard Simulado */
-        .dashboard-preview {
-            text-align: left;
-            border: 1px solid #e5e7eb;
+            text-align: center;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
             border-radius: 8px;
-            overflow: hidden;
-            margin-top: 1rem;
-        }
-        .dash-header {
-            background: #1f2937;
-            color: white;
-            padding: 1rem;
-            font-weight: bold;
-        }
-        .dash-body {
-            padding: 1rem;
-            display: flex;
-            gap: 1rem;
-        }
-        .sidebar {
-            width: 30%;
-            background: #f3f4f6;
-            padding: 0.5rem;
-            border-radius: 4px;
-            font-size: 0.8rem;
-        }
-        .sidebar ul { list-style: none; padding: 0; }
-        .sidebar li { margin-bottom: 0.5rem; color: #4b5563; }
-        .content-area {
-            width: 70%;
-            background: white;
-            border: 1px dashed #d1d5db;
+            margin-top: 15px;
+            font-size: 14px;
+            min-height: 50px;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: #9ca3af;
-            border-radius: 4px;
         }
+
+        /* Tela de configuração do banco */
+        #db-screen { display: none; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            border-radius: 8px;
+            font-size: 15px;
+            outline: none;
+        }
+        .form-group input:focus {
+            border-color: #4facfe;
+            background: rgba(255, 255, 255, 0.15);
+        }
+        .form-group input::placeholder { color: rgba(255, 255, 255, 0.5); }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-top: 10px;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2); }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+        /* Tela final */
+        #final-screen { display: none; text-align: center; }
+        .success-icon {
+            font-size: 64px;
+            color: #4caf50;
+            margin-bottom: 20px;
+        }
+        .error-msg {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid #f44336;
+            color: #ffcdd2;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 15px;
+            display: none;
+            font-size: 14px;
+        }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- Tela de Instalação -->
+        <!-- TELA 1: Instalação em andamento -->
         <div id="install-screen">
-            <h1>Instalando Sistema</h1>
-            <div class="status-text" id="status-text">Conectando ao servidor...</div>
+            <h1>🚀 Instalador Astral Platform</h1>
+            <p class="subtitle">Instalando Sistema</p>
+
             <div class="progress-container">
                 <div class="progress-bar" id="progress-bar">0%</div>
             </div>
-            <div class="package-log" id="package-log">
-                Instalando pacote: ...
+
+            <div class="status-text" id="status-text">
+                <span class="spinner"></span>
+                Conectando ao servidor...
             </div>
         </div>
 
-        <!-- Tela de Credenciais -->
-        <div id="credential-screen" class="hidden">
-            <h1>Configuração do Banco</h1>
-            <p style="color: #6b7280; font-size: 0.9rem; margin-bottom: 1.5rem;">
-                O PostgreSQL foi instalado com sucesso. Defina o usuário mestre e a senha para a database <strong>astral</strong>.
-            </p>
-            <form id="setup-form">
+        <!-- TELA 2: Configuração do Banco -->
+        <div id="db-screen">
+            <h1>🗄️ Configuração do Banco</h1>
+            <p class="subtitle">O PostgreSQL foi instalado com sucesso. Defina o usuário mestre e a senha para a database <strong>astral</strong>.</p>
+
+            <form id="db-form">
                 <div class="form-group">
-                    <label for="username">Usuário Administrador</label>
-                    <input type="text" id="username" name="username" required placeholder="ex: admin">
+                    <label for="db-user">Usuário Administrador</label>
+                    <input type="text" id="db-user" name="username" placeholder="ex: astral_admin" required autocomplete="off">
                 </div>
                 <div class="form-group">
-                    <label for="password">Senha Master</label>
-                    <input type="password" id="password" name="password" required placeholder="••••••••">
+                    <label for="db-pass">Senha Master</label>
+                    <input type="password" id="db-pass" name="password" placeholder="Senha forte" required autocomplete="new-password">
                 </div>
-                <button type="submit" id="btn-save">Salvar e Inicializar Sistema</button>
+                <button type="submit" class="btn" id="btn-save-db">
+                    Salvar e Inicializar Sistema
+                </button>
+                <div class="error-msg" id="db-error"></div>
             </form>
-            <p id="form-error" style="color: #dc2626; font-size: 0.85rem; margin-top: 1rem;" class="hidden"></p>
         </div>
 
-        <!-- Tela de Sucesso / Dashboard -->
-        <div id="success-screen" class="hidden">
-            <h1 style="color: var(--success-color);">Sistema Pronto!</h1>
-            <p>Configuração concluída com sucesso.</p>
-
-            <!-- Botão modificado com ID para receber o redirecionamento -->
-            <button id="btn-finish" style="background-color: var(--success-color); margin-top: 1rem;">
+        <!-- TELA 3: Sistema Pronto -->
+        <div id="final-screen">
+            <div class="success-icon">✅</div>
+            <h1>Sistema Pronto!</h1>
+            <p class="subtitle">Configuração concluída com sucesso.<br>O instalador foi desligado. Agora o sistema roda pelo Nginx na porta 80.</p>
+            <button class="btn" id="btn-finish">
                 Concluir e Iniciar Sistema
             </button>
-
-            <!-- Preview do Dashboard Desbloqueado -->
-            <div class="dashboard-preview">
-                <div class="dash-header">Astral Platform Dashboard</div>
-                <div class="dash-body">
-                    <div class="sidebar">
-                        <ul>
-                            <li>📊 Visão Geral</li>
-                            <li>👥 Usuários</li>
-                            <li>⚙️ Configurações</li>
-                            <li>🔒 Segurança</li>
-                        </ul>
-                    </div>
-                    <div class="content-area">
-                        Área de Conteúdo Principal
-                    </div>
-                </div>
-            </div>
         </div>
     </div>
 
     <script>
-        const statusText = document.getElementById('status-text');
+        // ============================================
+        // FLUXO 1: Escutar SSE do backend (/api/stream)
+        // ============================================
         const progressBar = document.getElementById('progress-bar');
-        const packageLog = document.getElementById('package-log');
-
+        const statusText = document.getElementById('status-text');
         const installScreen = document.getElementById('install-screen');
-        const credentialScreen = document.getElementById('credential-screen');
-        const successScreen = document.getElementById('success-screen');
-
-        const setupForm = document.getElementById('setup-form');
-        const formError = document.getElementById('form-error');
+        const dbScreen = document.getElementById('db-screen');
+        const finalScreen = document.getElementById('final-screen');
         const btnFinish = document.getElementById('btn-finish');
 
-        let eventSource = null;
+        let redirectUrl = null;
+        let streamFinished = false;
 
         function connectSSE() {
-            eventSource = new EventSource('/api/stream');
+            const evtSource = new EventSource('/api/stream');
 
-            eventSource.onmessage = function(event) {
-                const data = JSON.parse(event.data);
+            evtSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
 
-                // Atualiza texto de status
-                statusText.textContent = data.status;
+                    // Atualiza barra de progresso
+                    progressBar.style.width = data.porcentagem + '%';
+                    progressBar.textContent = data.porcentagem + '%';
 
-                // Atualiza barra de progresso
-                progressBar.style.width = data.porcentagem + '%';
-                progressBar.textContent = data.porcentagem + '%';
+                    // Atualiza texto de status
+                    statusText.innerHTML = '<span class="spinner"></span> ' + data.status;
 
-                // Lógica específica para instalação de pacotes
-                if (data.status.includes("Instalando pacote:") || data.status.includes("postgresql")) {
-                    packageLog.style.display = 'block';
-                    packageLog.textContent = data.status;
-
-                    if (data.porcentagem >= 90 && data.status.includes("instalado")) {
-                         setTimeout(() => {
-                             showCredentials();
-                         }, 1000);
+                    // Guarda a URL de redirecionamento se vier
+                    if (data.redirect_url) {
+                        redirectUrl = data.redirect_url;
                     }
-                }
 
-                if (data.porcentagem === 100 && data.status === "Instalação concluída!") {
-                    progressBar.classList.add('success');
-                    packageLog.style.display = 'none';
-                    showCredentials();
+                    // Quando atingir 100%, fecha SSE e mostra formulário do banco
+                    if (data.porcentagem >= 100 && !streamFinished) {
+                        streamFinished = true;
+                        evtSource.close();
+
+                        // Aguarda 1s para mostrar o "100% - Concluído" antes de trocar de tela
+                        setTimeout(() => {
+                            installScreen.style.display = 'none';
+                            dbScreen.style.display = 'block';
+                        }, 1000);
+                    }
+                } catch (err) {
+                    console.error('Erro ao processar SSE:', err);
                 }
             };
 
-            eventSource.onerror = function(err) {
-                console.error("Erro no SSE:", err);
-                if (eventSource.readyState === EventSource.CLOSED) {
-                    if (!credentialScreen.classList.contains('hidden') || !successScreen.classList.contains('hidden')) {
-                        return;
-                    }
-                    statusText.textContent = "Conexão perdida. Recarregue a página.";
-                    statusText.style.color = "#dc2626";
+            evtSource.onerror = function() {
+                if (!streamFinished) {
+                    statusText.innerHTML = '⚠️ Conexão perdida. Reconectando...';
+                }
+                evtSource.close();
+                // Tenta reconectar após 3s se ainda não finalizou
+                if (!streamFinished) {
+                    setTimeout(connectSSE, 3000);
                 }
             };
         }
 
-        function showCredentials() {
-            if (eventSource) eventSource.close();
-            installScreen.classList.add('hidden');
-            credentialScreen.classList.remove('hidden');
-        }
+        // Inicia conexão SSE ao carregar a página
+        connectSSE();
 
-        function showSuccess() {
-            credentialScreen.classList.add('hidden');
-            successScreen.classList.remove('hidden');
-        }
+        // ============================================
+        // FLUXO 2: Submit do formulário de banco
+        // ============================================
+        const dbForm = document.getElementById('db-form');
+        const btnSaveDb = document.getElementById('btn-save-db');
+        const dbError = document.getElementById('db-error');
 
-        setupForm.addEventListener('submit', async (e) => {
+        dbForm.addEventListener('submit', async function(e) {
             e.preventDefault();
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            const btn = document.getElementById('btn-save');
 
-            btn.disabled = true;
-            btn.textContent = "Processando...";
-            formError.classList.add('hidden');
+            const username = document.getElementById('db-user').value.trim();
+            const password = document.getElementById('db-pass').value;
+            const dbErrorEl = document.getElementById('db-error');
+
+            if (!username || !password) {
+                dbErrorEl.textContent = 'Preencha usuário e senha.';
+                dbErrorEl.style.display = 'block';
+                return;
+            }
+
+            // Desabilita botão e mostra loading
+            btnSaveDb.disabled = true;
+            btnSaveDb.innerHTML = '<span class="spinner"></span> Criando database...';
+            dbErrorEl.style.display = 'none';
 
             try {
                 const response = await fetch('/api/setup-db', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ username, password })
                 });
 
                 const result = await response.json();
 
                 if (response.ok && result.success) {
-                    showSuccess();
-
-                    // Injeta a URL de redirecionamento no botão verde
-                    btnFinish.onclick = () => {
-                        fetch('/api/shutdown', { method: 'POST' }).finally(() => {
-                            if (result.redirect_url) {
-                                window.location.href = result.redirect_url;
-                            } else {
-                                window.location.reload();
-                            }
-                        });
-                    };
+                    // Sucesso: guarda URL e mostra tela final
+                    if (result.redirect_url) {
+                        redirectUrl = result.redirect_url;
+                    }
+                    dbScreen.style.display = 'none';
+                    finalScreen.style.display = 'block';
                 } else {
-                    throw new Error(result.error || "Falha ao criar usuário");
+                    dbErrorEl.textContent = result.error || 'Erro desconhecido ao criar banco.';
+                    dbErrorEl.style.display = 'block';
+                    btnSaveDb.disabled = false;
+                    btnSaveDb.textContent = 'Salvar e Inicializar Sistema';
                 }
-            } catch (error) {
-                formError.textContent = error.message;
-                formError.classList.remove('hidden');
-                btn.disabled = false;
-                btn.textContent = "Salvar e Inicializar Sistema";
+            } catch (err) {
+                dbErrorEl.textContent = 'Falha de rede ao contatar o servidor.';
+                dbErrorEl.style.display = 'block';
+                btnSaveDb.disabled = false;
+                btnSaveDb.textContent = 'Salvar e Inicializar Sistema';
             }
         });
 
-        // Inicia conexão ao carregar
-        connectSSE();
+        // ============================================
+        // FLUXO 3: Botão final -> redireciona porta 80
+        // ============================================
+        btnFinish.addEventListener('click', function() {
+            if (redirectUrl) {
+                // Envia sinal de shutdown para o Flask (opcional, já vai morrer sozinho)
+                fetch('/api/shutdown', { method: 'POST' }).catch(() => {});
+
+                // Aguarda 1s para o Flask processar shutdown e redireciona para Nginx (porta 80)
+                setTimeout(() => {
+                    window.location.href = redirectUrl;
+                }, 1000);
+            } else {
+                // Fallback: usa o IP atual sem porta (padrão 80)
+                window.location.href = window.location.protocol + '//' + window.location.hostname + '/';
+            }
+        });
     </script>
 </body>
 </html>
