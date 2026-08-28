@@ -294,7 +294,11 @@ def setup_dnsmasq_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, 
         print(f"[dry-run] Criaria o arquivo {conf_file} com o conteúdo:\n{content}")
 
 def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str], setup_dhcp: bool, os_family: str):
-    print("\n== Aplicando regras avançadas de firewall ==")
+    print("\n== Aplicando regras avançadas de firewall e habilitando IP Forwarding ==")
+
+    # Habilita o IP Forwarding no Kernel para o roteamento funcionar
+    run_command("echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-ipforward.conf", dry_run=dry_run)
+    run_command("sysctl -p /etc/sysctl.d/99-ipforward.conf", dry_run=dry_run, check=False)
 
     run_command("iptables -F", dry_run=dry_run)
     run_command("iptables -X", dry_run=dry_run)
