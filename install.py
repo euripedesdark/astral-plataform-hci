@@ -4,8 +4,9 @@
 Instalador Web Unificado - Fluxo Lógico em 10 Passos
 Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
-Autossuficiente: Instala suas próprias dependências (Flask) se necessário.
+Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
+Inclui abertura automática de firewall (Portas 5000 e 9090).
 """
 
 import os
@@ -21,6 +22,7 @@ import re
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PORT = 5000
 HOST_IP = "0.0.0.0"
+EXTRA_PORT = 9090  # Porta adicional solicitada
 
 # Estado global para o stream SSE
 class InstallState:
@@ -28,7 +30,6 @@ class InstallState:
         self.progress = 0
         self.status = "Aguardando conexão..."
         self.package_name = ""
-        self.clients = []
         self.lock = threading.Lock()
 
 state = InstallState()
@@ -60,6 +61,47 @@ def detect_distro():
         pass
     return 'unknown'
 
+def configure_firewall():
+    """Abre as portas 5000 e 9090 no firewall (iptables ou firewalld)."""
+    print("[INFO] Configurando firewall para portas {} e {}...".format(PORT, EXTRA_PORT))
+
+    # Tenta usar firewalld primeiro (padrão RHEL/Fedora)
+    try:
+        result = subprocess.run(['systemctl', 'is-active', '--quiet', 'firewalld'])
+        if result.returncode == 0:
+            print("[INFO] Firewalld detectado. Adicionando regras...")
+            subprocess.run(['firewall-cmd', '--permanent', '--add-port={}/tcp'.format(PORT)], check=True, capture_output=True)
+            subprocess.run(['firewall-cmd', '--permanent', '--add-port={}/tcp'.format(EXTRA_PORT)], check=True, capture_output=True)
+            subprocess.run(['firewall-cmd', '--reload'], check=True, capture_output=True)
+            print("[OK] Portas abertas no firewalld.")
+            return
+    except Exception:
+        pass
+
+    # Fallback para iptables (comum em servidores mínimos ou Debian sem firewalld)
+    print("[INFO] Tentando configurar via iptables...")
+    try:
+        # Regras temporárias (imediatas)
+        subprocess.run(['iptables', '-I', 'INPUT', '-p', 'tcp', '--dport', str(PORT), '-j', 'ACCEPT'], check=True, capture_output=True)
+        subprocess.run(['iptables', '-I', 'INPUT', '-p', 'tcp', '--dport', str(EXTRA_PORT), '-j', 'ACCEPT'], check=True, capture_output=True)
+
+        # Persistência (tentativa genérica)
+        # Debian/Ubuntu
+        if os.path.exists('/etc/init.d/iptables-persistent') or os.path.exists('/usr/sbin/netfilter-persistent'):
+            subprocess.run(['sh', '-c', 'iptables-save > /etc/iptables/rules.v4'], check=True, capture_output=True)
+            print("[OK] Regras salvas em /etc/iptables/rules.v4")
+        # RHEL/CentOS (se usar serviço iptables antigo)
+        elif os.path.exists('/etc/sysconfig/iptables'):
+            subprocess.run(['sh', '-c', 'iptables-save > /etc/sysconfig/iptables'], check=True, capture_output=True)
+            print("[OK] Regras salvas em /etc/sysconfig/iptables")
+        else:
+            print("[AVISO] Regras aplicadas temporariamente. Reinício pode remover as regras se não houver serviço de persistência ativo.")
+
+        print("[OK] Portas abertas no iptables.")
+    except Exception as e:
+        print(f"[AVISO] Falha ao configurar firewall automaticamente: {e}")
+        print("[AVISO] Você pode precisar abrir as portas manualmente.")
+
 def ensure_flask_installed():
     """Verifica e instala o Flask se necessário."""
     try:
@@ -70,50 +112,51 @@ def ensure_flask_installed():
         print("[!] Flask não encontrado. Instalando automaticamente...")
         distro = detect_distro()
 
-        # Tenta primeiro via gerenciador de pacotes nativo
-        cmd_pkg = None
+        # Passo 1: Garantir que o pip está instalado
+        pip_install_cmd = ""
         if distro == 'debian':
-            subprocess.run("apt-get update", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            cmd_pkg = "apt-get install -y python3-flask"
+            # No Debian, geralmente python3-pip já resolve
+            pip_install_cmd = "apt-get update && apt-get install -y python3-pip"
         elif distro == 'rhel':
-            # Tenta via dnf, mas sabemos que pode falhar no RHEL 10 sem repos extras
-            cmd_pkg = "dnf install -y python3-flask"
+            # RHEL 10: Instala python3-pip via dnf
+            pip_install_cmd = "dnf install -y python3-pip"
         elif distro == 'arch':
-            cmd_pkg = "pacman -Sy --noconfirm python-flask"
-
-        if cmd_pkg:
-            print(f"[INFO] Tentando instalação via gerenciador de pacotes ({distro})...")
-            result = subprocess.run(cmd_pkg, shell=True, capture_output=True, text=True)
-            if result.returncode == 0:
-                print("[OK] Flask instalado com sucesso via gerenciador de pacotes.")
-                return True
-            else:
-                print(f"[AVISO] Falha na instalação via pacote ({result.stderr.strip()[:100]}...).")
-                print("[INFO] Tentando fallback via pip3...")
-
-        # Fallback: Instalação via pip3 (Funciona em qualquer distro se pip estiver presente)
-        # No Python 3.12+ (RHEL 10, Debian 12), precisamos da flag --break-system-packages
-        cmd_pip = "pip3 install flask --break-system-packages"
-
-        try:
-            result_pip = subprocess.run(cmd_pip, shell=True, capture_output=True, text=True)
-            if result_pip.returncode == 0:
-                print("[OK] Flask instalado com sucesso via pip3.")
-                return True
-            else:
-                err_msg = result_pip.stderr.strip()
-                print(f"[ERRO] Falha ao instalar via pip3: {err_msg}")
-
-                # Dica específica para RHEL se pip falhar também
-                if distro == 'rhel':
-                    print("\n[CRÍTICO] Nem dnf nem pip conseguiram instalar o Flask.")
-                    print("[SUGESTÃO] No RHEL/CentOS/Alma, talvez seja necessário instalar o pip primeiro:")
-                    print("           sudo dnf install -y python3-pip")
-                    print("           Ou habilitar o repositório CRB/AppStream corretamente.")
-                return False
-        except Exception as e:
-            print(f"[ERRO] Exceção ao tentar pip3: {str(e)}")
+            pip_install_cmd = "pacman -Sy --noconfirm python-pip"
+        else:
+            print("[ERRO] Distribuição não suportada para instalação automática.")
             return False
+
+        print(f"[INFO] Instalando pip ({distro})...")
+        res_pip = subprocess.run(pip_install_cmd, shell=True, capture_output=True, text=True)
+        if res_pip.returncode != 0:
+            print(f"[ERRO] Falha ao instalar pip: {res_pip.stderr}")
+            return False
+
+        # Passo 2: Instalar Flask via pip
+        # Usamos --break-system-packages para evitar erros em distros modernas (PEP 668)
+        # e --user se falhar como root (embora rodemos como root)
+        pip_flask_cmd = "pip3 install flask --break-system-packages"
+
+        # Em alguns casos de RHEL restrito, pode precisar de --trusted-host pypi.org
+        # Mas vamos tentar o padrão primeiro.
+
+        print("[INFO] Instalando Flask via pip...")
+        res_flask = subprocess.run(pip_flask_cmd, shell=True, capture_output=True, text=True)
+
+        if res_flask.returncode != 0:
+            # Tentativa secundária com flags mais permissivas se falhar
+            print("[AVISO] Primeira tentativa falhou. Tentando com flags alternativas...")
+            res_flask_retry = subprocess.run(
+                "pip3 install flask --break-system-packages --trusted-host pypi.org --trusted-host files.pythonhosted.org",
+                shell=True, capture_output=True, text=True
+            )
+            if res_flask_retry.returncode != 0:
+                print(f"[ERRO] Falha ao instalar Flask via pip: {res_flask_retry.stderr}")
+                print("[SUGESTÃO] Verifique conexão de internet ou instale manualmente: pip3 install flask")
+                return False
+
+        print("[OK] Flask instalado com sucesso via pip.")
+        return True
 
 def run_command_stream(cmd, shell=True):
     """Executa comando capturando saída em tempo real para o stream."""
@@ -126,9 +169,7 @@ def run_command_stream(cmd, shell=True):
         bufsize=1
     )
 
-    output_buffer = ""
     for line in process.stdout:
-        output_buffer += line
         # Tenta extrair nome do pacote sendo instalado
         match = re.search(r'(?:unpacking|installing|upgrading|processing)\s+([a-zA-Z0-9\-_.]+)', line, re.IGNORECASE)
         if match:
@@ -148,6 +189,9 @@ def update_progress(percent, status_msg):
 def installation_thread():
     """Orquestra os Passos 5 a 8."""
     time.sleep(2) # Aguarda cliente conectar
+
+    # Configura Firewall antes de tudo
+    configure_firewall()
 
     distro = detect_distro()
     update_cmd = ""
@@ -181,7 +225,6 @@ def installation_thread():
     update_progress(55, "Instalando o motor do banco de dados...")
     pg_pkg = "postgresql postgresql-contrib"
 
-    # Executa com stream para capturar nomes dos pacotes
     success = run_command_stream(f"{install_cmd_base} {pg_pkg}")
 
     if success:
@@ -194,24 +237,17 @@ def installation_thread():
 
     svc_name = "postgresql"
 
-    # Lógica específica para RHEL/CentOS/Alma/Rocky
     if distro == 'rhel':
         svc_name = "postgresql-server"
-        # No RHEL, após instalar, é necessário inicializar o DB pela primeira vez manualmente
-        print("[INFO] Detectado RHEL/Fedora. Inicializando banco de dados pela primeira vez...")
-        init_result = subprocess.run("postgresql-setup --initdb", shell=True, capture_output=True, text=True)
-        if init_result.returncode != 0 and "is not empty" not in init_result.stderr:
-            print(f"[AVISO] Falha ao inicializar DB: {init_result.stderr}")
-
+        print("[INFO] Detectado RHEL/Fedora. Inicializando banco de dados...")
+        # Tenta inicializar, ignora erro se já existir
+        subprocess.run("postgresql-setup --initdb", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
-
     elif distro == 'arch':
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
-
     else:
-        # Debian/Ubuntu geralmente iniciam sozinhos
         subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
 
     # Validação do Socket
@@ -226,7 +262,7 @@ def installation_thread():
                 db_ready = True
                 print(f"[OK] PostgreSQL respondendo após {i+1} segundos.")
                 break
-        except Exception as e:
+        except Exception:
             pass
         time.sleep(1)
 
@@ -238,7 +274,6 @@ def installation_thread():
 # Importação tardia do Flask após verificação
 if not ensure_flask_installed():
     print("\n[CRÍTICO] Não foi possível prosseguir sem o Flask.")
-    print("[AÇÃO MANUAL] Execute: sudo pip3 install flask --break-system-packages")
     sys.exit(1)
 
 from flask import Flask, send_from_directory, request, jsonify, Response
@@ -269,7 +304,7 @@ def stream():
                     "package": state.package_name
                 }
 
-            yield f" {json.dumps(data)}\n\n"
+            yield f"data: {json.dumps(data)}\n\n"
             if state.progress >= 100:
                 break
             time.sleep(0.5)
@@ -303,23 +338,29 @@ def setup_db():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
+    # Passo 1: Verificação de Root
     if os.geteuid() != 0:
         print("ERRO: Este script deve ser executado com sudo.")
         print("Uso correto: sudo python3 install.py")
         sys.exit(1)
 
+    # Passo 2: Captura IP
     local_ip = get_local_ip()
 
+    # Passo 3: Sinalização Visual no Terminal
     print("\n" + "="*60)
     print("[GIT PROJETO] INSTALADOR WEB ATIVO NA PASTA LOCAL")
     print("="*60)
     print(f"[AÇÃO] Abra o navegador em outra máquina e acesse:")
     print(f"[ENDEREÇO] http://{local_ip}:{PORT}")
+    print(f"[EXTRA]  Porta 9090 também foi liberada no firewall.")
     print("="*60 + "\n")
     print("Aguardando conexão... (Ctrl+C para cancelar)")
 
+    # Inicia thread de instalação em background
     t = threading.Thread(target=installation_thread)
     t.daemon = True
     t.start()
 
+    # Inicia Servidor Flask
     app.run(host=HOST_IP, port=PORT, threaded=True)
