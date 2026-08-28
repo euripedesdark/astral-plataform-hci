@@ -78,7 +78,6 @@ def detect_pg_service():
 
 def configure_firewall():
     """Abre as portas essenciais no firewall limpando regras antigas duplicadas."""
-    # Portas: SSH(22), HTTP(80), HTTPS(443), React(3000), API(5000), Vite(5173), Postgres(5432), Extra(9090)
     ports_to_open = [22, 80, 443, 3000, PORT, 5173, 5432, EXTRA_PORT]
     print(f"[INFO] Verificando firewall para as portas {ports_to_open}...")
 
@@ -279,10 +278,20 @@ def installation_thread():
     success_nginx = run_command_stream(f"{install_cmd_base} nginx")
 
     if success_nginx:
-        subprocess.run("systemctl enable nginx", shell=True, capture_output=True)
-        subprocess.run("systemctl start nginx", shell=True, capture_output=True)
-        print("[OK] Nginx instalado, habilitado e iniciado com sucesso.")
-        update_progress(75, "Nginx instalado.")
+        # Previne que o Apache nativo dê conflito com o Nginx na porta 80
+        subprocess.run("systemctl disable --now httpd", shell=True, capture_output=True, stderr=subprocess.DEVNULL)
+        subprocess.run("systemctl disable --now apache2", shell=True, capture_output=True, stderr=subprocess.DEVNULL)
+
+        r_en = subprocess.run("systemctl enable nginx", shell=True, capture_output=True, text=True)
+        r_st = subprocess.run("systemctl start nginx", shell=True, capture_output=True, text=True)
+        if r_st.returncode == 0:
+            print("[OK] Nginx instalado, habilitado e iniciado com sucesso.")
+            update_progress(75, "Nginx instalado e iniciado.")
+        else:
+            print(f"[ERRO] Falha ao iniciar Nginx: {r_st.stderr}")
+            log = subprocess.run("journalctl -u nginx --no-pager -n 20", shell=True, capture_output=True, text=True)
+            print(log.stdout)
+            update_progress(75, "Nginx instalado (falha no start).")
     else:
         print("[ERRO] Falha ao instalar Nginx.")
         update_progress(75, "Erro na instalação do Nginx.")
@@ -401,6 +410,10 @@ def stream():
                     "package": state.package_name
                 }
 
+                # Envia URL de redirecionamento para o HTTPS (porta 443) ao finalizar
+                if state.progress >= 100:
+                    data["redirect_url"] = f"https://{get_local_ip()}"
+
             yield f"data: {json.dumps(data)}\n\n"
             if state.progress >= 100:
                 break
@@ -428,7 +441,12 @@ def setup_db():
         if res_db.returncode != 0 and "already exists" not in res_db.stderr:
             return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
 
-        return jsonify({"success": True, "message": "Usuário e database 'astral' criados com sucesso!"})
+        # Inclui a URL de redirecionamento também nesta rota, caso o frontend use daqui
+        return jsonify({
+            "success": True,
+            "message": "Usuário e database 'astral' criados com sucesso!",
+            "redirect_url": f"https://{get_local_ip()}"
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
