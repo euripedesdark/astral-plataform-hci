@@ -6,7 +6,7 @@ Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
-Inclui abertura automática de firewall (Portas 22, 5000, 5432, 9090) sem duplicidade.
+Inclui abertura automática de firewall e configuração SELinux/PostgreSQL.
 """
 
 import os
@@ -17,6 +17,7 @@ import time
 import json
 import threading
 import re
+import shutil
 
 # Configurações Globais
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -222,37 +223,54 @@ def installation_thread():
     else:
         update_progress(90, "Erro na instalação do PostgreSQL (verifique logs).")
 
-    update_progress(95, "Ativando serviços...")
+    update_progress(95, "Ativando serviços e domando o SELinux...")
 
     svc_name = "postgresql"
 
-    # Correção robusta para inicialização no RHEL/Fedora
+    # Correção robusta para inicialização no RHEL/Fedora com SELinux e Bind de Porta
     if distro == 'rhel':
         svc_name = "postgresql-server"
         print("[INFO] Detectado RHEL/Fedora. Inicializando banco de dados...")
         subprocess.run(f"systemctl stop {svc_name}", shell=True, capture_output=True)
 
-        # O initdb pode falhar se a pasta não estiver com permissão para o usuário postgres
         pgdata_check = subprocess.run("ls -A /var/lib/pgsql/data", shell=True, capture_output=True, text=True)
         if not pgdata_check.stdout.strip():
             print("[INFO] Inicializando diretório PGDATA...")
-            # Força o setup como o usuário root via binário apropriado e garante chown
+
+            # Acerta permissões
             subprocess.run("chown -R postgres:postgres /var/lib/pgsql", shell=True, capture_output=True)
+
+            # ====================================================
+            # CORREÇÃO SELINUX: Restaura contexto de segurança
+            # ====================================================
+            if shutil.which("restorecon"):
+                print("[INFO] Aplicando restorecon para o SELinux na pasta do PostgreSQL...")
+                subprocess.run("restorecon -Rv /var/lib/pgsql", shell=True, capture_output=True)
+
             init_res = subprocess.run("/usr/bin/postgresql-setup --initdb", shell=True, capture_output=True, text=True)
             if init_res.returncode != 0:
                 print(f"[ERRO] Falha no initdb: {init_res.stderr}")
+            else:
+                # ====================================================
+                # CORREÇÃO NETWORK: Configura para escutar externamente
+                # ====================================================
+                print("[INFO] Configurando banco para escutar em todas as interfaces...")
+                subprocess.run("echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
+                subprocess.run("echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/pgsql/data/pg_hba.conf", shell=True)
         else:
             print("[INFO] Diretório PGDATA já possui arquivos. Pulando initdb.")
 
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
     elif distro == 'arch':
-        # Arch requer initdb manual geralmente
         if not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
             subprocess.run("sudo -u postgres initdb -D /var/lib/postgres/data", shell=True, capture_output=True)
+            subprocess.run("echo \"listen_addresses = '*'\" >> /var/lib/postgres/data/postgresql.conf", shell=True)
+            subprocess.run("echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/postgres/data/pg_hba.conf", shell=True)
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
     else:
+        # Debian/Ubuntu config paths are different, usually handled automatically during install
         subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
 
     # Validação do Socket
