@@ -6,15 +6,7 @@ Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
-Inclui abertura automática de firewall e configuração SELinux/PostgreSQL.
-
-CORREÇÕES APLICADAS (v2):
-- RHEL/Fedora/Rocky: a unit correta do systemd é "postgresql" (não "postgresql-server").
-- Detecção automática da unit (postgresql, postgresql-16, etc. via systemctl cat).
-- Erros de systemctl não são mais silenciados (stderr + journalctl visíveis).
-- listen_addresses/pg_hba aplicados de forma idempotente mesmo se o PGDATA já existir.
-- Permissões do PGDATA corrigidas (chown postgres / chmod 700) antes do start.
-- Node.js, NPM e Curl restaurados no fluxo de instalação.
+Inclui abertura automática de firewall, Node.js/React e configuração PostgreSQL.
 """
 
 import os
@@ -71,9 +63,7 @@ def detect_distro():
     return 'unknown'
 
 def detect_pg_service():
-    """CORREÇÃO: Descobre o nome real da unit do PostgreSQL neste sistema.
-    Em RHEL/Fedora/Rocky/Alma a unit é 'postgresql'; com repo PGDG pode ser
-    'postgresql-15'/'postgresql-16' etc."""
+    """Descobre o nome real da unit do PostgreSQL neste sistema."""
     candidates = [
         "postgresql",
         "postgresql-server",
@@ -113,13 +103,11 @@ def configure_firewall():
     try:
         rules_changed = False
         for p in ports_to_open:
-            # Loop forçando a exclusão da regra caso exista múltiplas vezes
             while True:
                 del_check = subprocess.run(['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], capture_output=True)
                 if del_check.returncode != 0:
                     break
 
-            # Insere a regra de forma limpa e única no topo
             subprocess.run(['iptables', '-I', 'INPUT', '1', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], check=True, capture_output=True)
             rules_changed = True
 
@@ -204,7 +192,6 @@ def update_progress(percent, status_msg):
         state.status = status_msg
 
 def installation_thread():
-    """Orquestra os Passos 5 a 8."""
     time.sleep(2)
 
     configure_firewall()
@@ -226,34 +213,55 @@ def installation_thread():
         update_progress(0, "Erro: Distro não detectada.")
         return
 
+    # Passo: Sincronização
     update_progress(5, "Sincronizando repositórios do Linux...")
     run_command_stream(update_cmd)
     update_progress(20, "Repositórios sincronizados.")
 
-    update_progress(25, "Configurando ambiente Node.js...")
-    node_pkg = "nodejs npm curl"
-    run_command_stream(f"{install_cmd_base} {node_pkg}")
-    update_progress(50, "Node.js instalado.")
+    # Passo: Instalação Node.js, NPM e React
+    update_progress(25, "Instalando ambiente Node.js e ReactJS...")
 
-    update_progress(55, "Instalando o motor do banco de dados...")
+    # Na família RHEL, o NPM é instalado juntamente com o pacote 'nodejs' ou usando 'npm' explícito.
+    if distro == 'debian':
+        node_pkg = "nodejs npm curl"
+    else:
+        node_pkg = "nodejs curl"
+
+    print(f"[INFO] Instalando pacotes base: {node_pkg}")
+    success_node = run_command_stream(f"{install_cmd_base} {node_pkg}")
+
+    if success_node:
+        print("[INFO] Instalando ambiente ReactJS via NPM (create-react-app e vite)...")
+        # Instala ferramentas do react globalmente para uso futuro
+        npm_res = subprocess.run("npm install -g create-react-app vite", shell=True, capture_output=True, text=True)
+        if npm_res.returncode == 0:
+            print("[OK] ReactJS e Node.js instalados.")
+        else:
+            print(f"[AVISO] Node.js instalou, mas NPM falhou ao instalar React: {npm_res.stderr}")
+    else:
+        print("[ERRO] Falha ao instalar o pacote Node.js. Verifique os repositórios.")
+
+    update_progress(50, "Node.js e ReactJS processados.")
+
+    # Passo: PostgreSQL
+    update_progress(55, "Instalando o motor do banco de dados (PostgreSQL)...")
     pg_pkg = "postgresql postgresql-contrib"
     if distro == 'rhel':
         pg_pkg = "postgresql postgresql-server postgresql-contrib"
 
-    success = run_command_stream(f"{install_cmd_base} {pg_pkg}")
+    success_pg = run_command_stream(f"{install_cmd_base} {pg_pkg}")
 
-    if success:
-        update_progress(90, "PostgreSQL instalado.")
+    if success_pg:
+        update_progress(70, "PostgreSQL instalado.")
     else:
-        update_progress(90, "Erro na instalação do PostgreSQL (verifique logs).")
+        update_progress(70, "Erro na instalação do PostgreSQL (verifique logs).")
 
-    update_progress(95, "Ativando serviços e domando o SELinux...")
+    # Passo: Configuração do Banco e SELinux
+    update_progress(75, "Ativando serviços e domando o SELinux...")
 
     svc_name = "postgresql"
 
-    # Correção robusta para inicialização no RHEL/Fedora com SELinux e Bind de Porta
     if distro == 'rhel':
-        # CORREÇÃO: a unit no RHEL/Fedora/Rocky é "postgresql", não "postgresql-server"
         svc_name = detect_pg_service()
         print(f"[INFO] Detectado RHEL/Fedora. Serviço identificado: {svc_name}")
         subprocess.run(f"systemctl stop {svc_name}", shell=True, capture_output=True)
@@ -261,13 +269,8 @@ def installation_thread():
         pgdata_check = subprocess.run("ls -A /var/lib/pgsql/data", shell=True, capture_output=True, text=True)
         if not pgdata_check.stdout.strip():
             print("[INFO] Inicializando diretório PGDATA...")
-
-            # Acerta permissões
             subprocess.run("chown -R postgres:postgres /var/lib/pgsql", shell=True, capture_output=True)
 
-            # ====================================================
-            # CORREÇÃO SELINUX: Restaura contexto de segurança
-            # ====================================================
             if shutil.which("restorecon"):
                 print("[INFO] Aplicando restorecon para o SELinux na pasta do PostgreSQL...")
                 subprocess.run("restorecon -Rv /var/lib/pgsql", shell=True, capture_output=True)
@@ -278,13 +281,9 @@ def installation_thread():
         else:
             print("[INFO] Diretório PGDATA já possui arquivos. Pulando initdb.")
 
-        # CORREÇÃO: garante dono/permissão corretos do data directory antes do start
         subprocess.run("chown -R postgres:postgres /var/lib/pgsql/data", shell=True, capture_output=True)
         subprocess.run("chmod 700 /var/lib/pgsql/data", shell=True, capture_output=True)
 
-        # ====================================================
-        # CORREÇÃO NETWORK: idempotente (grep || echo), roda mesmo se PGDATA já existir
-        # ====================================================
         print("[INFO] Configurando banco para escutar em todas as interfaces...")
         subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql.conf || "
                        "echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
@@ -295,7 +294,6 @@ def installation_thread():
         if r.returncode != 0:
             print(f"[ERRO] systemctl enable {svc_name} falhou: {r.stderr}")
 
-        # CORREÇÃO: não silenciar mais o erro de start (era aqui que o bug se escondia)
         r = subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True, text=True)
         if r.returncode != 0:
             print(f"[ERRO] Falha ao iniciar {svc_name}: {r.stderr}")
@@ -317,12 +315,12 @@ def installation_thread():
             log = subprocess.run(f"journalctl -u {svc_name} --no-pager -n 40", shell=True, capture_output=True, text=True)
             print(log.stdout)
     else:
-        # Debian/Ubuntu config paths are different, usually handled automatically during install
         r = subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True, text=True)
         if r.returncode != 0:
             print(f"[ERRO] Falha ao reiniciar {svc_name}: {r.stderr}")
 
     # Validação do Socket
+    update_progress(85, "Aguardando o serviço de banco de dados...")
     db_ready = False
     print("[INFO] Aguardando PostgreSQL aceitar conexões na porta 5432...")
     for i in range(30):
