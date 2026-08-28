@@ -6,7 +6,7 @@ Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
-Inclui abertura automática de firewall, Node.js/React e configuração PostgreSQL.
+Inclui abertura automática de firewall, Node.js/React, Nginx e configuração PostgreSQL.
 """
 
 import os
@@ -78,7 +78,8 @@ def detect_pg_service():
 
 def configure_firewall():
     """Abre as portas essenciais no firewall limpando regras antigas duplicadas."""
-    ports_to_open = [22, PORT, 5432, EXTRA_PORT]
+    # Portas: SSH(22), HTTP(80), HTTPS(443), React(3000), API(5000), Vite(5173), Postgres(5432), Extra(9090)
+    ports_to_open = [22, 80, 443, 3000, PORT, 5173, 5432, EXTRA_PORT]
     print(f"[INFO] Verificando firewall para as portas {ports_to_open}...")
 
     try:
@@ -118,7 +119,7 @@ def configure_firewall():
                 subprocess.run(['sh', '-c', 'iptables-save > /etc/sysconfig/iptables'], check=True, capture_output=True)
         print("[OK] Verificação do iptables concluída e regras aplicadas limpas.")
     except Exception as e:
-        print(f"[AVISO] Falha ao configurar firewall automatically: {e}")
+        print(f"[AVISO] Falha ao configurar firewall automaticamente: {e}")
 
 def ensure_flask_installed():
     """Verifica e instala o Flask se necessário."""
@@ -258,10 +259,10 @@ def installation_thread():
     else:
         print("[ERRO] Falha ao instalar o pacote Node.js e NPM. Verifique os repositórios do SO.")
 
-    update_progress(50, "Node.js e ReactJS processados.")
+    update_progress(45, "Node.js e ReactJS processados.")
 
     # Passo: PostgreSQL
-    update_progress(55, "Instalando o motor do banco de dados (PostgreSQL)...")
+    update_progress(50, "Instalando o motor do banco de dados (PostgreSQL)...")
     pg_pkg = "postgresql postgresql-contrib"
     if distro == 'rhel':
         pg_pkg = "postgresql postgresql-server postgresql-contrib"
@@ -269,12 +270,25 @@ def installation_thread():
     success_pg = run_command_stream(f"{install_cmd_base} {pg_pkg}")
 
     if success_pg:
-        update_progress(70, "PostgreSQL instalado.")
+        update_progress(65, "PostgreSQL instalado.")
     else:
-        update_progress(70, "Erro na instalação do PostgreSQL (verifique logs).")
+        update_progress(65, "Erro na instalação do PostgreSQL (verifique logs).")
+
+    # Passo: Nginx
+    update_progress(70, "Instalando servidor web Nginx...")
+    success_nginx = run_command_stream(f"{install_cmd_base} nginx")
+
+    if success_nginx:
+        subprocess.run("systemctl enable nginx", shell=True, capture_output=True)
+        subprocess.run("systemctl start nginx", shell=True, capture_output=True)
+        print("[OK] Nginx instalado, habilitado e iniciado com sucesso.")
+        update_progress(75, "Nginx instalado.")
+    else:
+        print("[ERRO] Falha ao instalar Nginx.")
+        update_progress(75, "Erro na instalação do Nginx.")
 
     # Passo: Configuração do Banco e SELinux
-    update_progress(75, "Ativando serviços e domando o SELinux...")
+    update_progress(80, "Ativando serviços e domando o SELinux...")
 
     svc_name = "postgresql"
 
@@ -337,7 +351,7 @@ def installation_thread():
             print(f"[ERRO] Falha ao reiniciar {svc_name}: {r.stderr}")
 
     # Validação do Socket
-    update_progress(85, "Aguardando o serviço de banco de dados...")
+    update_progress(90, "Aguardando o serviço de banco de dados...")
     db_ready = False
     print("[INFO] Aguardando PostgreSQL aceitar conexões na porta 5432...")
     for i in range(30):
@@ -432,7 +446,7 @@ if __name__ == '__main__':
     print("="*60)
     print(f"[AÇÃO] Abra o navegador em outra máquina e acesse:")
     print(f"[ENDEREÇO] http://{local_ip}:{PORT}")
-    print(f"[EXTRA]  Portas 22, 5432 e 9090 também foram verificadas/liberadas.")
+    print(f"[EXTRA]  Portas 22, 80, 443, 3000, 5000, 5173, 5432 e 9090 verificadas/liberadas.")
     print("="*60 + "\n")
     print("Aguardando conexão... (Ctrl+C para cancelar)")
 
