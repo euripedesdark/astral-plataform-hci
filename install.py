@@ -7,7 +7,7 @@ Uso: sudo python3 install.py
 Autossuficiente: Instala pip e flask se necessário.
 Compatível com Debian, RHEL/CentOS/Alma/Rocky 10+, e Arch Linux.
 Inclui abertura de firewall (exclusivo via iptables), Node.js/React, Oracle Java 21, Nginx e PostgreSQL.
-Autodestruição blindada ativada na criação do banco.
+Autodestruição blindada ativada na criação do banco (1 minuto).
 """
 
 import os
@@ -275,89 +275,112 @@ def installation_thread():
 
         print("[INFO] Gerando configuração avançada do Nginx via Python...")
         host_fqdn = socket.getfqdn()
+        frontend_path = os.path.join(APP_DIR, "fabric", "frontend")
 
         nginx_conf = f"""server {{
     listen 80;
     server_name {host_fqdn};
 
-    location = / {{
+    # Servir arquivos estáticos do frontend (login.html, css, js, imagens)
+    root {frontend_path};
+    index login.html;
+
+    location / {{
+        try_files $uri $uri/ /login.html;
+    }}
+
+    # Requisições de API vão para o backend Spring Boot
+    location /api/ {{
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Tela inicial (dashboard Astral Platform)
     location /inicio {{
         proxy_pass http://127.0.0.1:8082;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # DNS Management
     location /dns {{
         proxy_pass http://127.0.0.1:8053;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Sublocação Pi-hole dentro de DNS
     location /dns/pihole {{
         proxy_pass http://127.0.0.1:8081/admin;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Firewall
     location /firewall {{
         proxy_pass http://127.0.0.1:8040;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Proxy System
     location /proxy {{
         proxy_pass http://127.0.0.1:8085;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Domain Controllers
     location /domain {{
         proxy_pass http://127.0.0.1:8090;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # PostgreSQL Admin
     location /postgres {{
         proxy_pass http://127.0.0.1:5433;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Web Server Admin
     location /web {{
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Virtual Machines
     location /vm {{
         proxy_pass http://127.0.0.1:8070;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Storage
     location /storage {{
         proxy_pass http://127.0.0.1:8060;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Network Config & VLAN
     location /network {{
         proxy_pass http://127.0.0.1:8024;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # System Alerts
     location /alerts {{
         proxy_pass http://127.0.0.1:8010;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
 
+    # Database Telemetry
     location /telemetry {{
         proxy_pass http://127.0.0.1:8015;
         proxy_set_header Host $host;
@@ -528,8 +551,8 @@ if __name__ == '__main__':
             if res_db.returncode != 0 and "already exists" not in res_db.stderr:
                 return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
 
-            # Bomba-relógio programada: 3 segundos após finalizar com sucesso, o script desliga.
-            print("\n[INFO] Banco de dados configurado! Agendando autodestruição do instalador para 3 segundos...")
+            # Bomba-relógio programada: 1 minuto (60 segundos) após finalizar com sucesso, o script desliga.
+            print("\n[INFO] Banco de dados configurado! Agendando encerramento do instalador para 1 minuto...")
             threading.Timer(60.0, lambda: os._exit(0)).start()
 
             return jsonify({
