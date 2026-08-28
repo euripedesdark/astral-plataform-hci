@@ -4,7 +4,7 @@
 """
 config-wan.py
 
-Script Universal de configuração de rede (WAN/LAN/VLAN), DHCP (Kea) e Firewall.
+Script Universal de configuração de rede (WAN/LAN/VLAN), DHCP (dnsmasq) e Firewall.
 Suporta: RHEL, Fedora, Nobara, Arch, EndeavourOS, Debian, Ubuntu, Pop!_OS e SUSE.
 Força o uso exclusivo do NetworkManager, exterminando systemd-resolved e netplan.
 
@@ -20,7 +20,6 @@ import os
 import re
 import shutil
 import ipaddress
-import json
 from typing import List, Optional, Tuple
 
 # ==========================================
@@ -243,64 +242,56 @@ def process_lan_vlan(dry_run: bool, iface: str) -> str:
 
     return final_ip
 
-def setup_kea_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, str, str, str]], dns_servers: List[str], domain_name: str, os_family: str):
-    print("\n== Configurando Servidor DHCP (Kea) ==")
+def setup_dnsmasq_dhcp_server(dry_run: bool, dhcp_configs: List[Tuple[str, str, str, str, str]], dns_servers: List[str], domain_name: str, os_family: str):
+    print("\n== Configurando Servidor DHCP (dnsmasq) ==")
 
-    kea_pkgs = "kea-dhcp4-server" if os_family == "debian" else "kea kea-dhcp4"
-    kea_svc = "kea-dhcp4-server" if os_family == "debian" else "kea-dhcp4"
+    if not shutil.which("dnsmasq"):
+        install_packages(["dnsmasq"], os_family, dry_run)
 
-    # Checagem blindada no Systemd em vez de olhar arquivo solto
-    svc_check = run_command(f"systemctl list-unit-files {kea_svc}.service", check=False, dry_run=dry_run)
-    if svc_check.returncode != 0:
-        install_packages(kea_pkgs.split(), os_family, dry_run)
+    conf_dir = "/etc/dnsmasq.d"
+    conf_file = os.path.join(conf_dir, "lan-dhcp.conf")
 
-    kea_conf_dir = "/etc/kea"
-    kea_conf_file = os.path.join(kea_conf_dir, "kea-dhcp4.conf")
+    content = "domain-needed\nbogus-priv\n\n"
 
-    kea_config = {
-        "Dhcp4": {
-            "interfaces-config": {"interfaces": [cfg[0] for cfg in dhcp_configs]},
-            "lease-database": {
-                "type": "memfile", "persist": True, "name": "/var/lib/kea/kea-leases4.csv", "lfc-interval": 3600
-            },
-            "valid-lifetime": 43200,
-            "option-data": [{"name": "domain-name-servers", "data": ", ".join(dns_servers) if dns_servers else "8.8.8.8, 8.8.4.4"}],
-            "subnet4": []
-        }
-    }
+    if dns_servers:
+        dns_str = ",".join(dns_servers)
+        content += f"dhcp-option=option:dns-server,{dns_str}\n"
+    else:
+        content += "dhcp-option=option:dns-server,8.8.8.8,8.8.4.4\n"
 
     if domain_name:
-        kea_config["Dhcp4"]["option-data"].append({"name": "domain-name", "data": domain_name})
+        content += f"domain={domain_name}\n"
+        content += f"dhcp-option=option:domain-name,{domain_name}\n\n"
 
     for iface, network_cidr, router_ip, start_ip, end_ip in dhcp_configs:
-        kea_config["Dhcp4"]["subnet4"].append({
-            "subnet": network_cidr,
-            "pools": [{"pool": f"{start_ip} - {end_ip}"}],
-            "option-data": [{"name": "routers", "data": router_ip}]
-        })
-
-    json_output = json.dumps(kea_config, indent=4)
+        content += f"# === Configuração para {iface} ===\n"
+        content += f"interface={iface}\n"
+        content += f"dhcp-range={iface},{start_ip},{end_ip},12h\n"
+        content += f"dhcp-option={iface},option:router,{router_ip}\n\n"
 
     if not dry_run:
-        os.makedirs(kea_conf_dir, exist_ok=True)
-        os.makedirs("/var/lib/kea", exist_ok=True)
+        os.makedirs(conf_dir, exist_ok=True)
 
-        # Garante que o arquivo de leases não tome erro de permissão
-        run_command("chmod 777 /var/lib/kea", dry_run=dry_run, check=False)
+        main_conf = "/etc/dnsmasq.conf"
+        if os.path.exists(main_conf):
+            with open(main_conf, "r") as f:
+                main_content = f.read()
+            if "conf-dir=/etc/dnsmasq.d" not in main_content:
+                with open(main_conf, "a") as f:
+                    f.write("\nconf-dir=/etc/dnsmasq.d/,*.conf\n")
 
-        with open(kea_conf_file, "w") as f:
-            f.write(json_output)
+        with open(conf_file, "w") as f:
+            f.write(content)
 
-        # Configurado para NÃO crashear o script se o Kea falhar
-        run_command(f"systemctl enable {kea_svc}", dry_run=dry_run, check=False)
-        restart_check = run_command(f"systemctl restart {kea_svc}", dry_run=dry_run, check=False)
+        run_command("systemctl enable dnsmasq", dry_run=dry_run, check=False)
+        restart_check = run_command("systemctl restart dnsmasq", dry_run=dry_run, check=False)
 
         if restart_check.returncode == 0:
-            print(f"✅ Kea DHCP configurado e rodando ({kea_svc})!")
+            print("✅ dnsmasq DHCP configurado e rodando com sucesso!")
         else:
-            print(f"❌ Aviso: Kea DHCP falhou ao iniciar. Verifique com: journalctl -xeu {kea_svc}")
+            print("❌ Aviso: dnsmasq falhou ao iniciar. Verifique com: journalctl -xeu dnsmasq")
     else:
-        print(f"[dry-run] Criaria o arquivo {kea_conf_file} com configuração JSON.")
+        print(f"[dry-run] Criaria o arquivo {conf_file} com o conteúdo:\n{content}")
 
 def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str], setup_dhcp: bool, os_family: str):
     print("\n== Aplicando regras avançadas de firewall ==")
@@ -320,6 +311,7 @@ def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str], s
         for lan in lan_ifaces:
             run_command(f"iptables -A INPUT -i {shlex.quote(lan)} -p udp -m multiport --dports 67,68 -j ACCEPT", dry_run=dry_run)
             run_command(f"iptables -A INPUT -i {shlex.quote(lan)} -p udp --dport 53 -j ACCEPT", dry_run=dry_run)
+            run_command(f"iptables -A INPUT -i {shlex.quote(lan)} -p tcp --dport 53 -j ACCEPT", dry_run=dry_run)
 
     for lan in lan_ifaces:
         run_command(f"iptables -A FORWARD -i {shlex.quote(lan)} -o {shlex.quote(wan_iface)} -j ACCEPT", dry_run=dry_run)
@@ -343,7 +335,7 @@ def apply_firewall_rules(dry_run: bool, wan_iface: str, lan_ifaces: List[str], s
     print("✅ Regras de firewall salvas com sucesso.")
 
 def main_interactive():
-    parser = argparse.ArgumentParser(description="Configuração inteligente WAN/LAN/DHCP(Kea)/Firewall Multidistro")
+    parser = argparse.ArgumentParser(description="Configuração inteligente WAN/LAN/DHCP(dnsmasq)/Firewall Multidistro")
     parser.add_argument("--dry-run", action="store_true", help="Mostra as ações sem aplicar")
     args = parser.parse_args()
     dry_run = args.dry_run
@@ -389,11 +381,11 @@ def main_interactive():
     setup_dhcp_flag = False
     domain_name = ""
 
-    if ask_yes_no("\nDeseja configurar ou AUDITAR as interfaces de LAN/VLAN? (Responda Y para instalar o Kea)"):
+    if ask_yes_no("\nDeseja configurar ou AUDITAR as interfaces de LAN/VLAN? (Responda Y para instalar o dnsmasq)"):
         ifaces_str = ask_question("Digite as interfaces separadas por vírgula (ex: ens224,ens256.10)")
         lan_ifaces = [iface.strip() for iface in ifaces_str.split(",")]
 
-        setup_dhcp_flag = ask_yes_no("Deseja habilitar servidor DHCP Kea (.100 a .199) para essas interfaces?", default=True)
+        setup_dhcp_flag = ask_yes_no("Deseja habilitar servidor DHCP dnsmasq (.100 a .199) para essas interfaces?", default=True)
         if setup_dhcp_flag:
             domain_name = ask_question("Digite o nome de domínio DHCP (ex: srvcloud.cloud) [deixe em branco para pular]", default="")
 
@@ -404,7 +396,7 @@ def main_interactive():
                 dhcp_configs.append((iface, network_cidr, router_ip, start_ip, end_ip))
 
     if setup_dhcp_flag and dhcp_configs:
-        setup_kea_dhcp_server(dry_run, dhcp_configs, dns_servers, domain_name, os_family)
+        setup_dnsmasq_dhcp_server(dry_run, dhcp_configs, dns_servers, domain_name, os_family)
 
     apply_firewall_rules(dry_run, wan_iface, lan_ifaces, setup_dhcp_flag, os_family)
 
