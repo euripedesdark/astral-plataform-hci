@@ -808,4 +808,4 @@ def installation_thread():
 
         subprocess.run("chown -R postgres:postgres /var/lib/pgsql/data", shell=True, capture_output=True)
         subprocess.run("chmod 700 /var/lib/pgsql/data", shell=True, capture_output=True)
-        subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql
+        subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
