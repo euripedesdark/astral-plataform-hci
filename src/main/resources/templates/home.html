@@ -3,28 +3,31 @@
 <head>
 <meta charset="UTF-8">
 <title th:text="${pageTitle}">ASTRAL PLATFORM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&display=swap" rel="stylesheet">
 <style>
   html,body{height:100%;margin:0}
   body{
-    background:url('/images/Fundo.png') no-repeat center center fixed;
+    background:#05070d url('/images/Fundo.png') no-repeat center center fixed;
     background-size:cover;
-    color:#fff;font-family:'Segoe UI',sans-serif;
-    overflow:hidden;
+    font-family:'Segoe UI',sans-serif;color:#fff;
   }
   h1{
-    position:fixed;top:7%;left:0;right:0;margin:0;text-align:center;
+    position:fixed;top:8%;left:0;right:0;margin:0;text-align:center;
     font-family:'Orbitron','Segoe UI',sans-serif;font-weight:700;
-    letter-spacing:.35em;font-size:clamp(22px,3vw,42px);
-    color:#eaf6ff;
-    text-shadow:0 0 6px #9fd8ff,0 0 18px #3fa9ff,0 0 42px #1668ff;
+    letter-spacing:.28em;font-size:clamp(20px,2.6vw,40px);
+    color:#eef5ff;text-shadow:0 0 6px #9fd8ff,0 0 18px #4da6ff,0 0 42px #1668ff;
   }
   /* Área útil: sobra 25% topo, 25% base, 20% esq, 20% dir */
   .grid{
     position:fixed;inset:25% 20%;
-    display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:1fr;gap:18px;
+    --gap:20px; --cols:3; --rows:3;
+    display:flex;flex-wrap:wrap;justify-content:center;align-content:center;
+    gap:var(--gap);
   }
   .card{
+    flex:0 0 calc((100% - (var(--cols) - 1) * var(--gap)) / var(--cols) - .5px);
+    height:calc((100% - (var(--rows) - 1) * var(--gap)) / var(--rows));
     --c:#8fb7ff;
     border:2px solid var(--c);border-radius:14px;
     background:rgba(4,10,22,.66);
@@ -34,31 +37,30 @@
     transition:transform .15s;
   }
   .card:hover{transform:translateY(-3px)}
-  .card .label{font-weight:600;font-size:clamp(13px,1.3vw,21px)}
-  .card img{flex:1;min-height:0;object-fit:contain;align-self:center;max-width:75%}
-  .card[data-id="dns"]{--c:#57e389}   .card[data-id="firewall"]{--c:#ff5c5c}
-  .card[data-id="proxy"]{--c:#ffb347} .card[data-id="domain"]{--c:#ff7b7b}
+  .card .label{font-weight:600;font-size:clamp(13px,1.3vw,21px);text-align:left}
+  .card img{flex:1;min-height:0;width:100%;object-fit:contain}
+  .card[data-id="dns"]{--c:#57e389}     .card[data-id="firewall"]{--c:#ff5c5c}
+  .card[data-id="proxy"]{--c:#ffb347}   .card[data-id="domain"]{--c:#ff7b7b}
   .card[data-id="postgres"]{--c:#4fa3ff}.card[data-id="web"]{--c:#c77bff}
-  .card[data-id="vm"]{--c:#59d9e8}    .card[data-id="storage"]{--c:#ffc16b}
-  .card[data-id="network"]{--c:#63e6a4}.card[data-id="terminal"]{--c:#dfe6ee}
+  .card[data-id="vm"]{--c:#59d9e8}      .card[data-id="storage"]{--c:#ffc16b}
+  .card[data-id="network"]{--c:#63e6a4} .card[data-id="terminal"]{--c:#dfe6ee}
 
   /* ===== Modal do Terminal ===== */
   .hidden{display:none}
   .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50}
-  .termbox{width:min(860px,90vw);height:min(560px,80vh);background:#0b0f14;border:1px solid #3fa9ff;border-radius:10px;display:flex;flex-direction:column;box-shadow:0 0 24px #1668ff}
+  .termbox{width:min(880px,92vw);height:min(560px,82vh);background:#0b0f14;border:1px solid #3fa9ff;border-radius:10px;display:flex;flex-direction:column;box-shadow:0 0 24px #1668ff}
   .termhead{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#101820;border-bottom:1px solid #234}
   .termhead span:first-child{font-family:'Orbitron',sans-serif;letter-spacing:.2em;color:#9fd8ff}
   .termhead button{background:#16324a;color:#cfe9ff;border:1px solid #3fa9ff;border-radius:6px;padding:4px 10px;cursor:pointer;margin-left:6px}
-  #termOut{flex:1;margin:0;padding:10px;overflow:auto;background:#000;color:#d7ffd7;font:13px/1.35 'Consolas','Monaco',monospace;white-space:pre-wrap}
-  #termIn{border:none;outline:none;background:#050a0f;color:#d7ffd7;padding:10px;font:13px 'Consolas',monospace;border-top:1px solid #234}
+  #termOut{flex:1;margin:0;padding:10px;overflow:auto;background:#000;color:#d7ffd7;font:13px/1.35 Consolas,Monaco,monospace;white-space:pre-wrap}
+  #termIn{border:none;outline:none;background:#050a0f;color:#d7ffd7;padding:10px;font:13px Consolas,monospace;border-top:1px solid #234}
 </style>
 </head>
 <body>
 <h1 th:text="${pageTitle}">ASTRAL PLATFORM</h1>
 
-<div class="grid">
-  <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}"
-     th:data-id="${btn.id}" th:title="${btn.label}">
+<div class="grid" id="grid">
+  <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}" th:data-id="${btn.id}" th:title="${btn.label}">
     <div class="label" th:text="${btn.label}">Card</div>
     <img th:src="@{'/images/' + ${btn.image}}" alt="" onerror="this.style.display='none'">
   </a>
@@ -80,6 +82,26 @@
 </div>
 
 <script>
+/* ===== GRID AUTO-AJUSTÁVEL =====
+   1) maior divisor de N entre 6..2  -> linhas perfeitas
+   2) senão, maior divisor de N-1    -> 1 botão extra numa linha nova */
+function layout(n){
+  if (n <= 1) return {c:1, r:1};
+  let c = 0;
+  for (const k of [5,4,3,2]) if (n % k === 0) { c = k; break; }
+  if (!c) for (const k of [6,5,4,3,2]) if ((n - 1) % k === 0) { c = k; break; }
+  if (!c) c = 3;
+  return { c:c, r:Math.ceil(n / c) };
+}
+(function(){
+  const grid = document.getElementById('grid');
+  const n = grid.querySelectorAll('.card').length;
+  const L = layout(n);
+  grid.style.setProperty('--cols', L.c);
+  grid.style.setProperty('--rows', L.r);
+})();
+
+/* ===== TERMINAL (modal + destacar) ===== */
 function clean(s){
   return s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g,'')
           .replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g,'')
