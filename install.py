@@ -9,12 +9,12 @@ Fluxo completo:
  2. Thread paralela instala: firewall, Node.js, Oracle JDK 21, Maven,
     PostgreSQL e Nginx (proxy reverso)
  3. DEPOIS de instalar tudo: organiza o projeto no layout Maven
-    (java, templates, imagens), injeta pom.xml com Thymeleaf e
-    devolve o ownership (chown) dos arquivos criados pelo root
- 4. COMPILA o projeto com Maven e cria systemd service do Spring Boot
- 5. Frontend (SSE) mostra progresso; em 100% exibe o form do banco
- 6. POST /api/setup-db cria user+db 'astral' e injeta application.properties
- 7. Botão "Concluir" mata o Flask e redireciona para o Nginx (porta 80)
+    (java, templates, imagens), injeta pom.xml com Thymeleaf,
+    COMPILA o projeto com Maven e cria systemd service do Spring Boot
+ 4. Frontend (SSE) mostra progresso; em 100% exibe o form do banco
+ 5. POST /api/setup-db cria user+db 'astral', injeta application.properties
+    e reinicia o Spring Boot
+ 6. Botão "Concluir" mata o Flask e redireciona para o Nginx (porta 80)
 """
 
 import os
@@ -808,21 +808,39 @@ def installation_thread():
 
         subprocess.run("chown -R postgres:postgres /var/lib/pgsql/data", shell=True, capture_output=True)
         subprocess.run("chmod 700 /var/lib/pgsql/data", shell=True, capture_output=True)
-        subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
+        subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql.conf || "
+                       "echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
+        subprocess.run("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || "
+                       "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/pgsql/data/pg_hba.conf", shell=True)
+        # Garante auth por senha no localhost ANTES das regras ident/scram de fábrica
+        subprocess.run("grep -q '^host.*127.0.0.1/32.*md5' /var/lib/pgsql/data/pg_hba.conf || "
+                       "sed -i '1i host    all             all             127.0.0.1/32            md5' "
+                       "/var/lib/pgsql/data/pg_hba.conf", shell=True)
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
-
     elif distro == 'arch':
         if not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
             subprocess.run("sudo -u postgres initdb -D /var/lib/postgres/data", shell=True, capture_output=True)
-            subprocess.run("grep -q \"^listen_addresses\" /var/lib/postgres/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/postgres/data/postgresql.conf", shell=True)
-            subprocess.run("grep -q '0.0.0.0/0' /var/lib/postgres/data/pg_hba.conf || echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/postgres/data/pg_hba.conf", shell=True)
+            subprocess.run("grep -q \"^listen_addresses\" /var/lib/postgres/data/postgresql.conf || "
+                           "echo \"listen_addresses = '*'\" >> /var/lib/postgres/data/postgresql.conf", shell=True)
+            subprocess.run("grep -q '0.0.0.0/0' /var/lib/postgres/data/pg_hba.conf || "
+                           "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/postgres/data/pg_hba.conf", shell=True)
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
     else:
         subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
 
-    update_progress(90, "Aguardando o serviço de banco de dados iniciar...")
+    # ---- DEPOIS de instalar tudo: organiza o projeto + devolve ownership ----
+    update_progress(88, "Organizando o projeto no layout Maven e aplicando chown...")
+    inject_spring_sources()
+    fix_ownership()
+
+    # ---- COMPILAÇÃO E DEPLOY DO SPRING BOOT ----
+    update_progress(90, "Compilando Spring Boot e criando systemd service...")
+    build_and_deploy_spring_boot()
+
+    # ---- Validação final ----
+    update_progress(95, "Aguardando o serviço de banco de dados iniciar...")
     db_ready = False
     for i in range(30):
         try:
@@ -837,12 +855,12 @@ def installation_thread():
         time.sleep(1)
 
     if db_ready:
-        update_progress(100, "Instalação concluída com dependências de banco configuradas!")
+        update_progress(100, "Instalação concluída! Configure o banco na próxima tela.")
     else:
         update_progress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.")
 
 # ============================================================
-# BLOCO PRINCIPAL (FALTAVA ISSO PARA O SCRIPT INICIAR E EXIBIR O LINK)
+# BLOCO PRINCIPAL
 # ============================================================
 if __name__ == '__main__':
     if os.geteuid() != 0:
@@ -858,7 +876,7 @@ if __name__ == '__main__':
         import flask
         from flask import Flask, send_from_directory, request, jsonify, Response
     except ImportError:
-        print("\n[CRÍTICO] Falha ao importar o Flask mesmo após tentar instalar.", flush=True)
+        print("[CRÍTICO] Falha ao importar o Flask mesmo após tentar instalar.", flush=True)
         sys.exit(1)
 
     app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
@@ -879,16 +897,13 @@ if __name__ == '__main__':
                     if state.package_name and state.package_name != last_pkg:
                         display_status = f"{state.status} ({state.package_name})"
                         last_pkg = state.package_name
-
                     data = {
                         "porcentagem": state.progress,
                         "status": display_status,
                         "package": state.package_name
                     }
-
                     if state.progress >= 100:
                         data["redirect_url"] = f"http://{get_local_ip()}"
-
                 yield f"data: {json.dumps(data)}\n\n"
                 if state.progress >= 100:
                     break
@@ -911,7 +926,12 @@ if __name__ == '__main__':
             res_user = subprocess.run(cmd_user, shell=True, capture_output=True, text=True)
             res_db = subprocess.run(cmd_db, shell=True, capture_output=True, text=True)
 
-            print("\n[INFO] Banco de dados configurado! Agendando encerramento...", flush=True)
+            inject_spring_properties(username, password)
+
+            # Reinicia o Spring Boot para carregar o novo application.properties
+            subprocess.run("systemctl restart astral-platform.service", shell=True, capture_output=True)
+
+            print("[INFO] Banco de dados configurado! Agendando encerramento...", flush=True)
             threading.Timer(60.0, lambda: os._exit(0)).start()
 
             return jsonify({
@@ -923,13 +943,12 @@ if __name__ == '__main__':
 
     @app.route('/api/shutdown', methods=['POST'])
     def shutdown():
-        print("\n[INFO] Sinal de encerramento manual recebido. Desligando...", flush=True)
+        print("[INFO] Sinal de encerramento manual recebido. Desligando...", flush=True)
         threading.Timer(1.0, lambda: os._exit(0)).start()
         return jsonify({"success": True})
 
     local_ip = get_local_ip()
 
-    # O FLUSH=TRUE GARANTE QUE O ENDEREÇO APAREÇA NA TELA IMEDIATAMENTE
     print("\n" + "="*60, flush=True)
     print("[GIT PROJETO] INSTALADOR WEB ATIVO COM SUPORTE A BANCO", flush=True)
     print("="*60, flush=True)
