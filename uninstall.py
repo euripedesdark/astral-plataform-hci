@@ -194,7 +194,7 @@ def remove_python_and_project():
     files_to_remove = [
         os.path.join(APP_DIR, "pom.xml"),
         os.path.join(APP_DIR, "src", "main", "resources", "application.properties"),
-        os.path.join(APP_DIR, "fabric", "frontend", "install.html"),
+        #os.path.join(APP_DIR, "fabric", "frontend", "install.html"),
     ]
     for f in files_to_remove:
         if os.path.exists(f):
