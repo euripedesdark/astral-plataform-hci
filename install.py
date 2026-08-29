@@ -4,12 +4,14 @@
 Instalador Web Unificado - Astral Platform HCI
 Uso: sudo python3 install.py
 
-Fluxo:
+Fluxo completo:
  1. Sobe Flask na porta 5000 servindo fabric/frontend/install.html
- 2. Thread paralela instala: Node.js, Oracle JDK 21, Maven, PostgreSQL, Nginx
- 3. Injeta pom.xml (Web+Thymeleaf+JPA+Postgres), classe main, home.html
-    e migra os .java do layout antigo para o layout Maven correto
- 4. Frontend (SSE) mostra progresso; ao chegar em 100% exibe form do banco
+ 2. Thread paralela instala: firewall, Node.js, Oracle JDK 21, Maven,
+    PostgreSQL e Nginx (proxy reverso)
+ 3. DEPOIS de instalar tudo: organiza o projeto no layout Maven
+    (java, templates, imagens), injeta pom.xml com Thymeleaf e
+    devolve o ownership (chown) dos arquivos criados pelo root
+ 4. Frontend (SSE) mostra progresso; em 100% exibe o form do banco
  5. POST /api/setup-db cria user+db 'astral' e injeta application.properties
  6. Botão "Concluir" mata o Flask e redireciona para o Nginx (porta 80)
 """
@@ -23,7 +25,6 @@ import json
 import threading
 import re
 import shutil
-import glob
 
 # ============================================================
 # CONFIGURAÇÕES GLOBAIS
@@ -124,7 +125,7 @@ def configure_firewall():
         print(f"[AVISO] Falha ao injetar portas no iptables: {e}")
 
 # ============================================================
-# DEPENDÊNCIAS PYTHON (antes de importar o Flask)
+# DEPENDÊNCIAS PYTHON (Flask/Psycopg2) — antes de importar Flask
 # ============================================================
 def ensure_dependencies_installed():
     print("[INFO] Assegurando dependências globais de Python (Flask, Psycopg2)...")
@@ -148,10 +149,9 @@ def ensure_dependencies_installed():
         subprocess.run("pip3 install flask psycopg2-binary", shell=True, capture_output=True)
 
 # ============================================================
-# INJEÇÃO DE ARQUIVOS DO PROJETO
+# POM.XML (Spring Boot + Thymeleaf + JPA + PostgreSQL JDBC)
 # ============================================================
 def inject_java_pom_template():
-    """Cria/atualiza o pom.xml com Web + Thymeleaf + JPA + PostgreSQL JDBC."""
     pom_path = os.path.join(APP_DIR, "pom.xml")
 
     if not os.path.exists(pom_path):
@@ -233,18 +233,43 @@ def inject_java_pom_template():
         except Exception as e:
             print(f"[AVISO] Não foi possível atualizar o pom.xml: {e}")
 
+# ============================================================
+# ORGANIZAÇÃO DO PROJETO (layout Maven) — DEPOIS de instalar tudo
+# ============================================================
 def inject_spring_sources():
-    """Garante layout Maven correto + classe main + template Thymeleaf,
-    e migra os .java do local antigo (fabric/frontend/main/java)."""
-    base_src = os.path.join(APP_DIR, "src", "main", "java", "com", "astral", "main")
-    ctrl_dir = os.path.join(base_src, "controller")
+    """Migra .java/templates/imagens do layout antigo para o layout Maven."""
+    base_src  = os.path.join(APP_DIR, "src", "main", "java", "com", "astral", "main")
+    ctrl_dir  = os.path.join(base_src, "controller")
     model_dir = os.path.join(base_src, "model")
-    templates_dir = os.path.join(APP_DIR, "src", "main", "resources", "templates")
-    static_imgs = os.path.join(APP_DIR, "src", "main", "resources", "static", "images")
-    for d in (base_src, ctrl_dir, model_dir, templates_dir, static_imgs):
+    tpl_dir   = os.path.join(APP_DIR, "src", "main", "resources", "templates")
+    imgs_dir  = os.path.join(APP_DIR, "src", "main", "resources", "static", "images")
+    for d in (base_src, ctrl_dir, model_dir, tpl_dir, imgs_dir):
         os.makedirs(d, exist_ok=True)
 
-    # ---- 1) Classe principal (sem ela o jar NÃO sobe) ----
+    # ---- 1) Migra os .java do layout antigo para o pacote certo ----
+    legacy_java = os.path.join(APP_DIR, "fabric", "frontend", "main", "java")
+    if os.path.isdir(legacy_java):
+        print("[INFO] Migrando .java do local antigo para o layout Maven...")
+        for root, _, files in os.walk(legacy_java):
+            for fn in files:
+                if not fn.endswith(".java"):
+                    continue
+                src_file = os.path.join(root, fn)
+                with open(src_file, "r", errors="ignore") as f:
+                    head = f.read(600)
+                m = re.search(r"package\s+([A-Za-z0-9_\.]+)\s*;", head)
+                pkg = m.group(1) if m else "com.astral.main"
+                dest_dir = os.path.join(APP_DIR, "src", "main", "java", *pkg.split("."))
+                os.makedirs(dest_dir, exist_ok=True)
+                dest_file = os.path.join(dest_dir, fn)
+                shutil.copy2(src_file, dest_file)   # sobrescreve sem perguntar
+                # limpa espaços presos nas strings ("dns " -> "dns", ",  " -> ",")
+                subprocess.run(
+                    f"sed -i -E 's/ +\",/\",/g; s/ +\"\\)/\")/g; s/, +\"/,\"/g' {dest_file}",
+                    shell=True, capture_output=True)
+                print(f"[OK] {fn} -> {os.path.relpath(dest_file, APP_DIR)}")
+
+    # ---- 2) Classe main do Spring Boot (sem ela o jar não sobe) ----
     main_class = os.path.join(base_src, "AstralApplication.java")
     if not os.path.exists(main_class):
         with open(main_class, "w") as f:
@@ -262,10 +287,15 @@ public class AstralApplication {
 """)
         print("[OK] AstralApplication.java criado.")
 
-    # ---- 2) Template Thymeleaf do dashboard (HomeController retorna "home") ----
-    home_html = os.path.join(templates_dir, "home.html")
-    if not os.path.exists(home_html):
-        with open(home_html, "w") as f:
+    # ---- 3) Template Thymeleaf: prefere o home.html do usuário ----
+    legacy_tpl = os.path.join(APP_DIR, "fabric", "frontend", "main",
+                              "resources", "templates", "home.html")
+    target_tpl = os.path.join(tpl_dir, "home.html")
+    if os.path.exists(legacy_tpl):
+        shutil.copy2(legacy_tpl, target_tpl)
+        print("[OK] home.html do usuário copiado para src/main/resources/templates/.")
+    elif not os.path.exists(target_tpl):
+        with open(target_tpl, "w") as f:
             f.write("""<!DOCTYPE html>
 <html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
 <head>
@@ -291,34 +321,43 @@ public class AstralApplication {
 </body>
 </html>
 """)
-        print("[OK] templates/home.html criado.")
+        print("[OK] home.html padrão gerado.")
 
-    # ---- 3) Migra os .java do local antigo para o pacote certo ----
-    legacy_root = os.path.join(APP_DIR, "fabric", "frontend", "main", "java")
-    if os.path.isdir(legacy_root):
-        print("[INFO] Migrando .java do local antigo para o layout Maven...")
-        for root, _, files in os.walk(legacy_root):
-            for fn in files:
-                if not fn.endswith(".java"):
-                    continue
-                src_file = os.path.join(root, fn)
-                with open(src_file, "r", errors="ignore") as f:
-                    head = f.read(600)
-                m = re.search(r"package\s+([A-Za-z0-9_\.]+)\s*;", head)
-                pkg = m.group(1) if m else "com.astral.main"
-                dest_dir = os.path.join(APP_DIR, "src", "main", "java", *pkg.split("."))
-                os.makedirs(dest_dir, exist_ok=True)
-                dest_file = os.path.join(dest_dir, fn)
-                if not os.path.exists(dest_file):
-                    shutil.copy2(src_file, dest_file)
-                    # Corrige espaços presos nas strings ("dns " -> "dns", ",  " -> ",")
-                    subprocess.run(
-                        f"sed -i -E 's/ +\",/\",/g; s/ +\"\\)/\")/g; s/, +\"/,\"/g' {dest_file}",
-                        shell=True, capture_output=True)
-                    print(f"[OK] {fn} -> {os.path.relpath(dest_file, APP_DIR)}")
+    # ---- 4) Ícones dos cards -> static/images (Spring serve em /images/) ----
+    legacy_imgs = os.path.join(APP_DIR, "fabric", "frontend", "main", "images")
+    if os.path.isdir(legacy_imgs):
+        for fn in os.listdir(legacy_imgs):
+            if fn.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".gif")):
+                dst = os.path.join(imgs_dir, fn)
+                if not os.path.exists(dst):
+                    shutil.copy2(os.path.join(legacy_imgs, fn), dst)
+        print("[OK] Ícones do dashboard copiados para src/main/resources/static/images/.")
 
+    # ---- 5) Fundo do login: garante no lugar que o Nginx serve ----
+    login_imgs = os.path.join(APP_DIR, "fabric", "frontend", "login", "images")
+    os.makedirs(login_imgs, exist_ok=True)
+    for cand in (os.path.join(legacy_imgs, "login.png"),
+                 os.path.join(APP_DIR, "fabric", "frontend", "main", "login.png")):
+        if os.path.exists(cand) and not os.path.exists(os.path.join(login_imgs, "login.png")):
+            shutil.copy2(cand, os.path.join(login_imgs, "login.png"))
+            print("[OK] login.png garantido em fabric/frontend/login/images/.")
+
+# ============================================================
+# CHOWN — devolve ao usuário real tudo que o root criou
+# ============================================================
+def fix_ownership():
+    """Detecta o dono real do projeto (mesmo via sudo) e aplica chown -R,
+    para que mv/cp do usuário nunca mais perguntem 'desobedecendo o modo'."""
+    uid = os.stat(APP_DIR).st_uid
+    gid = os.stat(APP_DIR).st_gid
+    subprocess.run(f"chown -R {uid}:{gid} {APP_DIR}", shell=True, capture_output=True)
+    print(f"[OK] chown -R {uid}:{gid} aplicado em {APP_DIR} "
+          f"(arquivos criados pelo instalador devolvidos ao usuário do projeto).")
+
+# ============================================================
+# APPLICATION.PROPERTIES (Spring Boot) — injetado no setup-db
+# ============================================================
 def inject_spring_properties(username, password):
-    """Gera o application.properties do Spring Boot com as credenciais do banco."""
     resources_dir = os.path.join(APP_DIR, "src", "main", "resources")
     properties_path = os.path.join(resources_dir, "application.properties")
     os.makedirs(resources_dir, exist_ok=True)
@@ -380,9 +419,7 @@ def installation_thread():
     time.sleep(2)
 
     configure_firewall()
-    ensure_dependencies_installed()
     inject_java_pom_template()
-    inject_spring_sources()
 
     distro = detect_distro()
     update_cmd = ""
@@ -539,7 +576,12 @@ def installation_thread():
         try_files $uri $uri/ =404;
     }}
 
+    # Imagens: primeiro do disco (fundo do login), fallback no Spring (ícones dos cards)
     location /images/ {{
+        try_files $uri @spring;
+    }}
+
+    location @spring {{
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -648,7 +690,7 @@ def installation_thread():
         print("[OK] Nginx inicializado e configurado.")
     update_progress(80, "Nginx configurado.")
 
-    # ---- Ativação do PostgreSQL ----
+    # ---- Ativação do PostgreSQL + auth por senha no localhost ----
     update_progress(85, "Ativando serviços de dados e ajustando SELinux...")
     svc_name = "postgresql"
 
@@ -670,6 +712,10 @@ def installation_thread():
                        "echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
         subprocess.run("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || "
                        "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/pgsql/data/pg_hba.conf", shell=True)
+        # Garante auth por senha no localhost ANTES das regras ident/scram de fábrica
+        subprocess.run("grep -q '^host.*127.0.0.1/32.*md5' /var/lib/pgsql/data/pg_hba.conf || "
+                       "sed -i '1i host    all             all             127.0.0.1/32            md5' "
+                       "/var/lib/pgsql/data/pg_hba.conf", shell=True)
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
     elif distro == 'arch':
@@ -683,6 +729,11 @@ def installation_thread():
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
     else:
         subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
+
+    # ---- DEPOIS de instalar tudo: organiza o projeto + devolve ownership ----
+    update_progress(88, "Organizando o projeto no layout Maven e aplicando chown...")
+    inject_spring_sources()
+    fix_ownership()
 
     # ---- Validação final ----
     update_progress(90, "Aguardando o serviço de banco de dados iniciar...")
@@ -793,7 +844,6 @@ if __name__ == '__main__':
             if res_db.returncode != 0 and "already exists" not in res_db.stderr:
                 return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
 
-            # Injeta o application.properties do Spring Boot com as credenciais
             inject_spring_properties(username, password)
 
             print("\n[INFO] Banco configurado! Agendando encerramento do instalador em 60s...")
