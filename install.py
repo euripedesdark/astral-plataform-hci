@@ -2,24 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 Instalador Web Unificado - Astral Platform HCI
-Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
 
-Garante drivers e dependências para:
-- Python (Flask/Psycopg2)
-- Node.js (Express/pg/cors)
-- Java (Oracle 21 + Maven/Spring Boot/PostgreSQL JDBC)
-- PostgreSQL (banco de dados)
-- Nginx (proxy reverso final na porta 80)
-
 Fluxo:
-1. Instala Flask/Psycopg2 imediatamente (para o servidor web do instalador subir)
-2. Sobe o Flask na porta 5000 servindo install.html
-3. Thread paralela instala: Node, Java 21, Maven, PostgreSQL, Nginx
-4. Frontend via SSE (/api/stream) mostra progresso em tempo real
-5. Ao chegar em 100%, frontend mostra formulário de usuário/senha do banco
-6. POST /api/setup-db cria user+db e injeta application.properties do Spring
-7. Botão "Concluir" mata o Flask e redireciona para o Nginx na porta 80
+ 1. Sobe Flask na porta 5000 servindo fabric/frontend/install.html
+ 2. Thread paralela instala: Node.js, Oracle JDK 21, Maven, PostgreSQL, Nginx
+ 3. Injeta pom.xml (Web+Thymeleaf+JPA+Postgres), classe main, home.html
+    e migra os .java do layout antigo para o layout Maven correto
+ 4. Frontend (SSE) mostra progresso; ao chegar em 100% exibe form do banco
+ 5. POST /api/setup-db cria user+db 'astral' e injeta application.properties
+ 6. Botão "Concluir" mata o Flask e redireciona para o Nginx (porta 80)
 """
 
 import os
@@ -31,6 +23,7 @@ import json
 import threading
 import re
 import shutil
+import glob
 
 # ============================================================
 # CONFIGURAÇÕES GLOBAIS
@@ -40,9 +33,6 @@ PORT = 5000
 HOST_IP = "0.0.0.0"
 EXTRA_PORT = 9090
 
-# ============================================================
-# ESTADO GLOBAL (SSE para o frontend)
-# ============================================================
 class InstallState:
     def __init__(self):
         self.progress = 0
@@ -79,7 +69,8 @@ def detect_distro():
             content = f.read().lower()
             if 'debian' in content or 'ubuntu' in content:
                 return 'debian'
-            elif 'rhel' in content or 'fedora' in content or 'almalinux' in content or 'centos' in content or 'rocky' in content:
+            elif 'rhel' in content or 'fedora' in content or 'almalinux' in content \
+                 or 'centos' in content or 'rocky' in content:
                 return 'rhel'
             elif 'arch' in content or 'manjaro' in content:
                 return 'arch'
@@ -88,12 +79,9 @@ def detect_distro():
     return 'unknown'
 
 def detect_pg_service():
-    """Descobre o nome real da unit do PostgreSQL (postgresql, postgresql-16, etc)."""
-    candidates = [
-        "postgresql", "postgresql-server",
-        "postgresql-16", "postgresql-15", "postgresql-14",
-        "postgresql-13", "postgresql-12",
-    ]
+    candidates = ["postgresql", "postgresql-server",
+                  "postgresql-16", "postgresql-15", "postgresql-14",
+                  "postgresql-13", "postgresql-12"]
     for name in candidates:
         r = subprocess.run(["systemctl", "cat", name], capture_output=True)
         if r.returncode == 0:
@@ -115,29 +103,28 @@ def configure_firewall():
         rules_changed = False
         for p in ports_to_open:
             while True:
-                del_check = subprocess.run(
-                    ['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'],
-                    capture_output=True
-                )
-                if del_check.returncode != 0:
+                d = subprocess.run(['iptables', '-D', 'INPUT', '-p', 'tcp',
+                                    '--dport', str(p), '-j', 'ACCEPT'], capture_output=True)
+                if d.returncode != 0:
                     break
-            subprocess.run(
-                ['iptables', '-I', 'INPUT', '1', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'],
-                check=True, capture_output=True
-            )
+            subprocess.run(['iptables', '-I', 'INPUT', '1', '-p', 'tcp',
+                            '--dport', str(p), '-j', 'ACCEPT'], check=True, capture_output=True)
             rules_changed = True
 
         if rules_changed:
-            if os.path.exists('/etc/init.d/iptables-persistent') or os.path.exists('/usr/sbin/netfilter-persistent'):
-                subprocess.run(['sh', '-c', 'iptables-save > /etc/iptables/rules.v4'], check=True, capture_output=True)
+            if os.path.exists('/etc/init.d/iptables-persistent') or \
+               os.path.exists('/usr/sbin/netfilter-persistent'):
+                subprocess.run(['sh', '-c', 'iptables-save > /etc/iptables/rules.v4'],
+                               check=True, capture_output=True)
             elif os.path.exists('/etc/sysconfig/iptables'):
-                subprocess.run(['sh', '-c', 'iptables-save > /etc/sysconfig/iptables'], check=True, capture_output=True)
+                subprocess.run(['sh', '-c', 'iptables-save > /etc/sysconfig/iptables'],
+                               check=True, capture_output=True)
         print("[OK] Portas da aplicação liberadas no iptables.")
     except Exception as e:
         print(f"[AVISO] Falha ao injetar portas no iptables: {e}")
 
 # ============================================================
-# DEPENDÊNCIAS PYTHON (Flask/Psycopg2) - CRÍTICO ANTES DO IMPORT
+# DEPENDÊNCIAS PYTHON (antes de importar o Flask)
 # ============================================================
 def ensure_dependencies_installed():
     print("[INFO] Assegurando dependências globais de Python (Flask, Psycopg2)...")
@@ -154,11 +141,8 @@ def ensure_dependencies_installed():
     if pip_install_cmd:
         subprocess.run(pip_install_cmd, shell=True, capture_output=True)
 
-    # Tenta com --break-system-packages (PEP 668), cai para o padrão se falhar
-    res = subprocess.run(
-        "pip3 install flask psycopg2-binary --break-system-packages",
-        shell=True, capture_output=True, text=True
-    )
+    res = subprocess.run("pip3 install flask psycopg2-binary --break-system-packages",
+                         shell=True, capture_output=True, text=True)
     if res.returncode != 0:
         print("[AVISO] Tentando instalação pip sem flag --break-system-packages...")
         subprocess.run("pip3 install flask psycopg2-binary", shell=True, capture_output=True)
@@ -171,7 +155,7 @@ def inject_java_pom_template():
     pom_path = os.path.join(APP_DIR, "pom.xml")
 
     if not os.path.exists(pom_path):
-        print("[INFO] Injetando template de dependências Maven (pom.xml) para Spring Boot...")
+        print("[INFO] Injetando template de dependências Maven (pom.xml)...")
         pom_content = """<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -229,9 +213,9 @@ def inject_java_pom_template():
                 f.write(pom_content)
             print("[OK] pom.xml injetado na raiz do projeto.")
         except Exception as e:
-            print(f"[AVISO] Não foi possível criar o pom.xml automático: {e}")
+            print(f"[AVISO] Não foi possível criar o pom.xml: {e}")
     else:
-        # pom.xml já existe (rodou antes): garante que o Thymeleaf não ficou de fora
+        # pom.xml já existe: garante que o Thymeleaf não ficou de fora
         try:
             with open(pom_path, "r") as f:
                 content = f.read()
@@ -248,18 +232,102 @@ def inject_java_pom_template():
                 print("[OK] Dependência do Thymeleaf adicionada ao pom.xml existente.")
         except Exception as e:
             print(f"[AVISO] Não foi possível atualizar o pom.xml: {e}")
+
+def inject_spring_sources():
+    """Garante layout Maven correto + classe main + template Thymeleaf,
+    e migra os .java do local antigo (fabric/frontend/main/java)."""
+    base_src = os.path.join(APP_DIR, "src", "main", "java", "com", "astral", "main")
+    ctrl_dir = os.path.join(base_src, "controller")
+    model_dir = os.path.join(base_src, "model")
+    templates_dir = os.path.join(APP_DIR, "src", "main", "resources", "templates")
+    static_imgs = os.path.join(APP_DIR, "src", "main", "resources", "static", "images")
+    for d in (base_src, ctrl_dir, model_dir, templates_dir, static_imgs):
+        os.makedirs(d, exist_ok=True)
+
+    # ---- 1) Classe principal (sem ela o jar NÃO sobe) ----
+    main_class = os.path.join(base_src, "AstralApplication.java")
+    if not os.path.exists(main_class):
+        with open(main_class, "w") as f:
+            f.write("""package com.astral.main;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class AstralApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(AstralApplication.class, args);
+    }
+}
+""")
+        print("[OK] AstralApplication.java criado.")
+
+    # ---- 2) Template Thymeleaf do dashboard (HomeController retorna "home") ----
+    home_html = os.path.join(templates_dir, "home.html")
+    if not os.path.exists(home_html):
+        with open(home_html, "w") as f:
+            f.write("""<!DOCTYPE html>
+<html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
+<head>
+<meta charset="UTF-8">
+<title th:text="${pageTitle}">ASTRAL PLATFORM</title>
+<style>
+ body{background:#12161f;color:#fff;font-family:'Segoe UI',sans-serif;margin:0;padding:40px}
+ h1{text-align:center;color:#4facfe}
+ .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:20px;max-width:1100px;margin:0 auto}
+ .card{background:#1c2331;border:1px solid #2a3550;border-radius:12px;padding:24px;text-align:center;color:#fff;text-decoration:none;transition:.2s}
+ .card:hover{transform:translateY(-4px);border-color:#4facfe}
+ .card img{width:64px;height:64px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<h1 th:text="${pageTitle}">ASTRAL PLATFORM</h1>
+<div class="grid">
+  <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}" th:title="${btn.label}">
+    <img th:src="@{'/images/' + ${btn.image}}" th:alt="${btn.label}" onerror="this.style.display='none'">
+    <div th:text="${btn.label}">Card</div>
+  </a>
+</div>
+</body>
+</html>
+""")
+        print("[OK] templates/home.html criado.")
+
+    # ---- 3) Migra os .java do local antigo para o pacote certo ----
+    legacy_root = os.path.join(APP_DIR, "fabric", "frontend", "main", "java")
+    if os.path.isdir(legacy_root):
+        print("[INFO] Migrando .java do local antigo para o layout Maven...")
+        for root, _, files in os.walk(legacy_root):
+            for fn in files:
+                if not fn.endswith(".java"):
+                    continue
+                src_file = os.path.join(root, fn)
+                with open(src_file, "r", errors="ignore") as f:
+                    head = f.read(600)
+                m = re.search(r"package\s+([A-Za-z0-9_\.]+)\s*;", head)
+                pkg = m.group(1) if m else "com.astral.main"
+                dest_dir = os.path.join(APP_DIR, "src", "main", "java", *pkg.split("."))
+                os.makedirs(dest_dir, exist_ok=True)
+                dest_file = os.path.join(dest_dir, fn)
+                if not os.path.exists(dest_file):
+                    shutil.copy2(src_file, dest_file)
+                    # Corrige espaços presos nas strings ("dns " -> "dns", ",  " -> ",")
+                    subprocess.run(
+                        f"sed -i -E 's/ +\",/\",/g; s/ +\"\\)/\")/g; s/, +\"/,\"/g' {dest_file}",
+                        shell=True, capture_output=True)
+                    print(f"[OK] {fn} -> {os.path.relpath(dest_file, APP_DIR)}")
+
 def inject_spring_properties(username, password):
     """Gera o application.properties do Spring Boot com as credenciais do banco."""
     resources_dir = os.path.join(APP_DIR, "src", "main", "resources")
     properties_path = os.path.join(resources_dir, "application.properties")
-
     os.makedirs(resources_dir, exist_ok=True)
 
     properties_content = f"""# ==========================================
 # Configuracao Astral Platform (Spring Boot)
 # ==========================================
 
-# Porta da API (Nginx faz proxy de /api/ para ca)
+# Porta da API (Nginx faz proxy de /api/ e /inicio para ca)
 server.port=8081
 
 # Conexao com PostgreSQL (database 'astral')
@@ -289,19 +357,14 @@ spring.jackson.serialization.fail-on-empty-beans=false
 # ============================================================
 def run_command_stream(cmd, shell=True):
     print(f"\n[SISTEMA] Executando: {cmd}")
-    process = subprocess.Popen(
-        cmd, shell=shell,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1
-    )
-
+    process = subprocess.Popen(cmd, shell=shell, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, text=True, bufsize=1)
     for line in process.stdout:
-        match = re.search(r'(?:unpacking|installing|upgrading|processing)\s+([a-zA-Z0-9\-_.]+)', line, re.IGNORECASE)
+        match = re.search(r'(?:unpacking|installing|upgrading|processing)\s+([a-zA-Z0-9\-_.]+)',
+                          line, re.IGNORECASE)
         if match:
-            pkg_name = match.group(1)
             with state.lock:
-                state.package_name = pkg_name
-
+                state.package_name = match.group(1)
     process.wait()
     return process.returncode == 0
 
@@ -317,7 +380,9 @@ def installation_thread():
     time.sleep(2)
 
     configure_firewall()
+    ensure_dependencies_installed()
     inject_java_pom_template()
+    inject_spring_sources()
 
     distro = detect_distro()
     update_cmd = ""
@@ -343,14 +408,10 @@ def installation_thread():
 
     # ---- Node.js + dependências JS ----
     update_progress(20, "Verificando Node.js, NPM e dependências JS...")
-    node_installed = shutil.which("node") or shutil.which("nodejs")
-    npm_installed = shutil.which("npm")
-
-    if not (node_installed and npm_installed):
+    if not (shutil.which("node") or shutil.which("nodejs")) or not shutil.which("npm"):
         print("[INFO] Instalando Node.js e NPM...")
         node_pkg = "nodejs npm curl" if distro != 'rhel' else "nodejs nodejs-npm curl"
         run_command_stream(f"{install_cmd_base} {node_pkg}")
-
     subprocess.run("npm install -g pg express cors 2>/dev/null || true", shell=True)
     update_progress(35, "Ambiente JS e dependências prontos.")
 
@@ -372,7 +433,6 @@ def installation_thread():
             run_command_stream("tar -xzf /tmp/jdk.tar.gz -C /opt/")
             subprocess.run("ln -sf /opt/jdk-21*/bin/java /usr/bin/java", shell=True)
             subprocess.run("ln -sf /opt/jdk-21*/bin/javac /usr/bin/javac", shell=True)
-
     update_progress(50, "Oracle Java configurado.")
 
     # ---- Maven + JAVA_HOME + dependências Spring Boot ----
@@ -385,17 +445,13 @@ def installation_thread():
         elif distro == 'arch':
             run_command_stream("pacman -S --noconfirm maven")
 
-    # Detecta JAVA_HOME do Oracle 21 e trava como padrão
     java_home = None
     rl = subprocess.run("readlink -f $(which java)", shell=True, capture_output=True, text=True)
     if rl.returncode == 0 and rl.stdout.strip():
         java_bin = rl.stdout.strip()
         java_home = os.path.dirname(os.path.dirname(java_bin))
-
-        # Força Oracle como padrão (caso dnf tenha trazido OpenJDK)
+        # Se o dnf trouxe um OpenJDK junto, força o Oracle de volta como padrão
         subprocess.run(["alternatives", "--set", "java", java_bin], capture_output=True)
-
-        # Persiste JAVA_HOME para qualquer shell/serviço
         try:
             with open("/etc/profile.d/java_home.sh", "w") as f:
                 f.write(f"export JAVA_HOME={java_home}\nexport PATH=$JAVA_HOME/bin:$PATH\n")
@@ -405,17 +461,14 @@ def installation_thread():
         os.environ["JAVA_HOME"] = java_home
         print(f"[OK] JAVA_HOME configurado: {java_home}")
 
-    # Pré-baixa as dependências do pom.xml (Spring Boot Web/JPA/PostgreSQL JDBC)
     update_progress(53, "Pré-baixando dependências do Spring Boot (Maven)...")
     pom_path = os.path.join(APP_DIR, "pom.xml")
+    env = os.environ.copy()
+    if java_home:
+        env["JAVA_HOME"] = java_home
     if shutil.which("mvn") and os.path.exists(pom_path):
-        env = os.environ.copy()
-        if java_home:
-            env["JAVA_HOME"] = java_home
-        res_mvn = subprocess.run(
-            f"cd {APP_DIR} && mvn -B -q dependency:go-offline",
-            shell=True, capture_output=True, text=True, env=env
-        )
+        res_mvn = subprocess.run(f"cd {APP_DIR} && mvn -B -q dependency:go-offline",
+                                 shell=True, capture_output=True, text=True, env=env)
         if res_mvn.returncode == 0:
             print("[OK] Dependências do Spring Boot baixadas.")
         else:
@@ -427,31 +480,26 @@ def installation_thread():
     pg_pkg = "postgresql postgresql-contrib"
     if distro == 'rhel':
         pg_pkg = "postgresql postgresql-server postgresql-contrib"
-
     run_command_stream(f"{install_cmd_base} {pg_pkg}")
     update_progress(65, "PostgreSQL instalado.")
 
     # ---- Nginx ----
     update_progress(70, "Instalando e configurando proxy Nginx...")
-
-    nginx_installed = shutil.which("nginx")
     success_nginx = True
-
-    if not nginx_installed:
+    if not shutil.which("nginx"):
         success_nginx = run_command_stream(f"{install_cmd_base} nginx")
 
     if success_nginx:
-        subprocess.run("systemctl disable --now httpd", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run("systemctl disable --now apache2", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
+        subprocess.run("systemctl disable --now httpd", shell=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run("systemctl disable --now apache2", shell=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run("sed -i 's/.*listen.*\\[::\\]:80.*/#&/' /etc/nginx/nginx.conf 2>/dev/null", shell=True)
 
         print("[INFO] Gerando configuração avançada do Nginx via Python...")
         frontend_path = os.path.join(APP_DIR, "fabric", "frontend")
 
         subprocess.run(f"chmod -R 755 {frontend_path} 2>/dev/null", shell=True)
-
-        # Garante que o Nginx consiga atravessar toda a árvore de diretórios
         current_path = frontend_path
         while current_path != '/':
             subprocess.run(f"chmod o+x {current_path} 2>/dev/null", shell=True)
@@ -491,6 +539,12 @@ def installation_thread():
         try_files $uri $uri/ =404;
     }}
 
+    location /images/ {{
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }}
+
     location /api/ {{
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
@@ -498,7 +552,7 @@ def installation_thread():
     }}
 
     location /inicio {{
-        proxy_pass http://127.0.0.1:8082;
+        proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
@@ -579,10 +633,8 @@ def installation_thread():
             conf_path = "/etc/nginx/conf.d/astral.conf"
             if distro == 'debian':
                 conf_path = "/etc/nginx/sites-available/astral.conf"
-
             with open(conf_path, "w") as f:
                 f.write(nginx_conf)
-
             if distro == 'debian':
                 subprocess.run("ln -sf /etc/nginx/sites-available/astral.conf /etc/nginx/sites-enabled/", shell=True)
                 subprocess.run("rm -f /etc/nginx/sites-enabled/default", shell=True)
@@ -594,19 +646,18 @@ def installation_thread():
         subprocess.run("systemctl enable nginx", shell=True, capture_output=True)
         subprocess.run("systemctl restart nginx", shell=True, capture_output=True)
         print("[OK] Nginx inicializado e configurado.")
-
     update_progress(80, "Nginx configurado.")
 
     # ---- Ativação do PostgreSQL ----
     update_progress(85, "Ativando serviços de dados e ajustando SELinux...")
-
     svc_name = "postgresql"
 
     if distro == 'rhel':
         svc_name = detect_pg_service()
         subprocess.run(f"systemctl stop {svc_name}", shell=True, capture_output=True)
 
-        pgdata_check = subprocess.run("ls -A /var/lib/pgsql/data", shell=True, capture_output=True, text=True)
+        pgdata_check = subprocess.run("ls -A /var/lib/pgsql/data", shell=True,
+                                      capture_output=True, text=True)
         if not pgdata_check.stdout.strip():
             subprocess.run("chown -R postgres:postgres /var/lib/pgsql", shell=True, capture_output=True)
             if shutil.which("restorecon"):
@@ -615,15 +666,12 @@ def installation_thread():
 
         subprocess.run("chown -R postgres:postgres /var/lib/pgsql/data", shell=True, capture_output=True)
         subprocess.run("chmod 700 /var/lib/pgsql/data", shell=True, capture_output=True)
-
         subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql.conf || "
                        "echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
         subprocess.run("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || "
                        "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/pgsql/data/pg_hba.conf", shell=True)
-
         subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
         subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
-
     elif distro == 'arch':
         if not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
             subprocess.run("sudo -u postgres initdb -D /var/lib/postgres/data", shell=True, capture_output=True)
@@ -665,15 +713,12 @@ if __name__ == '__main__':
         print("Uso correto: sudo python3 install.py")
         sys.exit(1)
 
-    # Verifica conexão com a internet (opcional - usa script auxiliar se existir)
     if not check_internet():
         print("\n[AVISO] Conexão com a internet não detectada!")
         wan_script = os.path.join(APP_DIR, "fabric", "network-firewall", "config-wan.py")
-
         if os.path.exists(wan_script):
             print(f"[INFO] Delegando configuração de rede para: {wan_script}")
             subprocess.run([sys.executable, wan_script])
-
             if not check_internet():
                 print("\n[ERRO] A internet ainda não está acessível. Abortando.")
                 sys.exit(1)
@@ -688,7 +733,6 @@ if __name__ == '__main__':
 
     frontend_dir = os.path.join(APP_DIR, 'fabric', 'frontend')
 
-    # Agora é seguro importar Flask
     try:
         import flask
         from flask import Flask, send_from_directory, request, jsonify, Response
@@ -715,16 +759,13 @@ if __name__ == '__main__':
                     if state.package_name and state.package_name != last_pkg:
                         display_status = f"{state.status} ({state.package_name})"
                         last_pkg = state.package_name
-
                     data = {
                         "porcentagem": state.progress,
                         "status": display_status,
                         "package": state.package_name
                     }
-
                     if state.progress >= 100:
                         data["redirect_url"] = f"http://{get_local_ip()}"
-
                 yield f"data: {json.dumps(data)}\n\n"
                 if state.progress >= 100:
                     break
@@ -763,7 +804,6 @@ if __name__ == '__main__':
                 "message": "Banco 'astral' criado e Spring Boot configurado!",
                 "redirect_url": f"http://{get_local_ip()}"
             })
-
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
