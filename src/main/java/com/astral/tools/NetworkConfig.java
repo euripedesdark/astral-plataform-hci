@@ -253,8 +253,8 @@ public class NetworkConfig {
             }
 
             runCmd("systemctl enable dnsmasq", true);
-            int exitCode = runCmd("systemctl restart dnsmasq", true);
-            if (exitCode == 0) {
+            String restartResult = runCmd("systemctl restart dnsmasq", true);
+            if (restartResult != null) {
                 System.out.println("✅ dnsmasq DHCP configurado e rodando!");
             } else {
                 System.err.println("❌ dnsmasq falhou ao iniciar. Verifique: journalctl -xeu dnsmasq");
@@ -380,6 +380,7 @@ public class NetworkConfig {
         if (input.isEmpty()) return defaultValue;
         return input.startsWith("y");
     }
+
     private static String runCmd(String cmd, boolean log) {
         if (log) System.out.println("$ " + cmd);
         try {
