@@ -4,7 +4,8 @@
 Instalador Web Unificado - Fluxo Lógico e Autossuficiente de Dependências
 Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
-Garante drivers e dependências para Python (Flask/Psycopg2), Node.js (Express/PG) e Java (Spring/PostgreSQL JDBC).
+Garante drivers e dependências para Python (Flask/Psycopg2), Node.js (Express/PG),
+Java (Oracle 21 + Maven/Spring Boot/PostgreSQL JDBC) e Nginx como proxy final.
 """
 
 import os
@@ -107,26 +108,17 @@ def configure_firewall():
         print(f"[AVISO] Falha ao injetar portas no iptables: {e}")
 
 def ensure_dependencies_installed():
-    """CORREÇÃO: Esta função agora é chamada ANTES do import do Flask."""
     print("[INFO] Assegurando dependências globais de Python (Flask, Psycopg2)...")
     distro = detect_distro()
 
-    pip_install_cmd = ""
-    if distro == 'debian':
-        pip_install_cmd = "apt-get update && apt-get install -y python3-pip python3-psycopg2"
-    elif distro == 'rhel':
+    pip_install_cmd = "apt-get update && apt-get install -y python3-pip python3-psycopg2"
+    if distro == 'rhel':
         pip_install_cmd = "dnf install -y python3-pip python3-psycopg2"
     elif distro == 'arch':
         pip_install_cmd = "pacman -Sy --noconfirm python-pip python-psycopg2"
 
-    if pip_install_cmd:
-        subprocess.run(pip_install_cmd, shell=True, capture_output=True)
-
-    # Tenta instalar com --break-system-packages (PEP 668) e cai para o padrão se falhar
-    res = subprocess.run("pip3 install flask psycopg2-binary --break-system-packages", shell=True, capture_output=True, text=True)
-    if res.returncode != 0:
-        print("[AVISO] Tentando instalação pip sem flag --break-system-packages...")
-        subprocess.run("pip3 install flask psycopg2-binary", shell=True, capture_output=True)
+    subprocess.run(pip_install_cmd, shell=True, capture_output=True)
+    subprocess.run("pip3 install flask psycopg2-binary --break-system-packages 2>/dev/null || true", shell=True)
 
 def inject_java_pom_template():
     """Cria um pom.xml padrão na raiz se não existir, garantindo as libs do PostgreSQL e Web para Java."""
@@ -153,14 +145,17 @@ def inject_java_pom_template():
         <java.version>21</java.version>
     </properties>
     <dependencies>
+        <!-- Spring Boot Web para APIs REST -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- Spring Data JPA para Banco de Dados -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
+        <!-- Driver PostgreSQL JDBC -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -214,6 +209,7 @@ def installation_thread():
     time.sleep(2)
 
     configure_firewall()
+    ensure_dependencies_installed()
     inject_java_pom_template()
 
     distro = detect_distro()
@@ -246,6 +242,7 @@ def installation_thread():
         node_pkg = "nodejs npm curl" if distro != 'rhel' else "nodejs nodejs-npm curl"
         run_command_stream(f"{install_cmd_base} {node_pkg}")
 
+    # Instala dependência nativa de banco para JavaScript globalmente ou na pasta
     subprocess.run("npm install -g pg express cors 2>/dev/null || true", shell=True)
     update_progress(35, "Ambiente JS e dependências prontos.")
 
@@ -269,6 +266,53 @@ def installation_thread():
 
     update_progress(50, "Oracle Java configurado.")
 
+    # ==================================================
+    # MAVEN: INSTALAÇÃO + CONFIGURAÇÃO (JAVA_HOME ORACLE 21)
+    # ==================================================
+    update_progress(52, "Instalando o Maven...")
+    if not shutil.which("mvn"):
+        if distro == 'debian':
+            run_command_stream("DEBIAN_FRONTEND=noninteractive apt-get install -y maven")
+        elif distro == 'rhel':
+            run_command_stream("dnf install -y maven")
+        elif distro == 'arch':
+            run_command_stream("pacman -S --noconfirm maven")
+
+    # Detecta o caminho real do java (Oracle 21) e trava como padrão
+    java_home = None
+    rl = subprocess.run("readlink -f $(which java)", shell=True, capture_output=True, text=True)
+    if rl.returncode == 0 and rl.stdout.strip():
+        java_bin = rl.stdout.strip()   # ex: /usr/lib/jvm/jdk-21.0.12.1-oracle-x64/bin/java
+        java_home = os.path.dirname(os.path.dirname(java_bin))
+
+        # Se o dnf trouxe um OpenJDK junto com o maven, força o Oracle de volta como padrão
+        subprocess.run(["alternatives", "--set", "java", java_bin], capture_output=True)
+
+        # Persiste JAVA_HOME para qualquer shell/serviço do sistema
+        try:
+            with open("/etc/profile.d/java_home.sh", "w") as f:
+                f.write(f"export JAVA_HOME={java_home}\nexport PATH=$JAVA_HOME/bin:$PATH\n")
+            subprocess.run("chmod +x /etc/profile.d/java_home.sh", shell=True)
+        except Exception as e:
+            print(f"[AVISO] Não foi possível gravar /etc/profile.d/java_home.sh: {e}")
+        os.environ["JAVA_HOME"] = java_home
+        print(f"[OK] JAVA_HOME configurado: {java_home}")
+
+    # Pré-baixa as dependências do Spring Boot declaradas no pom.xml injetado
+    update_progress(53, "Pré-baixando dependências do Spring Boot (Maven)...")
+    pom_path = os.path.join(APP_DIR, "pom.xml")
+    if shutil.which("mvn") and os.path.exists(pom_path):
+        env = os.environ.copy()
+        if java_home:
+            env["JAVA_HOME"] = java_home
+        res_mvn = subprocess.run(f"cd {APP_DIR} && mvn -B -q dependency:go-offline",
+                                 shell=True, capture_output=True, text=True, env=env)
+        if res_mvn.returncode == 0:
+            print("[OK] Dependências do Spring Boot baixadas (mvn dependency:go-offline).")
+        else:
+            print(f"[AVISO] mvn dependency:go-offline falhou: {res_mvn.stderr[-800:]}")
+    update_progress(54, "Maven configurado.")
+
     update_progress(55, "Instalando o motor de banco de dados (PostgreSQL)...")
     pg_pkg = "postgresql postgresql-contrib"
     if distro == 'rhel':
@@ -291,11 +335,13 @@ def installation_thread():
         subprocess.run("systemctl disable --now httpd", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run("systemctl disable --now apache2", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+        # Elimina a escuta IPv6 do arquivo padrão de fábrica para evitar o erro 97
         subprocess.run("sed -i 's/.*listen.*\\[::\\]:80.*/#&/' /etc/nginx/nginx.conf 2>/dev/null", shell=True)
 
         print("[INFO] Gerando configuração avançada do Nginx via Python...")
         frontend_path = os.path.join(APP_DIR, "fabric", "frontend")
 
+        # Garante permissão recursiva para o Nginx conseguir ler pastas, CSS, imagens e JS
         subprocess.run(f"chmod -R 755 {frontend_path} 2>/dev/null", shell=True)
 
         current_path = frontend_path
@@ -507,14 +553,7 @@ def installation_thread():
 if __name__ == '__main__':
     if os.geteuid() != 0:
         print("ERRO: Este script deve ser executado com sudo.")
-        print("Uso correto: sudo python3 install.py")
         sys.exit(1)
-
-    # ==========================================
-    # CORREÇÃO CRÍTICA: INSTALAR FLASK ANTES DO IMPORT
-    # ==========================================
-    print("[INFO] Verificando e instalando dependências Python essenciais (Flask)...")
-    ensure_dependencies_installed()
 
     if not check_internet():
         print("\n[AVISO] Conexão com a internet não detectada!")
@@ -533,25 +572,19 @@ if __name__ == '__main__':
             print(f"\n[ERRO] Sem internet e script de rede auxiliar não encontrado: {wan_script}")
             sys.exit(1)
 
+    # Garante Flask/Psycopg2 ANTES de importar (evita ModuleNotFoundError em máquina limpa)
+    ensure_dependencies_installed()
+
     frontend_dir = os.path.join(APP_DIR, 'fabric', 'frontend')
 
-    # Agora é 100% seguro importar o Flask, pois ele já foi instalado acima
-    try:
-        import flask
-        from flask import Flask, send_from_directory, request, jsonify, Response
-    except ImportError:
-        print("\n[CRÍTICO] Falha ao importar o Flask mesmo após a tentativa de instalação.")
-        print("Tente instalar manualmente com: pip3 install flask psycopg2-binary --break-system-packages")
-        sys.exit(1)
+    import flask
+    from flask import Flask, send_from_directory, request, jsonify, Response
 
     app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
 
     @app.route('/')
     def index():
-        # Fallback para index.html caso install.html não exista na pasta
-        if os.path.exists(os.path.join(frontend_dir, 'install.html')):
-            return send_from_directory(frontend_dir, 'install.html')
-        return send_from_directory(frontend_dir, 'index.html')
+        return send_from_directory(frontend_dir, 'install.html')
 
     @app.route('/api/stream')
     def stream():
