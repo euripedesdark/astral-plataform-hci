@@ -36,7 +36,9 @@ public class HomeController {
 
                 new DashboardButton("vm", "Virtual Machines", "virtual_machines.png", "/vm"),
                 new DashboardButton("storage", "Storage", "storage.png", "/storage"),
-                new DashboardButton("network", "Network Config & VLAN", "network_config_vlan.png", "/network")
+                new DashboardButton("network", "Network Config & VLAN", "network_config_vlan.png", "/network"),
+
+                new DashboardButton("terminal", "Terminal", "terminal.jpeg", "#terminal")
         );
     }
 }
