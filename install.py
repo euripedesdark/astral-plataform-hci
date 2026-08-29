@@ -280,12 +280,15 @@ def inject_spring_sources():
                 dest_dir = os.path.join(APP_DIR, "src", "main", "java", *pkg.split("."))
                 os.makedirs(dest_dir, exist_ok=True)
                 dest_file = os.path.join(dest_dir, fn)
-                shutil.copy2(src_file, dest_file)   # sobrescreve sem perguntar
-                # limpa espaços presos nas strings ("dns " -> "dns", ",  " -> ",")
-                subprocess.run(
-                    f"sed -i -E 's/ +\",/\",/g; s/ +\"\\)/\")/g; s/, +\"/,\"/g' {dest_file}",
-                    shell=True, capture_output=True)
-                print(f"[OK] {fn} -> {os.path.relpath(dest_file, APP_DIR)}")
+                # NUNCA sobrescreve: o src/ gerenciado pelo git tem prioridade.
+                # O layout antigo só serve para preencher instalação virgem.
+                if not os.path.exists(dest_file):
+                    shutil.copy2(src_file, dest_file)
+                    # limpa espaços presos nas strings ("dns " -> "dns", ",  " -> ",")
+                    subprocess.run(
+                        f"sed -i -E 's/ +\",/\",/g; s/ +\"\\)/\")/g; s/, +\"/,\"/g' {dest_file}",
+                        shell=True, capture_output=True)
+                    print(f"[OK] {fn} -> {os.path.relpath(dest_file, APP_DIR)}")
 
     # ---- 2) Classe main do Spring Boot (sem ela o jar não sobe) ----
     main_class = os.path.join(base_src, "AstralApplication.java")
@@ -396,9 +399,9 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
     legacy_tpl = os.path.join(APP_DIR, "fabric", "frontend", "main",
                               "resources", "templates", "home.html")
     target_tpl = os.path.join(tpl_dir, "home.html")
-    if os.path.exists(legacy_tpl):
+    if not os.path.exists(target_tpl) and os.path.exists(legacy_tpl):
         shutil.copy2(legacy_tpl, target_tpl)
-        print("[OK] home.html do usuário copiado para src/main/resources/templates/.")
+        print("[OK] home.html legado copiado (destino vazio).")
     elif not os.path.exists(target_tpl):
         with open(target_tpl, "w") as f:
             f.write("""<!DOCTYPE html>
