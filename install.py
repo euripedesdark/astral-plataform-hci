@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Instalador Web Unificado - Fluxo Lógico e Autossuficiente de Dependências
+Instalador Web Unificado - Astral Platform HCI
 Executa estritamente dentro do diretório do repositório Git.
 Uso: sudo python3 install.py
-Garante drivers e dependências para Python (Flask/Psycopg2), Node.js (Express/PG),
-Java (Oracle 21 + Maven/Spring Boot/PostgreSQL JDBC) e Nginx como proxy final.
+
+Garante drivers e dependências para:
+- Python (Flask/Psycopg2)
+- Node.js (Express/pg/cors)
+- Java (Oracle 21 + Maven/Spring Boot/PostgreSQL JDBC)
+- PostgreSQL (banco de dados)
+- Nginx (proxy reverso final na porta 80)
+
+Fluxo:
+1. Instala Flask/Psycopg2 imediatamente (para o servidor web do instalador subir)
+2. Sobe o Flask na porta 5000 servindo install.html
+3. Thread paralela instala: Node, Java 21, Maven, PostgreSQL, Nginx
+4. Frontend via SSE (/api/stream) mostra progresso em tempo real
+5. Ao chegar em 100%, frontend mostra formulário de usuário/senha do banco
+6. POST /api/setup-db cria user+db e injeta application.properties do Spring
+7. Botão "Concluir" mata o Flask e redireciona para o Nginx na porta 80
 """
 
 import os
@@ -18,13 +32,17 @@ import threading
 import re
 import shutil
 
-# Configurações Globais
+# ============================================================
+# CONFIGURAÇÕES GLOBAIS
+# ============================================================
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PORT = 5000
 HOST_IP = "0.0.0.0"
 EXTRA_PORT = 9090
 
-# Estado global para o stream SSE
+# ============================================================
+# ESTADO GLOBAL (SSE para o frontend)
+# ============================================================
 class InstallState:
     def __init__(self):
         self.progress = 0
@@ -34,6 +52,9 @@ class InstallState:
 
 state = InstallState()
 
+# ============================================================
+# FUNÇÕES AUXILIARES
+# ============================================================
 def check_internet():
     try:
         socket.create_connection(("8.8.8.8", 53), timeout=3)
@@ -67,9 +88,9 @@ def detect_distro():
     return 'unknown'
 
 def detect_pg_service():
+    """Descobre o nome real da unit do PostgreSQL (postgresql, postgresql-16, etc)."""
     candidates = [
-        "postgresql",
-        "postgresql-server",
+        "postgresql", "postgresql-server",
         "postgresql-16", "postgresql-15", "postgresql-14",
         "postgresql-13", "postgresql-12",
     ]
@@ -79,6 +100,9 @@ def detect_pg_service():
             return name
     return "postgresql"
 
+# ============================================================
+# FIREWALL (iptables exclusivo)
+# ============================================================
 def configure_firewall():
     ports_to_open = [22, 80, 443, 3000, PORT, 5173, 5432, 8081, EXTRA_PORT]
 
@@ -91,11 +115,16 @@ def configure_firewall():
         rules_changed = False
         for p in ports_to_open:
             while True:
-                del_check = subprocess.run(['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], capture_output=True)
+                del_check = subprocess.run(
+                    ['iptables', '-D', 'INPUT', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'],
+                    capture_output=True
+                )
                 if del_check.returncode != 0:
                     break
-
-            subprocess.run(['iptables', '-I', 'INPUT', '1', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'], check=True, capture_output=True)
+            subprocess.run(
+                ['iptables', '-I', 'INPUT', '1', '-p', 'tcp', '--dport', str(p), '-j', 'ACCEPT'],
+                check=True, capture_output=True
+            )
             rules_changed = True
 
         if rules_changed:
@@ -107,24 +136,41 @@ def configure_firewall():
     except Exception as e:
         print(f"[AVISO] Falha ao injetar portas no iptables: {e}")
 
+# ============================================================
+# DEPENDÊNCIAS PYTHON (Flask/Psycopg2) - CRÍTICO ANTES DO IMPORT
+# ============================================================
 def ensure_dependencies_installed():
     print("[INFO] Assegurando dependências globais de Python (Flask, Psycopg2)...")
     distro = detect_distro()
 
-    pip_install_cmd = "apt-get update && apt-get install -y python3-pip python3-psycopg2"
-    if distro == 'rhel':
+    pip_install_cmd = ""
+    if distro == 'debian':
+        pip_install_cmd = "apt-get update && apt-get install -y python3-pip python3-psycopg2"
+    elif distro == 'rhel':
         pip_install_cmd = "dnf install -y python3-pip python3-psycopg2"
     elif distro == 'arch':
         pip_install_cmd = "pacman -Sy --noconfirm python-pip python-psycopg2"
 
-    subprocess.run(pip_install_cmd, shell=True, capture_output=True)
-    subprocess.run("pip3 install flask psycopg2-binary --break-system-packages 2>/dev/null || true", shell=True)
+    if pip_install_cmd:
+        subprocess.run(pip_install_cmd, shell=True, capture_output=True)
 
+    # Tenta com --break-system-packages (PEP 668), cai para o padrão se falhar
+    res = subprocess.run(
+        "pip3 install flask psycopg2-binary --break-system-packages",
+        shell=True, capture_output=True, text=True
+    )
+    if res.returncode != 0:
+        print("[AVISO] Tentando instalação pip sem flag --break-system-packages...")
+        subprocess.run("pip3 install flask psycopg2-binary", shell=True, capture_output=True)
+
+# ============================================================
+# INJEÇÃO DE ARQUIVOS DO PROJETO
+# ============================================================
 def inject_java_pom_template():
-    """Cria um pom.xml padrão na raiz se não existir, garantindo as libs do PostgreSQL e Web para Java."""
+    """Cria o pom.xml do Spring Boot com dependências Web/JPA/PostgreSQL."""
     pom_path = os.path.join(APP_DIR, "pom.xml")
     if not os.path.exists(pom_path):
-        print("[INFO] Injetando template de dependências Maven (pom.xml) para Java/Spring Boot/PostgreSQL...")
+        print("[INFO] Injetando template de dependências Maven (pom.xml) para Spring Boot...")
         pom_content = """<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -145,17 +191,14 @@ def inject_java_pom_template():
         <java.version>21</java.version>
     </properties>
     <dependencies>
-        <!-- Spring Boot Web para APIs REST -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
-        <!-- Spring Data JPA para Banco de Dados -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
-        <!-- Driver PostgreSQL JDBC -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -175,19 +218,55 @@ def inject_java_pom_template():
         try:
             with open(pom_path, "w") as f:
                 f.write(pom_content)
-            print("[OK] pom.xml injetado com sucesso na raiz do projeto.")
+            print("[OK] pom.xml injetado na raiz do projeto.")
         except Exception as e:
-            print(f"[AVISO] Não foi possível criar o pom.xml automático: {e}")
+            print(f"[AVISO] Não foi possível criar o pom.xml: {e}")
 
+def inject_spring_properties(username, password):
+    """Gera o application.properties do Spring Boot com as credenciais do banco."""
+    resources_dir = os.path.join(APP_DIR, "src", "main", "resources")
+    properties_path = os.path.join(resources_dir, "application.properties")
+
+    os.makedirs(resources_dir, exist_ok=True)
+
+    properties_content = f"""# ==========================================
+# Configuracao Astral Platform (Spring Boot)
+# ==========================================
+
+# Porta da API (Nginx faz proxy de /api/ para ca)
+server.port=8081
+
+# Conexao com PostgreSQL (database 'astral')
+spring.datasource.url=jdbc:postgresql://localhost:5432/astral
+spring.datasource.username={username}
+spring.datasource.password={password}
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# JPA / Hibernate
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.format_sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+
+# Jackson (JSON)
+spring.jackson.serialization.fail-on-empty-beans=false
+"""
+    try:
+        with open(properties_path, "w") as f:
+            f.write(properties_content)
+        print(f"[OK] application.properties injetado em: {properties_path}")
+    except Exception as e:
+        print(f"[AVISO] Falha ao criar application.properties: {e}")
+
+# ============================================================
+# EXECUÇÃO DE COMANDOS COM STREAM
+# ============================================================
 def run_command_stream(cmd, shell=True):
     print(f"\n[SISTEMA] Executando: {cmd}")
     process = subprocess.Popen(
-        cmd,
-        shell=shell,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
+        cmd, shell=shell,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1
     )
 
     for line in process.stdout:
@@ -205,11 +284,13 @@ def update_progress(percent, status_msg):
         state.progress = percent
         state.status = status_msg
 
+# ============================================================
+# THREAD PRINCIPAL DE INSTALAÇÃO
+# ============================================================
 def installation_thread():
     time.sleep(2)
 
     configure_firewall()
-    ensure_dependencies_installed()
     inject_java_pom_template()
 
     distro = detect_distro()
@@ -229,11 +310,13 @@ def installation_thread():
         update_progress(0, "Erro: Distro não detectada.")
         return
 
+    # ---- Repositórios ----
     update_progress(5, "Sincronizando repositórios do Linux...")
     run_command_stream(update_cmd)
     update_progress(15, "Repositórios sincronizados.")
 
-    update_progress(20, "Verificando Node.js, NPM e dependências JS (pg/express)...")
+    # ---- Node.js + dependências JS ----
+    update_progress(20, "Verificando Node.js, NPM e dependências JS...")
     node_installed = shutil.which("node") or shutil.which("nodejs")
     npm_installed = shutil.which("npm")
 
@@ -242,10 +325,10 @@ def installation_thread():
         node_pkg = "nodejs npm curl" if distro != 'rhel' else "nodejs nodejs-npm curl"
         run_command_stream(f"{install_cmd_base} {node_pkg}")
 
-    # Instala dependência nativa de banco para JavaScript globalmente ou na pasta
     subprocess.run("npm install -g pg express cors 2>/dev/null || true", shell=True)
     update_progress(35, "Ambiente JS e dependências prontos.")
 
+    # ---- Oracle Java 21 ----
     update_progress(40, "Avaliando instalação do Oracle Java 21 LTS...")
     java_check = subprocess.run("java -version", shell=True, capture_output=True, text=True)
 
@@ -266,9 +349,7 @@ def installation_thread():
 
     update_progress(50, "Oracle Java configurado.")
 
-    # ==================================================
-    # MAVEN: INSTALAÇÃO + CONFIGURAÇÃO (JAVA_HOME ORACLE 21)
-    # ==================================================
+    # ---- Maven + JAVA_HOME + dependências Spring Boot ----
     update_progress(52, "Instalando o Maven...")
     if not shutil.which("mvn"):
         if distro == 'debian':
@@ -278,17 +359,17 @@ def installation_thread():
         elif distro == 'arch':
             run_command_stream("pacman -S --noconfirm maven")
 
-    # Detecta o caminho real do java (Oracle 21) e trava como padrão
+    # Detecta JAVA_HOME do Oracle 21 e trava como padrão
     java_home = None
     rl = subprocess.run("readlink -f $(which java)", shell=True, capture_output=True, text=True)
     if rl.returncode == 0 and rl.stdout.strip():
-        java_bin = rl.stdout.strip()   # ex: /usr/lib/jvm/jdk-21.0.12.1-oracle-x64/bin/java
+        java_bin = rl.stdout.strip()
         java_home = os.path.dirname(os.path.dirname(java_bin))
 
-        # Se o dnf trouxe um OpenJDK junto com o maven, força o Oracle de volta como padrão
+        # Força Oracle como padrão (caso dnf tenha trazido OpenJDK)
         subprocess.run(["alternatives", "--set", "java", java_bin], capture_output=True)
 
-        # Persiste JAVA_HOME para qualquer shell/serviço do sistema
+        # Persiste JAVA_HOME para qualquer shell/serviço
         try:
             with open("/etc/profile.d/java_home.sh", "w") as f:
                 f.write(f"export JAVA_HOME={java_home}\nexport PATH=$JAVA_HOME/bin:$PATH\n")
@@ -298,21 +379,24 @@ def installation_thread():
         os.environ["JAVA_HOME"] = java_home
         print(f"[OK] JAVA_HOME configurado: {java_home}")
 
-    # Pré-baixa as dependências do Spring Boot declaradas no pom.xml injetado
+    # Pré-baixa as dependências do pom.xml (Spring Boot Web/JPA/PostgreSQL JDBC)
     update_progress(53, "Pré-baixando dependências do Spring Boot (Maven)...")
     pom_path = os.path.join(APP_DIR, "pom.xml")
     if shutil.which("mvn") and os.path.exists(pom_path):
         env = os.environ.copy()
         if java_home:
             env["JAVA_HOME"] = java_home
-        res_mvn = subprocess.run(f"cd {APP_DIR} && mvn -B -q dependency:go-offline",
-                                 shell=True, capture_output=True, text=True, env=env)
+        res_mvn = subprocess.run(
+            f"cd {APP_DIR} && mvn -B -q dependency:go-offline",
+            shell=True, capture_output=True, text=True, env=env
+        )
         if res_mvn.returncode == 0:
-            print("[OK] Dependências do Spring Boot baixadas (mvn dependency:go-offline).")
+            print("[OK] Dependências do Spring Boot baixadas.")
         else:
             print(f"[AVISO] mvn dependency:go-offline falhou: {res_mvn.stderr[-800:]}")
     update_progress(54, "Maven configurado.")
 
+    # ---- PostgreSQL ----
     update_progress(55, "Instalando o motor de banco de dados (PostgreSQL)...")
     pg_pkg = "postgresql postgresql-contrib"
     if distro == 'rhel':
@@ -321,29 +405,27 @@ def installation_thread():
     run_command_stream(f"{install_cmd_base} {pg_pkg}")
     update_progress(65, "PostgreSQL instalado.")
 
+    # ---- Nginx ----
     update_progress(70, "Instalando e configurando proxy Nginx...")
 
     nginx_installed = shutil.which("nginx")
     success_nginx = True
 
-    if nginx_installed:
-        print("[INFO] Nginx já está instalado no sistema. Pulando download.")
-    else:
+    if not nginx_installed:
         success_nginx = run_command_stream(f"{install_cmd_base} nginx")
 
     if success_nginx:
         subprocess.run("systemctl disable --now httpd", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run("systemctl disable --now apache2", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # Elimina a escuta IPv6 do arquivo padrão de fábrica para evitar o erro 97
         subprocess.run("sed -i 's/.*listen.*\\[::\\]:80.*/#&/' /etc/nginx/nginx.conf 2>/dev/null", shell=True)
 
         print("[INFO] Gerando configuração avançada do Nginx via Python...")
         frontend_path = os.path.join(APP_DIR, "fabric", "frontend")
 
-        # Garante permissão recursiva para o Nginx conseguir ler pastas, CSS, imagens e JS
         subprocess.run(f"chmod -R 755 {frontend_path} 2>/dev/null", shell=True)
 
+        # Garante que o Nginx consiga atravessar toda a árvore de diretórios
         current_path = frontend_path
         while current_path != '/':
             subprocess.run(f"chmod o+x {current_path} 2>/dev/null", shell=True)
@@ -357,7 +439,7 @@ def installation_thread():
             aa_profile = "/etc/apparmor.d/usr.sbin.nginx"
             aa_override = "/etc/apparmor.d/local/usr.sbin.nginx"
             if os.path.exists(aa_profile):
-                print("[INFO] Ajustando AppArmor para permitir leitura do frontend pelo Nginx...")
+                print("[INFO] Ajustando AppArmor para o Nginx...")
                 rule = f"\n  {frontend_path}/ r,\n  {frontend_path}/** r,\n"
                 try:
                     os.makedirs(os.path.dirname(aa_override), exist_ok=True)
@@ -365,14 +447,12 @@ def installation_thread():
                     if os.path.exists(aa_override):
                         with open(aa_override, "r") as f:
                             content = f.read()
-
                     if frontend_path not in content:
                         with open(aa_override, "a") as f:
                             f.write(rule)
-
                     subprocess.run("apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx 2>/dev/null", shell=True)
                 except Exception as e:
-                    print(f"[AVISO] Falha ao ajustar regras do AppArmor: {e}")
+                    print(f"[AVISO] Falha no AppArmor: {e}")
 
         nginx_conf = f"""server {{
     listen 80 default_server;
@@ -482,7 +562,6 @@ def installation_thread():
                 subprocess.run("rm -f /etc/nginx/sites-enabled/default", shell=True)
             else:
                 subprocess.run("rm -f /etc/nginx/conf.d/default.conf", shell=True)
-
         except Exception as e:
             print(f"[ERRO] Falha ao escrever configuração do Nginx: {e}")
 
@@ -492,6 +571,7 @@ def installation_thread():
 
     update_progress(80, "Nginx configurado.")
 
+    # ---- Ativação do PostgreSQL ----
     update_progress(85, "Ativando serviços de dados e ajustando SELinux...")
 
     svc_name = "postgresql"
@@ -505,7 +585,6 @@ def installation_thread():
             subprocess.run("chown -R postgres:postgres /var/lib/pgsql", shell=True, capture_output=True)
             if shutil.which("restorecon"):
                 subprocess.run("restorecon -Rv /var/lib/pgsql", shell=True, capture_output=True)
-
             subprocess.run("/usr/bin/postgresql-setup --initdb", shell=True, capture_output=True)
 
         subprocess.run("chown -R postgres:postgres /var/lib/pgsql/data", shell=True, capture_output=True)
@@ -531,6 +610,7 @@ def installation_thread():
     else:
         subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
 
+    # ---- Validação final ----
     update_progress(90, "Aguardando o serviço de banco de dados iniciar...")
     db_ready = False
     for i in range(30):
@@ -546,45 +626,58 @@ def installation_thread():
         time.sleep(1)
 
     if db_ready:
-        update_progress(100, "Instalação concluída com dependências de banco configuradas!")
+        update_progress(100, "Instalação concluída! Configure o banco na próxima tela.")
     else:
         update_progress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.")
 
+# ============================================================
+# BLOCO PRINCIPAL
+# ============================================================
 if __name__ == '__main__':
     if os.geteuid() != 0:
         print("ERRO: Este script deve ser executado com sudo.")
+        print("Uso correto: sudo python3 install.py")
         sys.exit(1)
 
+    # Verifica conexão com a internet (opcional - usa script auxiliar se existir)
     if not check_internet():
         print("\n[AVISO] Conexão com a internet não detectada!")
         wan_script = os.path.join(APP_DIR, "fabric", "network-firewall", "config-wan.py")
 
         if os.path.exists(wan_script):
-            print(f"[INFO] Delegando configuração de rede e firewall para: {wan_script}")
+            print(f"[INFO] Delegando configuração de rede para: {wan_script}")
             subprocess.run([sys.executable, wan_script])
 
             if not check_internet():
-                print("\n[ERRO] A internet ainda não está acessível após a configuração. Abortando.")
+                print("\n[ERRO] A internet ainda não está acessível. Abortando.")
                 sys.exit(1)
             else:
-                print("\n[OK] Conectividade estabelecida com sucesso. Retomando instalação web...")
+                print("\n[OK] Conectividade estabelecida.")
         else:
-            print(f"\n[ERRO] Sem internet e script de rede auxiliar não encontrado: {wan_script}")
+            print(f"\n[ERRO] Sem internet e script auxiliar não encontrado: {wan_script}")
             sys.exit(1)
 
-    # Garante Flask/Psycopg2 ANTES de importar (evita ModuleNotFoundError em máquina limpa)
+    # CRÍTICO: garante Flask ANTES de importar
     ensure_dependencies_installed()
 
     frontend_dir = os.path.join(APP_DIR, 'fabric', 'frontend')
 
-    import flask
-    from flask import Flask, send_from_directory, request, jsonify, Response
+    # Agora é seguro importar Flask
+    try:
+        import flask
+        from flask import Flask, send_from_directory, request, jsonify, Response
+    except ImportError:
+        print("\n[CRÍTICO] Falha ao importar o Flask.")
+        sys.exit(1)
 
     app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
 
     @app.route('/')
     def index():
-        return send_from_directory(frontend_dir, 'install.html')
+        install_path = os.path.join(frontend_dir, 'install.html')
+        if os.path.exists(install_path):
+            return send_from_directory(frontend_dir, 'install.html')
+        return send_from_directory(frontend_dir, 'index.html')
 
     @app.route('/api/stream')
     def stream():
@@ -633,12 +726,15 @@ if __name__ == '__main__':
             if res_db.returncode != 0 and "already exists" not in res_db.stderr:
                 return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
 
-            print("\n[INFO] Banco de dados configurado! Agendando encerramento do instalador para 1 minuto...")
+            # Injeta o application.properties do Spring Boot com as credenciais
+            inject_spring_properties(username, password)
+
+            print("\n[INFO] Banco configurado! Agendando encerramento do instalador em 60s...")
             threading.Timer(60.0, lambda: os._exit(0)).start()
 
             return jsonify({
                 "success": True,
-                "message": "Usuário e database 'astral' criados com sucesso!",
+                "message": "Banco 'astral' criado e Spring Boot configurado!",
                 "redirect_url": f"http://{get_local_ip()}"
             })
 
@@ -654,7 +750,7 @@ if __name__ == '__main__':
     local_ip = get_local_ip()
 
     print("\n" + "="*60)
-    print("[GIT PROJETO] INSTALADOR WEB ATIVO COM SUPORTE A DEPENDENCIAS DE BANCO")
+    print("[ASTRAL PLATFORM] INSTALADOR WEB UNIFICADO")
     print("="*60)
     print(f"[AÇÃO] Abra o navegador e acesse:")
     print(f"[ENDEREÇO] http://{local_ip}:{PORT}")
