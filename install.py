@@ -809,3 +809,136 @@ def installation_thread():
         subprocess.run("chown -R postgres:postgres /var/lib/pgsql/data", shell=True, capture_output=True)
         subprocess.run("chmod 700 /var/lib/pgsql/data", shell=True, capture_output=True)
         subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
+        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
+        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
+
+    elif distro == 'arch':
+        if not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
+            subprocess.run("sudo -u postgres initdb -D /var/lib/postgres/data", shell=True, capture_output=True)
+            subprocess.run("grep -q \"^listen_addresses\" /var/lib/postgres/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/postgres/data/postgresql.conf", shell=True)
+            subprocess.run("grep -q '0.0.0.0/0' /var/lib/postgres/data/pg_hba.conf || echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/postgres/data/pg_hba.conf", shell=True)
+        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
+        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
+    else:
+        subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
+
+    update_progress(90, "Aguardando o serviço de banco de dados iniciar...")
+    db_ready = False
+    for i in range(30):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(('127.0.0.1', 5432))
+            sock.close()
+            if result == 0:
+                db_ready = True
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+
+    if db_ready:
+        update_progress(100, "Instalação concluída com dependências de banco configuradas!")
+    else:
+        update_progress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.")
+
+# ============================================================
+# BLOCO PRINCIPAL (FALTAVA ISSO PARA O SCRIPT INICIAR E EXIBIR O LINK)
+# ============================================================
+if __name__ == '__main__':
+    if os.geteuid() != 0:
+        print("ERRO: Este script deve ser executado com sudo.", flush=True)
+        sys.exit(1)
+
+    # Garante que Flask e dependências estão instalados antes de importar
+    ensure_dependencies_installed()
+
+    frontend_dir = os.path.join(APP_DIR, 'fabric', 'frontend')
+
+    try:
+        import flask
+        from flask import Flask, send_from_directory, request, jsonify, Response
+    except ImportError:
+        print("\n[CRÍTICO] Falha ao importar o Flask mesmo após tentar instalar.", flush=True)
+        sys.exit(1)
+
+    app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
+
+    @app.route('/')
+    def index():
+        if os.path.exists(os.path.join(frontend_dir, 'install.html')):
+            return send_from_directory(frontend_dir, 'install.html')
+        return send_from_directory(frontend_dir, 'index.html')
+
+    @app.route('/api/stream')
+    def stream():
+        def generate():
+            last_pkg = ""
+            while True:
+                with state.lock:
+                    display_status = state.status
+                    if state.package_name and state.package_name != last_pkg:
+                        display_status = f"{state.status} ({state.package_name})"
+                        last_pkg = state.package_name
+
+                    data = {
+                        "porcentagem": state.progress,
+                        "status": display_status,
+                        "package": state.package_name
+                    }
+
+                    if state.progress >= 100:
+                        data["redirect_url"] = f"http://{get_local_ip()}"
+
+                yield f"data: {json.dumps(data)}\n\n"
+                if state.progress >= 100:
+                    break
+                time.sleep(0.5)
+        return Response(generate(), mimetype='text/event-stream')
+
+    @app.route('/api/setup-db', methods=['POST'])
+    def setup_db():
+        data = request.json
+        username = data.get('username')
+        password = data.get('password')
+
+        if not username or not password:
+            return jsonify({"error": "Dados inválidos"}), 400
+
+        cmd_user = f'sudo -i -u postgres psql -c "CREATE USER {username} WITH PASSWORD \'{password}\' SUPERUSER;"'
+        cmd_db = f'sudo -i -u postgres psql -c "CREATE DATABASE astral OWNER {username};"'
+
+        try:
+            res_user = subprocess.run(cmd_user, shell=True, capture_output=True, text=True)
+            res_db = subprocess.run(cmd_db, shell=True, capture_output=True, text=True)
+
+            print("\n[INFO] Banco de dados configurado! Agendando encerramento...", flush=True)
+            threading.Timer(60.0, lambda: os._exit(0)).start()
+
+            return jsonify({
+                "success": True,
+                "redirect_url": f"http://{get_local_ip()}"
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/shutdown', methods=['POST'])
+    def shutdown():
+        print("\n[INFO] Sinal de encerramento manual recebido. Desligando...", flush=True)
+        threading.Timer(1.0, lambda: os._exit(0)).start()
+        return jsonify({"success": True})
+
+    local_ip = get_local_ip()
+
+    # O FLUSH=TRUE GARANTE QUE O ENDEREÇO APAREÇA NA TELA IMEDIATAMENTE
+    print("\n" + "="*60, flush=True)
+    print("[GIT PROJETO] INSTALADOR WEB ATIVO COM SUPORTE A BANCO", flush=True)
+    print("="*60, flush=True)
+    print(f"[AÇÃO] Abra o navegador e acesse:", flush=True)
+    print(f"[ENDEREÇO] http://{local_ip}:{PORT}", flush=True)
+    print("="*60 + "\n", flush=True)
+
+    t = threading.Thread(target=installation_thread)
+    t.daemon = True
+    t.start()
+
+    app.run(host=HOST_IP, port=PORT, threaded=True)
