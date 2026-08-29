@@ -7,14 +7,14 @@ Uso: sudo python3 install.py
 Fluxo completo:
  1. Sobe Flask na porta 5000 servindo fabric/frontend/install.html
  2. Thread paralela instala: firewall, Node.js, Oracle JDK 21, Maven,
-    PostgreSQL e Nginx (proxy reverso)
+    PostgreSQL e Nginx (proxy reverso + WebSocket /ws/)
  3. DEPOIS de instalar tudo: organiza o projeto no layout Maven
-    (java, templates, imagens), injeta pom.xml com Thymeleaf,
-    COMPILA o projeto com Maven e cria systemd service do Spring Boot
- 4. Frontend (SSE) mostra progresso; em 100% exibe o form do banco
- 5. POST /api/setup-db cria user+db 'astral', injeta application.properties
-    e reinicia o Spring Boot
- 6. Botão "Concluir" mata o Flask e redireciona para o Nginx (porta 80)
+    (java, templates, imagens, websocket), injeta pom.xml com
+    Web + Thymeleaf + WebSocket + JPA e devolve o ownership (chown)
+ 4. COMPILA o projeto com Maven e cria systemd service do Spring Boot
+ 5. Frontend (SSE) mostra progresso; em 100% exibe o form do banco
+ 6. POST /api/setup-db cria user+db 'astral' e injeta application.properties
+ 7. Botão "Concluir" mata o Flask e redireciona para o Nginx (porta 80)
 """
 
 import os
@@ -150,7 +150,7 @@ def ensure_dependencies_installed():
         subprocess.run("pip3 install flask psycopg2-binary", shell=True, capture_output=True)
 
 # ============================================================
-# POM.XML (Spring Boot + Thymeleaf + JPA + PostgreSQL JDBC)
+# POM.XML (Web + Thymeleaf + WebSocket + JPA + PostgreSQL JDBC)
 # ============================================================
 def inject_java_pom_template():
     pom_path = os.path.join(APP_DIR, "pom.xml")
@@ -187,6 +187,11 @@ def inject_java_pom_template():
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-thymeleaf</artifactId>
         </dependency>
+        <!-- WebSocket: terminal web e tempo real (/ws/terminal) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
         <!-- Spring Data JPA para Banco de Dados -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -216,21 +221,31 @@ def inject_java_pom_template():
         except Exception as e:
             print(f"[AVISO] Não foi possível criar o pom.xml: {e}")
     else:
-        # pom.xml já existe: garante que o Thymeleaf não ficou de fora
+        # pom.xml já existe: garante que Thymeleaf e WebSocket não ficaram de fora
         try:
             with open(pom_path, "r") as f:
                 content = f.read()
+            missing_deps = []
             if "spring-boot-starter-thymeleaf" not in content:
-                dep = """        <!-- Thymeleaf: renderiza o dashboard (templates/home.html) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-thymeleaf</artifactId>
-        </dependency>
-    </dependencies>"""
-                content = content.replace("    </dependencies>", dep, 1)
+                missing_deps.append(
+                    "        <!-- Thymeleaf: renderiza o dashboard (templates/home.html) -->\n"
+                    "        <dependency>\n"
+                    "            <groupId>org.springframework.boot</groupId>\n"
+                    "            <artifactId>spring-boot-starter-thymeleaf</artifactId>\n"
+                    "        </dependency>\n")
+            if "spring-boot-starter-websocket" not in content:
+                missing_deps.append(
+                    "        <!-- WebSocket: terminal web e tempo real (/ws/terminal) -->\n"
+                    "        <dependency>\n"
+                    "            <groupId>org.springframework.boot</groupId>\n"
+                    "            <artifactId>spring-boot-starter-websocket</artifactId>\n"
+                    "        </dependency>\n")
+            if missing_deps:
+                insert = "".join(missing_deps) + "    </dependencies>"
+                content = content.replace("    </dependencies>", insert, 1)
                 with open(pom_path, "w") as f:
                     f.write(content)
-                print("[OK] Dependência do Thymeleaf adicionada ao pom.xml existente.")
+                print("[OK] Dependências (Thymeleaf/WebSocket) adicionadas ao pom.xml existente.")
         except Exception as e:
             print(f"[AVISO] Não foi possível atualizar o pom.xml: {e}")
 
@@ -238,13 +253,15 @@ def inject_java_pom_template():
 # ORGANIZAÇÃO DO PROJETO (layout Maven) — DEPOIS de instalar tudo
 # ============================================================
 def inject_spring_sources():
-    """Migra .java/templates/imagens do layout antigo para o layout Maven."""
+    """Migra .java/templates/imagens do layout antigo para o layout Maven
+    e garante classe main, config WebSocket e template do dashboard."""
     base_src  = os.path.join(APP_DIR, "src", "main", "java", "com", "astral", "main")
     ctrl_dir  = os.path.join(base_src, "controller")
     model_dir = os.path.join(base_src, "model")
+    cfg_dir   = os.path.join(base_src, "config")
     tpl_dir   = os.path.join(APP_DIR, "src", "main", "resources", "templates")
     imgs_dir  = os.path.join(APP_DIR, "src", "main", "resources", "static", "images")
-    for d in (base_src, ctrl_dir, model_dir, tpl_dir, imgs_dir):
+    for d in (base_src, ctrl_dir, model_dir, cfg_dir, tpl_dir, imgs_dir):
         os.makedirs(d, exist_ok=True)
 
     # ---- 1) Migra os .java do layout antigo para o pacote certo ----
@@ -288,7 +305,94 @@ public class AstralApplication {
 """)
         print("[OK] AstralApplication.java criado.")
 
-    # ---- 3) Template Thymeleaf: prefere o home.html do usuário ----
+    # ---- 3) Config WebSocket (terminal web em /ws/terminal) ----
+    ws_cfg = os.path.join(cfg_dir, "WebSocketConfig.java")
+    if not os.path.exists(ws_cfg):
+        with open(ws_cfg, "w") as f:
+            f.write("""package com.astral.main.config;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.socket.config.annotation.EnableWebSocket;
+import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
+import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
+
+@Configuration
+@EnableWebSocket
+public class WebSocketConfig implements WebSocketConfigurer {
+    @Override
+    public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
+        registry.addHandler(new TerminalWebSocketHandler(), "/ws/terminal")
+                .setAllowedOrigins("*");
+    }
+}
+""")
+        print("[OK] WebSocketConfig.java criado.")
+
+    ws_handler = os.path.join(cfg_dir, "TerminalWebSocketHandler.java")
+    if not os.path.exists(ws_handler):
+        with open(ws_handler, "w") as f:
+            f.write("""package com.astral.main.config;
+
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.handler.TextWebSocketHandler;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class TerminalWebSocketHandler extends TextWebSocketHandler {
+
+    private final Map<String, Process> sessions = new ConcurrentHashMap<>();
+
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder("script", "-qfc", "/bin/bash", "/dev/null");
+        pb.environment().put("TERM", "dumb");
+        pb.directory(new File("/root"));
+        Process proc = pb.start();
+        sessions.put(session.getId(), proc);
+
+        Thread t = new Thread(() -> {
+            try (InputStream in = proc.getInputStream()) {
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    synchronized (session) {
+                        if (session.isOpen())
+                            session.sendMessage(new TextMessage(
+                                new String(buf, 0, n, StandardCharsets.UTF_8)));
+                    }
+                }
+            } catch (IOException ignored) {}
+        });
+        t.setDaemon(true);
+        t.start();
+    }
+
+    @Override
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+        Process p = sessions.get(session.getId());
+        if (p != null && p.isAlive()) {
+            p.getOutputStream().write(message.getPayload().getBytes(StandardCharsets.UTF_8));
+            p.getOutputStream().flush();
+        }
+    }
+
+    @Override
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        Process p = sessions.remove(session.getId());
+        if (p != null) p.destroyForcibly();
+    }
+}
+""")
+        print("[OK] TerminalWebSocketHandler.java criado.")
+
+    # ---- 4) Template Thymeleaf: prefere o home.html do usuário ----
     legacy_tpl = os.path.join(APP_DIR, "fabric", "frontend", "main",
                               "resources", "templates", "home.html")
     target_tpl = os.path.join(tpl_dir, "home.html")
@@ -305,7 +409,7 @@ public class AstralApplication {
 <style>
  body{background:#12161f;color:#fff;font-family:'Segoe UI',sans-serif;margin:0;padding:40px}
  h1{text-align:center;color:#4facfe}
- .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:20px;max-width:1100px;margin:0 auto}
+ .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;max-width:1100px;margin:0 auto}
  .card{background:#1c2331;border:1px solid #2a3550;border-radius:12px;padding:24px;text-align:center;color:#fff;text-decoration:none;transition:.2s}
  .card:hover{transform:translateY(-4px);border-color:#4facfe}
  .card img{width:64px;height:64px;margin-bottom:12px}
@@ -324,7 +428,7 @@ public class AstralApplication {
 """)
         print("[OK] home.html padrão gerado.")
 
-    # ---- 4) Ícones dos cards -> static/images (Spring serve em /images/) ----
+    # ---- 5) Ícones dos cards -> static/images (Spring serve em /images/) ----
     legacy_imgs = os.path.join(APP_DIR, "fabric", "frontend", "main", "images")
     if os.path.isdir(legacy_imgs):
         for fn in os.listdir(legacy_imgs):
@@ -334,7 +438,7 @@ public class AstralApplication {
                     shutil.copy2(os.path.join(legacy_imgs, fn), dst)
         print("[OK] Ícones do dashboard copiados para src/main/resources/static/images/.")
 
-    # ---- 5) Fundo do login: garante no lugar que o Nginx serve ----
+    # ---- 6) Fundo do login: garante no lugar que o Nginx serve ----
     login_imgs = os.path.join(APP_DIR, "fabric", "frontend", "login", "images")
     os.makedirs(login_imgs, exist_ok=True)
     for cand in (os.path.join(legacy_imgs, "login.png"),
@@ -355,7 +459,6 @@ def build_and_deploy_spring_boot():
         print("[ERRO] pom.xml não encontrado. Abortando compilação.")
         return False
 
-    # ---- 1) Compilação com Maven ----
     print("[INFO] Compilando projeto com Maven (mvn package)...")
     env = os.environ.copy()
     java_home = os.environ.get("JAVA_HOME")
@@ -368,14 +471,13 @@ def build_and_deploy_spring_boot():
     result = subprocess.run(build_cmd, shell=True, capture_output=True, text=True, env=env)
 
     if result.returncode != 0:
-        print(f"[ERRO] Falha na compilação Maven:")
+        print("[ERRO] Falha na compilação Maven:")
         print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
         print(result.stderr[-1000:] if len(result.stderr) > 1000 else result.stderr)
         return False
 
     print("[OK] Compilação Maven concluída com sucesso.")
 
-    # ---- 2) Localiza o JAR gerado ----
     target_dir = os.path.join(APP_DIR, "target")
     jar_files = [f for f in os.listdir(target_dir) if f.endswith(".jar") and "original" not in f]
 
@@ -386,9 +488,7 @@ def build_and_deploy_spring_boot():
     jar_file = os.path.join(target_dir, jar_files[0])
     print(f"[OK] JAR localizado: {jar_file}")
 
-    # ---- 3) Cria systemd service ----
     print("[INFO] Criando systemd service para o Spring Boot...")
-
     service_content = f"""[Unit]
 Description=Astral Platform Spring Boot Application
 After=network.target postgresql.service
@@ -408,7 +508,6 @@ Environment=JAVA_OPTS=-Xmx512m
 [Install]
 WantedBy=multi-user.target
 """
-
     service_path = "/etc/systemd/system/astral-platform.service"
     try:
         with open(service_path, "w") as f:
@@ -418,36 +517,32 @@ WantedBy=multi-user.target
         print(f"[ERRO] Falha ao criar systemd service: {e}")
         return False
 
-    # ---- 4) Habilita e inicia o serviço ----
     print("[INFO] Habilitando e iniciando o serviço astral-platform...")
-
     subprocess.run("systemctl daemon-reload", shell=True, capture_output=True)
     subprocess.run("systemctl enable astral-platform.service", shell=True, capture_output=True)
     subprocess.run("systemctl start astral-platform.service", shell=True, capture_output=True)
 
-    # Aguarda o Spring Boot subir (max 30s)
     print("[INFO] Aguardando Spring Boot inicializar...")
     for i in range(30):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('127.0.0.1', 8081))
+            r = sock.connect_ex(('127.0.0.1', 8081))
             sock.close()
-            if result == 0:
+            if r == 0:
                 print("[OK] Spring Boot está rodando na porta 8081!")
                 return True
         except Exception:
             pass
         time.sleep(1)
 
-    print("[AVISO] Spring Boot pode não ter inicializado completamente. Verifique: journalctl -u astral-platform.service")
+    print("[AVISO] Spring Boot pode não ter inicializado completamente. "
+          "Verifique: journalctl -u astral-platform.service")
     return False
 
 # ============================================================
 # CHOWN — devolve ao usuário real tudo que o root criou
 # ============================================================
 def fix_ownership():
-    """Detecta o dono real do projeto (mesmo via sudo) e aplica chown -R,
-    para que mv/cp do usuário nunca mais perguntem 'desobedecendo o modo'."""
     uid = os.stat(APP_DIR).st_uid
     gid = os.stat(APP_DIR).st_gid
     subprocess.run(f"chown -R {uid}:{gid} {APP_DIR}", shell=True, capture_output=True)
@@ -466,7 +561,7 @@ def inject_spring_properties(username, password):
 # Configuracao Astral Platform (Spring Boot)
 # ==========================================
 
-# Porta da API (Nginx faz proxy de /api/ e /inicio para ca)
+# Porta da API (Nginx faz proxy de /api/, /inicio e /ws/ para ca)
 server.port=8081
 
 # Conexao com PostgreSQL (database 'astral')
@@ -587,7 +682,6 @@ def installation_thread():
     if rl.returncode == 0 and rl.stdout.strip():
         java_bin = rl.stdout.strip()
         java_home = os.path.dirname(os.path.dirname(java_bin))
-        # Se o dnf trouxe um OpenJDK junto, força o Oracle de volta como padrão
         subprocess.run(["alternatives", "--set", "java", java_bin], capture_output=True)
         try:
             with open("/etc/profile.d/java_home.sh", "w") as f:
@@ -683,6 +777,16 @@ def installation_thread():
 
     location @spring {{
         proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }}
+
+    # WebSocket do terminal (upgrade HTTP -> WS)
+    location /ws/ {{
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}
@@ -812,7 +916,6 @@ def installation_thread():
                        "echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
         subprocess.run("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || "
                        "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/pgsql/data/pg_hba.conf", shell=True)
-        # Garante auth por senha no localhost ANTES das regras ident/scram de fábrica
         subprocess.run("grep -q '^host.*127.0.0.1/32.*md5' /var/lib/pgsql/data/pg_hba.conf || "
                        "sed -i '1i host    all             all             127.0.0.1/32            md5' "
                        "/var/lib/pgsql/data/pg_hba.conf", shell=True)
@@ -830,12 +933,11 @@ def installation_thread():
     else:
         subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
 
-    # ---- DEPOIS de instalar tudo: organiza o projeto + devolve ownership ----
+    # ---- DEPOIS de instalar tudo: organiza o projeto + devolve ownership + build ----
     update_progress(88, "Organizando o projeto no layout Maven e aplicando chown...")
     inject_spring_sources()
     fix_ownership()
 
-    # ---- COMPILAÇÃO E DEPLOY DO SPRING BOOT ----
     update_progress(90, "Compilando Spring Boot e criando systemd service...")
     build_and_deploy_spring_boot()
 
@@ -876,7 +978,7 @@ if __name__ == '__main__':
         import flask
         from flask import Flask, send_from_directory, request, jsonify, Response
     except ImportError:
-        print("[CRÍTICO] Falha ao importar o Flask mesmo após tentar instalar.", flush=True)
+        print("\n[CRÍTICO] Falha ao importar o Flask mesmo após tentar instalar.", flush=True)
         sys.exit(1)
 
     app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
@@ -931,11 +1033,12 @@ if __name__ == '__main__':
             # Reinicia o Spring Boot para carregar o novo application.properties
             subprocess.run("systemctl restart astral-platform.service", shell=True, capture_output=True)
 
-            print("[INFO] Banco de dados configurado! Agendando encerramento...", flush=True)
+            print("\n[INFO] Banco de dados configurado! Agendando encerramento do instalador em 60s...", flush=True)
             threading.Timer(60.0, lambda: os._exit(0)).start()
 
             return jsonify({
                 "success": True,
+                "message": "Banco 'astral' criado e Spring Boot configurado!",
                 "redirect_url": f"http://{get_local_ip()}"
             })
         except Exception as e:
@@ -943,14 +1046,14 @@ if __name__ == '__main__':
 
     @app.route('/api/shutdown', methods=['POST'])
     def shutdown():
-        print("[INFO] Sinal de encerramento manual recebido. Desligando...", flush=True)
+        print("\n[INFO] Sinal de encerramento manual recebido. Desligando...", flush=True)
         threading.Timer(1.0, lambda: os._exit(0)).start()
         return jsonify({"success": True})
 
     local_ip = get_local_ip()
 
     print("\n" + "="*60, flush=True)
-    print("[GIT PROJETO] INSTALADOR WEB ATIVO COM SUPORTE A BANCO", flush=True)
+    print("[ASTRAL PLATFORM] INSTALADOR WEB UNIFICADO", flush=True)
     print("="*60, flush=True)
     print(f"[AÇÃO] Abra o navegador e acesse:", flush=True)
     print(f"[ENDEREÇO] http://{local_ip}:{PORT}", flush=True)
