@@ -220,6 +220,11 @@ public class Installer {
     private static void buildProject() {
         String appDir = System.getProperty("user.dir");
         runCmd("cd " + appDir + " && mvn -B -DskipTests clean package", true);
+        // DEVOLVE o target/ ao dono do projeto (evita o "error while writing .class")
+        try {
+            String owner = Files.getOwner(Paths.get(appDir)).getName();
+            runCmd("chown -R " + owner + ":" + owner + " " + appDir + "/target", false);
+        } catch (IOException ignored) {}
     }
 
     private static void createSystemdService() {

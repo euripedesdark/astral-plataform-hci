@@ -380,7 +380,6 @@ public class NetworkConfig {
         if (input.isEmpty()) return defaultValue;
         return input.startsWith("y");
     }
-
     private static String runCmd(String cmd, boolean log) {
         if (log) System.out.println("$ " + cmd);
         try {
