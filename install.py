@@ -167,8 +167,9 @@ def ensure_dependencies_installed():
 # INJEÇÃO DE ARQUIVOS DO PROJETO
 # ============================================================
 def inject_java_pom_template():
-    """Cria o pom.xml do Spring Boot com dependências Web/JPA/PostgreSQL."""
+    """Cria/atualiza o pom.xml com Web + Thymeleaf + JPA + PostgreSQL JDBC."""
     pom_path = os.path.join(APP_DIR, "pom.xml")
+
     if not os.path.exists(pom_path):
         print("[INFO] Injetando template de dependências Maven (pom.xml) para Spring Boot...")
         pom_content = """<?xml version="1.0" encoding="UTF-8"?>
@@ -191,14 +192,22 @@ def inject_java_pom_template():
         <java.version>21</java.version>
     </properties>
     <dependencies>
+        <!-- Spring Boot Web para APIs REST -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- Thymeleaf: renderiza o dashboard (templates/home.html) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
+        </dependency>
+        <!-- Spring Data JPA para Banco de Dados -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
+        <!-- Driver PostgreSQL JDBC -->
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -220,8 +229,25 @@ def inject_java_pom_template():
                 f.write(pom_content)
             print("[OK] pom.xml injetado na raiz do projeto.")
         except Exception as e:
-            print(f"[AVISO] Não foi possível criar o pom.xml: {e}")
-
+            print(f"[AVISO] Não foi possível criar o pom.xml automático: {e}")
+    else:
+        # pom.xml já existe (rodou antes): garante que o Thymeleaf não ficou de fora
+        try:
+            with open(pom_path, "r") as f:
+                content = f.read()
+            if "spring-boot-starter-thymeleaf" not in content:
+                dep = """        <!-- Thymeleaf: renderiza o dashboard (templates/home.html) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
+        </dependency>
+    </dependencies>"""
+                content = content.replace("    </dependencies>", dep, 1)
+                with open(pom_path, "w") as f:
+                    f.write(content)
+                print("[OK] Dependência do Thymeleaf adicionada ao pom.xml existente.")
+        except Exception as e:
+            print(f"[AVISO] Não foi possível atualizar o pom.xml: {e}")
 def inject_spring_properties(username, password):
     """Gera o application.properties do Spring Boot com as credenciais do banco."""
     resources_dir = os.path.join(APP_DIR, "src", "main", "resources")

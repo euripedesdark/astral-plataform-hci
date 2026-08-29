@@ -1,0 +1,26 @@
+<!-- src/main/resources/templates/home.html -->
+<!DOCTYPE html>
+<html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title th:text="${pageTitle}">ASTRAL PLATFORM</title>
+  <style>
+    body{background:#12161f;color:#fff;font-family:Segoe UI,sans-serif;margin:0;padding:40px}
+    h1{text-align:center;color:#4facfe}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:20px;max-width:1100px;margin:0 auto}
+    .card{background:#1c2331;border:1px solid #2a3550;border-radius:12px;padding:24px;text-align:center;
+          color:#fff;text-decoration:none;transition:.2s}
+    .card:hover{transform:translateY(-4px);border-color:#4facfe}
+    .card img{width:64px;height:64px;margin-bottom:12px}
+  </style>
+</head>
+<body>
+  <h1 th:text="${pageTitle}">ASTRAL PLATFORM</h1>
+  <div class="grid">
+    <a class="card" th:each="btn : ${buttons}" th:href="${btn.route}">
+      <img th:src="@{'/images/' + ${btn.image}}" th:alt="${btn.label}" onerror="this.style.display='none'">
+      <div th:text="${btn.label}"></div>
+    </a>
+  </div>
+</body>
+</html>
