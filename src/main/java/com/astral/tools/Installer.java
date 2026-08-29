@@ -4,17 +4,13 @@ import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
 import java.io.*;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.nio.file.*;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Instalador Standalone - Astral Platform
- * Uso: sudo java -jar installer.jar
- *
- * Serve UI web na porta 5000 durante instalação
- * Executa todas as etapas do sistema
- */
 public class Installer {
 
     private static final int PORT = 5000;
@@ -28,13 +24,13 @@ public class Installer {
             System.exit(1);
         }
 
+        String localIP = getLocalIP();
         System.out.println("=".repeat(60));
         System.out.println("[ASTRAL PLATFORM] INSTALADOR JAVA");
         System.out.println("=".repeat(60));
-        System.out.println("Acesse: http://" + getLocalIP() + ":" + PORT);
+        System.out.println("Acesse: http://" + localIP + ":" + PORT);
         System.out.println("=".repeat(60));
 
-        // Inicia servidor web para UI
         HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
         server.createContext("/", Installer::handleIndex);
         server.createContext("/api/stream", Installer::handleStream);
@@ -42,10 +38,7 @@ public class Installer {
         server.setExecutor(executor);
         server.start();
 
-        // Inicia thread de instalação
         executor.submit(Installer::runInstallation);
-
-        // Mantém rodando
         Thread.currentThread().join();
     }
 
@@ -88,8 +81,6 @@ public class Installer {
             sleep(500);
 
             updateProgress(100, "Instalação concluída!");
-
-            // Aguarda 10s e encerra
             Thread.sleep(10000);
             System.exit(0);
 
@@ -98,8 +89,6 @@ public class Installer {
             updateProgress(100, "ERRO: " + e.getMessage());
         }
     }
-
-    // ========== ETAPAS DE INSTALAÇÃO ==========
 
     private static void configureFirewall() {
         int[] ports = {22, 80, 443, 5432, 8081, 5000};
@@ -110,7 +99,6 @@ public class Installer {
             runCmd("iptables -I INPUT 1 -p tcp --dport " + port + " -j ACCEPT", false);
         }
 
-        // Persistir regras
         if (Files.exists(Paths.get("/etc/init.d/iptables-persistent"))) {
             runCmd("iptables-save > /etc/iptables/rules.v4", false);
         } else if (Files.exists(Paths.get("/etc/sysconfig/iptables"))) {
@@ -121,15 +109,16 @@ public class Installer {
     private static void installSystemDependencies(String distro) {
         switch (distro) {
             case "debian":
-                runCmd("apt-get update", true);
+                runCmd("timeout 60 apt-get update", true);
                 runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y curl git", true);
                 break;
             case "rhel":
-                runCmd("dnf makecache", true);
+                runCmd("timeout 60 dnf makecache", true);
                 runCmd("dnf install -y curl git", true);
                 break;
             case "arch":
-                runCmd("pacman -Sy --noconfirm curl git", true);
+                runCmd("timeout 60 pacman -Sy", true);
+                runCmd("pacman -S --noconfirm curl git", true);
                 break;
         }
     }
@@ -137,7 +126,7 @@ public class Installer {
     private static void installJava(String distro) {
         String javaCheck = runCmd("java -version 2>&1", false);
         if (javaCheck != null && javaCheck.contains("Oracle")) {
-            return; // Já instalado
+            return;
         }
 
         switch (distro) {
@@ -208,7 +197,6 @@ public class Installer {
         runCmd("systemctl enable " + svc, false);
         runCmd("systemctl start " + svc, false);
 
-        // Configurar autenticação
         String pgHba = distro.equals("rhel") ? "/var/lib/pgsql/data/pg_hba.conf" :
                        distro.equals("arch") ? "/var/lib/postgres/data/pg_hba.conf" :
                        "/etc/postgresql/*/main/pg_hba.conf";
@@ -220,18 +208,13 @@ public class Installer {
     private static void buildProject() {
         String appDir = System.getProperty("user.dir");
         runCmd("cd " + appDir + " && mvn -B -DskipTests clean package", true);
-        // DEVOLVE o target/ ao dono do projeto (evita o "error while writing .class")
-        try {
-            String owner = Files.getOwner(Paths.get(appDir)).getName();
-            runCmd("chown -R " + owner + ":" + owner + " " + appDir + "/target", false);
-        } catch (IOException ignored) {}
     }
 
     private static void createSystemdService() {
         String appDir = System.getProperty("user.dir");
         String jarPath = appDir + "/target/astral-platform-1.0.0.jar";
 
-        String serviceContent = """
+        String serviceContent = String.format("""
             [Unit]
             Description=Astral Platform Spring Boot Application
             After=network.target postgresql.service
@@ -249,7 +232,7 @@ public class Installer {
 
             [Install]
             WantedBy=multi-user.target
-            """.formatted(appDir, jarPath);
+            """, appDir, jarPath);
 
         try {
             Files.writeString(Paths.get("/etc/systemd/system/astral-platform.service"), serviceContent);
@@ -260,8 +243,6 @@ public class Installer {
             throw new RuntimeException("Falha ao criar systemd service", e);
         }
     }
-
-    // ========== HANDLERS HTTP ==========
 
     private static void handleIndex(HttpExchange exchange) throws IOException {
         String response = """
@@ -292,9 +273,9 @@ public class Installer {
                     .box { width: 500px; background: rgba(4,10,22,.8); border: 2px solid #3fa9ff;
                            border-radius: 14px; padding: 30px; text-align: center; }
                     h1 { color: #9fd8ff; font-family: 'Orbitron', sans-serif; }
-                    .bar { width: 100%; background: #111; height: 20px; border-radius: 10px;
+                    .bar { width: 100%%; background: #111; height: 20px; border-radius: 10px;
                            overflow: hidden; margin: 20px 0; border: 1px solid #333; }
-                    .fill { width: 0%; height: 100%; background: linear-gradient(90deg, #3fa9ff, #1668ff);
+                    .fill { width: 0%%; height: 100%%; background: linear-gradient(90deg, #3fa9ff, #1668ff);
                             transition: width 0.4s; }
                     #status { font-size: 14px; color: #aaa; }
                 </style>
@@ -309,7 +290,7 @@ public class Installer {
                     const evt = new EventSource('/api/stream');
                     evt.onmessage = (e) => {
                         const data = JSON.parse(e.data);
-                        document.getElementById('fill').style.width = data.progress + '%';
+                        document.getElementById('fill').style.width = data.progress + '%%';
                         document.getElementById('status').textContent = data.status;
                         if (data.progress >= 100) {
                             evt.close();
@@ -347,8 +328,6 @@ public class Installer {
         }
     }
 
-    // ========== UTILITÁRIOS ==========
-    // ========== HELPER DE RESPOSTA HTTP ==========
     private static void sendResponse(HttpExchange exchange, int status, String body, String contentType) throws IOException {
         byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", contentType + "; charset=UTF-8");
@@ -362,6 +341,7 @@ public class Installer {
             os.write(bytes);
         }
     }
+
     private static void updateProgress(int p, String s) {
         progress.set(p);
         status = s;
@@ -408,13 +388,41 @@ public class Installer {
         return "unknown";
     }
 
+    // DETECÇÃO DE IP LOCAL MELHORADA
     private static String getLocalIP() {
+        // Tenta pegar o IP da interface padrão
+        try {
+            String route = runCmd("ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \\K[\\d.]+' | head -1", false);
+            if (route != null && !route.trim().isEmpty()) {
+                return route.trim();
+            }
+        } catch (Exception e) {
+            // Ignora e tenta próximo método
+        }
+
+        // Fallback: tenta conectar em 8.8.8.8
         try (java.net.Socket s = new java.net.Socket()) {
-            s.connect(new InetSocketAddress("8.8.8.8", 80));
+            s.connect(new InetSocketAddress("8.8.8.8", 80), 3000);
             return s.getLocalAddress().getHostAddress();
         } catch (IOException e) {
-            return "127.0.0.1";
+            // Último fallback: pega o primeiro IP não-loopback
+            try {
+                Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+                while (interfaces.hasMoreElements()) {
+                    NetworkInterface iface = interfaces.nextElement();
+                    Enumeration<java.net.InetAddress> addrs = iface.getInetAddresses();
+                    while (addrs.hasMoreElements()) {
+                        java.net.InetAddress addr = addrs.nextElement();
+                        if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
+                            return addr.getHostAddress();
+                        }
+                    }
+                }
+            } catch (SocketException ex) {
+                // Ignora
+            }
         }
+        return "127.0.0.1";
     }
 
     private static boolean isRoot() {
