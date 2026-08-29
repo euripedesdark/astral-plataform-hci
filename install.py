@@ -4,20 +4,8 @@
 Instalador Web Unificado - Astral Platform HCI
 Uso: sudo python3 install.py
 """
-import os
-import sys
-import socket
-import subprocess
-import time
-import json
-import threading
-import re
-import shutil
-import base64
+import os, sys, socket, subprocess, time, json, threading, re, shutil, base64
 
-# ============================================================
-# CONFIGURAÇÕES GLOBAIS
-# ============================================================
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 PORT = 5000
 HOST_IP = "0.0.0.0"
@@ -32,20 +20,14 @@ class InstallState:
 
 state = InstallState()
 
-# ============================================================
-# FONTES SELF-HOSTED (Orbitron 700/900 em woff2)
-# Se os base64 estiverem vazios, o instalador baixa do Fontsource CDN
-# ============================================================
 ORBITRON_BOLD_B64  = ""
 ORBITRON_BLACK_B64 = ""
-
 FONT_FILES = {
     "orbitron-bold.woff2":  ("https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-700-normal.woff2", ORBITRON_BOLD_B64),
     "orbitron-black.woff2": ("https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-900-normal.woff2", ORBITRON_BLACK_B64),
 }
 
 def ensure_fonts():
-    """Grava as fontes Orbitron em src/main/resources/static/fonts/."""
     fonts_dir = os.path.join(APP_DIR, "src", "main", "resources", "static", "fonts")
     os.makedirs(fonts_dir, exist_ok=True)
     for fn, (url, b64) in FONT_FILES.items():
@@ -53,18 +35,17 @@ def ensure_fonts():
         if os.path.exists(dst) and os.path.getsize(dst) > 1000:
             continue
         if b64:
-            with open(dst, "wb") as f:
-                f.write(base64.b64decode(b64))
-            print(f"[OK] Fonte {fn} gravada (base64 embutido no .py).")
+            with open(dst, "wb") as f: f.write(base64.b64decode(b64))
+            print(f"[OK] Fonte {fn} gravada (base64 embutido).")
             continue
         r = subprocess.run(f"curl -fsSL -o {dst} {url}", shell=True, capture_output=True)
         if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 1000:
-            print(f"[OK] Fonte {fn} baixada e self-hosted em static/fonts/.")
+            print(f"[OK] Fonte {fn} baixada e self-hosted.")
         else:
-            print(f"[AVISO] Não obtive {fn}; o dashboard usará fallback de fonte.")
+            print(f"[AVISO] Não obtive {fn}; fallback de fonte.")
 
 # ============================================================
-# ARQUIVOS CANÔNICOS EMBUTIDOS (gravados só se não existirem)
+# ARQUIVOS CANÔNICOS EMBUTIDOS
 # ============================================================
 ASTRAL_APP_JAVA = """package com.astral.main;
 
@@ -234,27 +215,78 @@ public class TerminalWebSocketHandler extends TextWebSocketHandler {
 }
 """
 
+# NOVO: auto-provisiona usuário/database se as credenciais não existirem no PG
+DB_BOOTSTRAP_JAVA = """package com.astral.main.config;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Component;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.DriverManager;
+
+@Component
+public class DatabaseBootstrap {
+
+    @Value("${spring.datasource.username}")
+    private String username;
+
+    @Value("${spring.datasource.password}")
+    private String password;
+
+    @Value("${spring.datasource.url}")
+    private String url;
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void ensureUserAndDatabase() {
+        try (var conn = DriverManager.getConnection(url, username, password)) {
+            System.out.println("[BOOTSTRAP] Conexão com o banco 'astral' OK.");
+            return;
+        } catch (Exception e) {
+            System.out.println("[BOOTSTRAP] Credenciais ausentes no PostgreSQL; auto-criando...");
+        }
+        try {
+            String sql = "DO $$ BEGIN "
+                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + username + "') THEN "
+                + "CREATE ROLE " + username + " LOGIN SUPERUSER PASSWORD '" + password + "'; "
+                + "ELSE "
+                + "ALTER ROLE " + username + " WITH LOGIN SUPERUSER PASSWORD '" + password + "'; "
+                + "END IF; END $$;\\n"
+                + "SELECT 'CREATE DATABASE astral OWNER " + username + "' "
+                + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\\\gexec\\n";
+            Path tmp = Path.of("/tmp/astral-bootstrap.sql");
+            Files.writeString(tmp, sql);
+            Process p = new ProcessBuilder("su", "-", "postgres", "-c",
+                    "psql -f /tmp/astral-bootstrap.sql")
+                    .redirectErrorStream(true).start();
+            p.waitFor();
+            System.out.println("[BOOTSTRAP] Auto-provisionamento de usuário/database executado.");
+        } catch (Exception e) {
+            System.out.println("[BOOTSTRAP] Falha no auto-provisionamento: " + e.getMessage());
+        }
+    }
+}
+"""
+
 DEFAULT_HOME_HTML = r"""<!DOCTYPE html>
 <html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
 <head>
 <meta charset="UTF-8">
 <title th:text="${pageTitle}">ASTRAL PLATFORM</title>
 <style th:inline="css">
-  /* Fonte self-hosted, gravada pelo install.py em static/fonts/ */
   @font-face{font-family:'Orbitron';font-style:normal;font-weight:700;font-display:swap;
              src:url([[@{'/fonts/orbitron-bold.woff2'}]]) format('woff2')}
   @font-face{font-family:'Orbitron';font-style:normal;font-weight:900;font-display:swap;
              src:url([[@{'/fonts/orbitron-black.woff2'}]]) format('woff2')}
   html,body{height:100%;margin:0}
-  /* Fundo via Thymeleaf (nunca url() cru) */
   body{background:#05070d url([[@{'/images/Fundo.png'}]]) no-repeat center center fixed;
        background-size:cover;font-family:'Segoe UI',sans-serif;color:#fff}
-  /* Titulo no canto superior esquerdo, fonte Orbitron Black */
   h1{position:fixed;top:4%;left:4%;margin:0;text-align:left;
      font-family:'Orbitron','Segoe UI',sans-serif;font-weight:900;
      letter-spacing:.28em;font-size:clamp(18px,2.4vw,36px);
      color:#eef5ff;text-shadow:0 0 6px #9fd8ff,0 0 18px #4da6ff,0 0 42px #1668ff}
-  /* Grid auto-ajustavel centralizado nas margens 25%/20%, cards com aspect-ratio real */
   .grid{position:fixed;inset:25% 20%;--gap:18px;--cols:3;
         display:flex;flex-wrap:wrap;gap:var(--gap);
         justify-content:center;align-content:center}
@@ -285,14 +317,12 @@ DEFAULT_HOME_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <h1 th:text="${pageTitle}">ASTRAL PLATFORM</h1>
-
 <div class="grid" id="grid">
   <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}" th:data-id="${btn.id}" th:title="${btn.label}">
     <div class="label" th:text="${btn.label}">Card</div>
     <img th:src="@{'/images/' + ${btn.image}}" alt="" onerror="this.style.display='none'">
   </a>
 </div>
-
 <div id="termModal" class="modal hidden">
   <div class="termbox">
     <div class="termhead">
@@ -306,27 +336,26 @@ DEFAULT_HOME_HTML = r"""<!DOCTYPE html>
     <input id="termIn" autocomplete="off">
   </div>
 </div>
-
 <script>
 function layout(n){if(n<=1)return{c:1};var c=0,i,k;
- for(i=0;i<5;i++){k=[6,5,4,3,2][i];if(n%k===0){c=k;break}}
- if(!c)for(i=0;i<5;i++){k=[6,5,4,3,2][i];if((n-1)%k===0){c=k;break}}
- return{c:c||3}}
+for(i=0;i<5;i++){k=[6,5,4,3,2][i];if(n%k===0){c=k;break}}
+if(!c)for(i=0;i<5;i++){k=[6,5,4,3,2][i];if((n-1)%k===0){c=k;break}}
+return{c:c||3}}
 (function(){var g=document.getElementById('grid');
- g.style.setProperty('--cols',layout(g.querySelectorAll('.card').length).c)})();
+g.style.setProperty('--cols',layout(g.querySelectorAll('.card').length).c)})();
 function clean(s){return s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g,'').replace(/\r/g,'')}
 function attach(out,inp){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
- ws.onmessage=function(e){out.textContent+=clean(e.data);out.scrollTop=out.scrollHeight};
- ws.onclose=function(){out.textContent+='\n[conexao encerrada]\n'};
- inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws.readyState===1){ws.send(inp.value+'\n');inp.value=''}});
- return ws}
+ws.onmessage=function(e){out.textContent+=clean(e.data);out.scrollTop=out.scrollHeight};
+ws.onclose=function(){out.textContent+='\n[conexao encerrada]\n'};
+inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws.readyState===1){ws.send(inp.value+'\n');inp.value=''}});
+return ws}
 var ws=null;
 var modal=document.getElementById('termModal'),out=document.getElementById('termOut'),inp=document.getElementById('termIn');
 document.querySelectorAll('.card').forEach(function(a){a.addEventListener('click',function(e){
- if(a.dataset.id==='terminal'){e.preventDefault();modal.classList.remove('hidden');out.textContent='';ws=attach(out,inp);inp.focus()}})});
+if(a.dataset.id==='terminal'){e.preventDefault();modal.classList.remove('hidden');out.textContent='';ws=attach(out,inp);inp.focus()}})});
 document.getElementById('closeBtn').onclick=function(){if(ws)ws.close();modal.classList.add('hidden')};
 document.getElementById('detachBtn').onclick=function(){if(ws)ws.close();modal.classList.add('hidden');
- window.open('/terminal-popup.html','astralTerm','width=960,height=600')};
+window.open('/terminal-popup.html','astralTerm','width=960,height=600')};
 </script>
 </body>
 </html>
@@ -345,8 +374,7 @@ def check_internet():
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
+        s.connect(('8.8.8.8', 80)); ip = s.getsockname()[0]
     except Exception:
         ip = '127.0.0.1'
     finally:
@@ -357,10 +385,10 @@ def detect_distro():
     try:
         with open('/etc/os-release', 'r') as f:
             content = f.read().lower()
-            if 'debian' in content or 'ubuntu' in content: return 'debian'
-            elif 'rhel' in content or 'fedora' in content or 'almalinux' in content \
-                 or 'centos' in content or 'rocky' in content: return 'rhel'
-            elif 'arch' in content or 'manjaro' in content: return 'arch'
+        if 'debian' in content or 'ubuntu' in content: return 'debian'
+        elif 'rhel' in content or 'fedora' in content or 'almalinux' in content \
+             or 'centos' in content or 'rocky' in content: return 'rhel'
+        elif 'arch' in content or 'manjaro' in content: return 'arch'
     except FileNotFoundError:
         pass
     return 'unknown'
@@ -464,9 +492,9 @@ def ensure_project_layout():
     base = os.path.join(APP_DIR, "src", "main", "java", "com", "astral", "main")
     tpl_dir = os.path.join(APP_DIR, "src", "main", "resources", "templates")
     imgs_dir = os.path.join(APP_DIR, "src", "main", "resources", "static", "images")
-
+    fonts_dir = os.path.join(APP_DIR, "src", "main", "resources", "static", "fonts")
     for d in (base, os.path.join(base, "controller"), os.path.join(base, "model"),
-              os.path.join(base, "config"), tpl_dir, imgs_dir):
+              os.path.join(base, "config"), tpl_dir, imgs_dir, fonts_dir):
         os.makedirs(d, exist_ok=True)
 
     files = {
@@ -476,18 +504,17 @@ def ensure_project_layout():
         os.path.join(base, "model", "DashboardButton.java"): DASHBOARD_BUTTON_JAVA,
         os.path.join(base, "config", "WebSocketConfig.java"): WS_CONFIG_JAVA,
         os.path.join(base, "config", "TerminalWebSocketHandler.java"): WS_HANDLER_JAVA,
+        os.path.join(base, "config", "DatabaseBootstrap.java"): DB_BOOTSTRAP_JAVA,
         os.path.join(tpl_dir, "home.html"): DEFAULT_HOME_HTML,
     }
     for path, content in files.items():
         rel = os.path.relpath(path, APP_DIR)
         if not os.path.exists(path):
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+            with open(path, "w", encoding="utf-8") as f: f.write(content)
             print(f"[OK] {rel} criado no layout correto.")
         else:
             print(f"[OK] {rel} já existe (mantido, sem sobrescrever).")
 
-    # Fundo do login: garante no lugar que o Nginx serve (disco)
     login_imgs = os.path.join(APP_DIR, "fabric", "frontend", "login", "images")
     os.makedirs(login_imgs, exist_ok=True)
     src_fundo = os.path.join(imgs_dir, "Fundo.png")
@@ -509,8 +536,7 @@ def build_and_deploy_spring_boot():
                             shell=True, capture_output=True, text=True, env=env)
     if result.returncode != 0:
         print("[ERRO] Falha na compilação Maven:")
-        print(result.stdout[-1500:])
-        print(result.stderr[-1500:])
+        print(result.stdout[-1500:]); print(result.stderr[-1500:])
         return False
     print("[OK] Compilação Maven concluída com sucesso.")
     target_dir = os.path.join(APP_DIR, "target")
@@ -520,6 +546,33 @@ def build_and_deploy_spring_boot():
         return False
     jar_file = os.path.join(target_dir, jar_files[0])
     print(f"[OK] JAR localizado: {jar_file}")
+
+    # Deploy em /opt (fora do /home, sem problemas de permissão/SELinux)
+    prod_dir = "/opt/astral-platform"
+    subprocess.run(f"mkdir -p {prod_dir}", shell=True, capture_output=True)
+    subprocess.run(f"cp {jar_file} {prod_dir}/", shell=True, capture_output=True)
+    subprocess.run(f"chown -R root:root {prod_dir} && chmod 755 {prod_dir}", shell=True, capture_output=True)
+    print(f"[OK] JAR copiado para {prod_dir}/")
+
+    # Config externa em /etc/astral (sobrevive a rebuilds)
+    config_dir = "/etc/astral"
+    subprocess.run(f"mkdir -p {config_dir}", shell=True, capture_output=True)
+    props = os.path.join(config_dir, "application.properties")
+    if not os.path.exists(props):
+        with open(props, "w") as f:
+            f.write("""# Configuracao Astral Platform (Spring Boot)
+server.port=8081
+spring.datasource.url=jdbc:postgresql://localhost:5432/astral
+spring.datasource.username=astral
+spring.datasource.password=astral
+spring.datasource.driver-class-name=org.postgresql.Driver
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+spring.jackson.serialization.fail-on-empty-beans=false
+""")
+        print(f"[OK] application.properties padrão criado em {props} (usuário astral/astral).")
+
     service_content = f"""[Unit]
 Description=Astral Platform Spring Boot Application
 After=network.target postgresql.service
@@ -528,8 +581,8 @@ Requires=postgresql.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory={APP_DIR}
-ExecStart=/usr/bin/java -jar {jar_file}
+WorkingDirectory={prod_dir}
+ExecStart=/usr/bin/java -jar {prod_dir}/astral-platform-1.0.0.jar --spring.config.location=file:{props}
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -539,8 +592,7 @@ StandardError=journal
 WantedBy=multi-user.target
 """
     try:
-        with open("/etc/systemd/system/astral-platform.service", "w") as f:
-            f.write(service_content)
+        with open("/etc/systemd/system/astral-platform.service", "w") as f: f.write(service_content)
         print("[OK] Service astral-platform criado/atualizado.")
     except Exception as e:
         print(f"[ERRO] Falha ao criar systemd service: {e}")
@@ -552,8 +604,7 @@ WantedBy=multi-user.target
     for i in range(30):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            r = sock.connect_ex(('127.0.0.1', 8081))
-            sock.close()
+            r = sock.connect_ex(('127.0.0.1', 8081)); sock.close()
             if r == 0:
                 print("[OK] Spring Boot está rodando na porta 8081!")
                 return True
@@ -569,9 +620,9 @@ def fix_ownership():
     print(f"[OK] chown -R {uid}:{gid} aplicado (arquivos devolvidos ao usuário do projeto).")
 
 def inject_spring_properties(username, password):
-    resources_dir = os.path.join(APP_DIR, "src", "main", "resources")
-    os.makedirs(resources_dir, exist_ok=True)
-    properties_path = os.path.join(resources_dir, "application.properties")
+    config_dir = "/etc/astral"
+    subprocess.run(f"mkdir -p {config_dir}", shell=True, capture_output=True)
+    properties_path = os.path.join(config_dir, "application.properties")
     properties_content = f"""# Configuracao Astral Platform (Spring Boot)
 server.port=8081
 spring.datasource.url=jdbc:postgresql://localhost:5432/astral
@@ -585,6 +636,7 @@ spring.jackson.serialization.fail-on-empty-beans=false
 """
     try:
         with open(properties_path, "w") as f: f.write(properties_content)
+        subprocess.run(f"chmod 640 {properties_path} && chown root:root {properties_path}", shell=True, capture_output=True)
         print(f"[OK] application.properties injetado em: {properties_path}")
     except Exception as e:
         print(f"[AVISO] Falha ao criar application.properties: {e}")
@@ -703,7 +755,6 @@ def installation_thread():
         try_files $uri $uri/ =404;
     }}
 
-    # Imagens e fontes: primeiro do disco (login), fallback no Spring (jar)
     location /images/ {{
         try_files $uri @spring;
     }}
@@ -812,8 +863,7 @@ def installation_thread():
 }}"""
         try:
             conf_path = "/etc/nginx/conf.d/astral.conf"
-            if distro == 'debian':
-                conf_path = "/etc/nginx/sites-available/astral.conf"
+            if distro == 'debian': conf_path = "/etc/nginx/sites-available/astral.conf"
             with open(conf_path, "w") as f: f.write(nginx_conf)
             if distro == 'debian':
                 subprocess.run("ln -sf /etc/nginx/sites-available/astral.conf /etc/nginx/sites-enabled/", shell=True)
@@ -863,9 +913,7 @@ def installation_thread():
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             if sock.connect_ex(('127.0.0.1', 5432)) == 0:
-                db_ready = True
-                sock.close()
-                break
+                db_ready = True; sock.close(); break
             sock.close()
         except Exception: pass
         time.sleep(1)
@@ -927,8 +975,8 @@ if __name__ == '__main__':
         cmd_user = f'sudo -i -u postgres psql -c "CREATE USER {username} WITH PASSWORD \'{password}\' SUPERUSER;"'
         cmd_db = f'sudo -i -u postgres psql -c "CREATE DATABASE astral OWNER {username};"'
         try:
-            res_user = subprocess.run(cmd_user, shell=True, capture_output=True, text=True)
-            res_db = subprocess.run(cmd_db, shell=True, capture_output=True, text=True)
+            subprocess.run(cmd_user, shell=True, capture_output=True, text=True)
+            subprocess.run(cmd_db, shell=True, capture_output=True, text=True)
             inject_spring_properties(username, password)
             subprocess.run("systemctl restart astral-platform.service", shell=True, capture_output=True)
             print("\n[INFO] Banco configurado! Agendando encerramento do instalador em 60s...", flush=True)
