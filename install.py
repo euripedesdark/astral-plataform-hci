@@ -11,9 +11,10 @@ Fluxo completo:
  3. DEPOIS de instalar tudo: organiza o projeto no layout Maven
     (java, templates, imagens), injeta pom.xml com Thymeleaf e
     devolve o ownership (chown) dos arquivos criados pelo root
- 4. Frontend (SSE) mostra progresso; em 100% exibe o form do banco
- 5. POST /api/setup-db cria user+db 'astral' e injeta application.properties
- 6. Botão "Concluir" mata o Flask e redireciona para o Nginx (porta 80)
+ 4. COMPILA o projeto com Maven e cria systemd service do Spring Boot
+ 5. Frontend (SSE) mostra progresso; em 100% exibe o form do banco
+ 6. POST /api/setup-db cria user+db 'astral' e injeta application.properties
+ 7. Botão "Concluir" mata o Flask e redireciona para o Nginx (porta 80)
 """
 
 import os
@@ -341,6 +342,105 @@ public class AstralApplication {
         if os.path.exists(cand) and not os.path.exists(os.path.join(login_imgs, "login.png")):
             shutil.copy2(cand, os.path.join(login_imgs, "login.png"))
             print("[OK] login.png garantido em fabric/frontend/login/images/.")
+
+# ============================================================
+# COMPILAÇÃO E DEPLOY DO SPRING BOOT
+# ============================================================
+def build_and_deploy_spring_boot():
+    """Compila o projeto com Maven e cria systemd service para o Spring Boot."""
+    print("\n[INFO] ========== COMPILANDO SPRING BOOT ==========")
+
+    pom_path = os.path.join(APP_DIR, "pom.xml")
+    if not os.path.exists(pom_path):
+        print("[ERRO] pom.xml não encontrado. Abortando compilação.")
+        return False
+
+    # ---- 1) Compilação com Maven ----
+    print("[INFO] Compilando projeto com Maven (mvn package)...")
+    env = os.environ.copy()
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        env["JAVA_HOME"] = java_home
+
+    build_cmd = f"cd {APP_DIR} && mvn -B -DskipTests clean package"
+    print(f"[CMD] {build_cmd}")
+
+    result = subprocess.run(build_cmd, shell=True, capture_output=True, text=True, env=env)
+
+    if result.returncode != 0:
+        print(f"[ERRO] Falha na compilação Maven:")
+        print(result.stdout[-1000:] if len(result.stdout) > 1000 else result.stdout)
+        print(result.stderr[-1000:] if len(result.stderr) > 1000 else result.stderr)
+        return False
+
+    print("[OK] Compilação Maven concluída com sucesso.")
+
+    # ---- 2) Localiza o JAR gerado ----
+    target_dir = os.path.join(APP_DIR, "target")
+    jar_files = [f for f in os.listdir(target_dir) if f.endswith(".jar") and "original" not in f]
+
+    if not jar_files:
+        print("[ERRO] Nenhum arquivo .jar encontrado em target/")
+        return False
+
+    jar_file = os.path.join(target_dir, jar_files[0])
+    print(f"[OK] JAR localizado: {jar_file}")
+
+    # ---- 3) Cria systemd service ----
+    print("[INFO] Criando systemd service para o Spring Boot...")
+
+    service_content = f"""[Unit]
+Description=Astral Platform Spring Boot Application
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={APP_DIR}
+ExecStart=/usr/bin/java -jar {jar_file}
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=JAVA_OPTS=-Xmx512m
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    service_path = "/etc/systemd/system/astral-platform.service"
+    try:
+        with open(service_path, "w") as f:
+            f.write(service_content)
+        print(f"[OK] Service criado em {service_path}")
+    except Exception as e:
+        print(f"[ERRO] Falha ao criar systemd service: {e}")
+        return False
+
+    # ---- 4) Habilita e inicia o serviço ----
+    print("[INFO] Habilitando e iniciando o serviço astral-platform...")
+
+    subprocess.run("systemctl daemon-reload", shell=True, capture_output=True)
+    subprocess.run("systemctl enable astral-platform.service", shell=True, capture_output=True)
+    subprocess.run("systemctl start astral-platform.service", shell=True, capture_output=True)
+
+    # Aguarda o Spring Boot subir (max 30s)
+    print("[INFO] Aguardando Spring Boot inicializar...")
+    for i in range(30):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(('127.0.0.1', 8081))
+            sock.close()
+            if result == 0:
+                print("[OK] Spring Boot está rodando na porta 8081!")
+                return True
+        except Exception:
+            pass
+        time.sleep(1)
+
+    print("[AVISO] Spring Boot pode não ter inicializado completamente. Verifique: journalctl -u astral-platform.service")
+    return False
 
 # ============================================================
 # CHOWN — devolve ao usuário real tudo que o root criou
@@ -708,172 +808,4 @@ def installation_thread():
 
         subprocess.run("chown -R postgres:postgres /var/lib/pgsql/data", shell=True, capture_output=True)
         subprocess.run("chmod 700 /var/lib/pgsql/data", shell=True, capture_output=True)
-        subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql.conf || "
-                       "echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", shell=True)
-        subprocess.run("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || "
-                       "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/pgsql/data/pg_hba.conf", shell=True)
-        # Garante auth por senha no localhost ANTES das regras ident/scram de fábrica
-        subprocess.run("grep -q '^host.*127.0.0.1/32.*md5' /var/lib/pgsql/data/pg_hba.conf || "
-                       "sed -i '1i host    all             all             127.0.0.1/32            md5' "
-                       "/var/lib/pgsql/data/pg_hba.conf", shell=True)
-        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
-        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
-    elif distro == 'arch':
-        if not os.path.exists("/var/lib/postgres/data/PG_VERSION"):
-            subprocess.run("sudo -u postgres initdb -D /var/lib/postgres/data", shell=True, capture_output=True)
-            subprocess.run("grep -q \"^listen_addresses\" /var/lib/postgres/data/postgresql.conf || "
-                           "echo \"listen_addresses = '*'\" >> /var/lib/postgres/data/postgresql.conf", shell=True)
-            subprocess.run("grep -q '0.0.0.0/0' /var/lib/postgres/data/pg_hba.conf || "
-                           "echo 'host    all             all             0.0.0.0/0               md5' >> /var/lib/postgres/data/pg_hba.conf", shell=True)
-        subprocess.run(f"systemctl enable {svc_name}", shell=True, capture_output=True)
-        subprocess.run(f"systemctl start {svc_name}", shell=True, capture_output=True)
-    else:
-        subprocess.run(f"systemctl restart {svc_name}", shell=True, capture_output=True)
-
-    # ---- DEPOIS de instalar tudo: organiza o projeto + devolve ownership ----
-    update_progress(88, "Organizando o projeto no layout Maven e aplicando chown...")
-    inject_spring_sources()
-    fix_ownership()
-
-    # ---- Validação final ----
-    update_progress(90, "Aguardando o serviço de banco de dados iniciar...")
-    db_ready = False
-    for i in range(30):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('127.0.0.1', 5432))
-            sock.close()
-            if result == 0:
-                db_ready = True
-                break
-        except Exception:
-            pass
-        time.sleep(1)
-
-    if db_ready:
-        update_progress(100, "Instalação concluída! Configure o banco na próxima tela.")
-    else:
-        update_progress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.")
-
-# ============================================================
-# BLOCO PRINCIPAL
-# ============================================================
-if __name__ == '__main__':
-    if os.geteuid() != 0:
-        print("ERRO: Este script deve ser executado com sudo.")
-        print("Uso correto: sudo python3 install.py")
-        sys.exit(1)
-
-    if not check_internet():
-        print("\n[AVISO] Conexão com a internet não detectada!")
-        wan_script = os.path.join(APP_DIR, "fabric", "network-firewall", "config-wan.py")
-        if os.path.exists(wan_script):
-            print(f"[INFO] Delegando configuração de rede para: {wan_script}")
-            subprocess.run([sys.executable, wan_script])
-            if not check_internet():
-                print("\n[ERRO] A internet ainda não está acessível. Abortando.")
-                sys.exit(1)
-            else:
-                print("\n[OK] Conectividade estabelecida.")
-        else:
-            print(f"\n[ERRO] Sem internet e script auxiliar não encontrado: {wan_script}")
-            sys.exit(1)
-
-    # CRÍTICO: garante Flask ANTES de importar
-    ensure_dependencies_installed()
-
-    frontend_dir = os.path.join(APP_DIR, 'fabric', 'frontend')
-
-    try:
-        import flask
-        from flask import Flask, send_from_directory, request, jsonify, Response
-    except ImportError:
-        print("\n[CRÍTICO] Falha ao importar o Flask.")
-        sys.exit(1)
-
-    app = Flask(__name__, static_folder=frontend_dir, static_url_path='')
-
-    @app.route('/')
-    def index():
-        install_path = os.path.join(frontend_dir, 'install.html')
-        if os.path.exists(install_path):
-            return send_from_directory(frontend_dir, 'install.html')
-        return send_from_directory(frontend_dir, 'index.html')
-
-    @app.route('/api/stream')
-    def stream():
-        def generate():
-            last_pkg = ""
-            while True:
-                with state.lock:
-                    display_status = state.status
-                    if state.package_name and state.package_name != last_pkg:
-                        display_status = f"{state.status} ({state.package_name})"
-                        last_pkg = state.package_name
-                    data = {
-                        "porcentagem": state.progress,
-                        "status": display_status,
-                        "package": state.package_name
-                    }
-                    if state.progress >= 100:
-                        data["redirect_url"] = f"http://{get_local_ip()}"
-                yield f"data: {json.dumps(data)}\n\n"
-                if state.progress >= 100:
-                    break
-                time.sleep(0.5)
-        return Response(generate(), mimetype='text/event-stream')
-
-    @app.route('/api/setup-db', methods=['POST'])
-    def setup_db():
-        data = request.json
-        username = data.get('username')
-        password = data.get('password')
-
-        if not username or not password:
-            return jsonify({"error": "Dados inválidos"}), 400
-
-        cmd_user = f'sudo -i -u postgres psql -c "CREATE USER {username} WITH PASSWORD \'{password}\' SUPERUSER;"'
-        cmd_db = f'sudo -i -u postgres psql -c "CREATE DATABASE astral OWNER {username};"'
-
-        try:
-            res_user = subprocess.run(cmd_user, shell=True, capture_output=True, text=True)
-            if res_user.returncode != 0 and "already exists" not in res_user.stderr:
-                return jsonify({"error": f"Erro ao criar usuário: {res_user.stderr}"}), 500
-
-            res_db = subprocess.run(cmd_db, shell=True, capture_output=True, text=True)
-            if res_db.returncode != 0 and "already exists" not in res_db.stderr:
-                return jsonify({"error": f"Erro ao criar database astral: {res_db.stderr}"}), 500
-
-            inject_spring_properties(username, password)
-
-            print("\n[INFO] Banco configurado! Agendando encerramento do instalador em 60s...")
-            threading.Timer(60.0, lambda: os._exit(0)).start()
-
-            return jsonify({
-                "success": True,
-                "message": "Banco 'astral' criado e Spring Boot configurado!",
-                "redirect_url": f"http://{get_local_ip()}"
-            })
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    @app.route('/api/shutdown', methods=['POST'])
-    def shutdown():
-        print("\n[INFO] Sinal de encerramento manual recebido. Desligando...")
-        threading.Timer(1.0, lambda: os._exit(0)).start()
-        return jsonify({"success": True})
-
-    local_ip = get_local_ip()
-
-    print("\n" + "="*60)
-    print("[ASTRAL PLATFORM] INSTALADOR WEB UNIFICADO")
-    print("="*60)
-    print(f"[AÇÃO] Abra o navegador e acesse:")
-    print(f"[ENDEREÇO] http://{local_ip}:{PORT}")
-    print("="*60 + "\n")
-
-    t = threading.Thread(target=installation_thread)
-    t.daemon = True
-    t.start()
-
-    app.run(host=HOST_IP, port=PORT, threaded=True)
+        subprocess.run("grep -q \"^listen_addresses\" /var/lib/pgsql/data/postgresql
