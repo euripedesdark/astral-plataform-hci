@@ -3,47 +3,79 @@
 <head>
 <meta charset="UTF-8">
 <title th:text="${pageTitle}">ASTRAL PLATFORM</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&display=swap" rel="stylesheet">
-<style>
+
+<style th:inline="css">
+  /* ===== Fonte Orbitron auto-hospedada =====
+     Antes vinha do Google Fonts (fonts.googleapis.com) e nao carregava porque
+     o servidor nao tem saida pra internet. Agora o arquivo fica junto com as
+     imagens, em /static/fonts, e e' referenciado via @{...} pra funcionar
+     mesmo com o context-path (/inicio) do Spring. */
+  @font-face{
+    font-family:'Orbitron';
+    src:url('[[@{/fonts/Orbitron-Bold.woff2}]]') format('woff2'),
+        url('[[@{/fonts/Orbitron-Bold.ttf}]]') format('truetype');
+    font-weight:700;font-style:normal;font-display:swap;
+  }
+  @font-face{
+    font-family:'Orbitron';
+    src:url('[[@{/fonts/Orbitron-Black.woff2}]]') format('woff2'),
+        url('[[@{/fonts/Orbitron-Black.ttf}]]') format('truetype');
+    font-weight:900;font-style:normal;font-display:swap;
+  }
+
   html,body{height:100%;margin:0}
   body{
-    background:#05070d url('/images/Fundo.png') no-repeat center center fixed;
+    /* Mesmo problema do context-path: a url() abaixo agora e' resolvida
+       pelo Thymeleaf (@{...}), entao funciona em /inicio/images/Fundo.png
+       independente de onde a aplicacao for montada. */
+    background:#05070d url('[[@{/images/Fundo.png}]]') no-repeat center center fixed;
     background-size:cover;
     font-family:'Segoe UI',sans-serif;color:#fff;
+    overflow:hidden;
   }
+
+  /* Titulo no canto superior esquerdo, fonte robotica/sci-fi */
   h1{
-    position:fixed;top:8%;left:0;right:0;margin:0;text-align:center;
+    position:fixed;top:4%;left:4%;margin:0;
     font-family:'Orbitron','Segoe UI',sans-serif;font-weight:700;
-    letter-spacing:.28em;font-size:clamp(20px,2.6vw,40px);
+    letter-spacing:.14em;font-size:clamp(20px,2.6vw,40px);
     color:#eef5ff;text-shadow:0 0 6px #9fd8ff,0 0 18px #4da6ff,0 0 42px #1668ff;
+    z-index:10;
   }
-  /* Área útil: sobra 25% topo, 25% base, 20% esq, 20% dir */
-  .grid{
+
+  /* ===== Area util: sobra 25% topo, 25% base, 20% esq, 20% dir =====
+     ".stage" e' a area reservada; o grid fica centralizado dentro dela,
+     tanto na horizontal quanto na vertical. */
+  .stage{
     position:fixed;inset:25% 20%;
-    --gap:20px; --cols:3; --rows:3;
-    display:flex;flex-wrap:wrap;justify-content:center;align-content:center;
-    gap:var(--gap);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .grid{
+    width:100%;
+    display:grid;
+    grid-template-columns:repeat(var(--cols), 1fr);
+    gap:2.2%;
   }
   .card{
-    flex:0 0 calc((100% - (var(--cols) - 1) * var(--gap)) / var(--cols) - .5px);
-    height:calc((100% - (var(--rows) - 1) * var(--gap)) / var(--rows));
     --c:#8fb7ff;
-    border:2px solid var(--c);border-radius:14px;
-    background:rgba(4,10,22,.66);
-    box-shadow:0 0 10px var(--c), inset 0 0 22px rgba(0,0,0,.55);
-    color:#fff;text-decoration:none;
-    padding:12px 16px;display:flex;flex-direction:column;gap:6px;min-height:0;
-    transition:transform .15s;
+    position:relative;
+    width:100%;
+    /* mesma proporcao dos PNGs originais (798x291) -> botao em "tamanho
+       normal", sem esticar/achatar e sem sobrar espaco vazio ao redor */
+    aspect-ratio:798/291;
+    border-radius:14px;overflow:hidden;
+    text-decoration:none;color:#fff;
+    box-shadow:0 0 10px var(--c);
+    transition:transform .15s, box-shadow .15s;
   }
-  .card:hover{transform:translateY(-3px)}
-  .card .label{font-weight:600;font-size:clamp(13px,1.3vw,21px);text-align:left}
-  .card img{flex:1;min-height:0;width:100%;object-fit:contain}
+  .card:hover{transform:translateY(-4px) scale(1.02);box-shadow:0 0 18px var(--c)}
+  .card img{width:100%;height:100%;object-fit:cover;display:block}
+
   .card[data-id="dns"]{--c:#57e389}     .card[data-id="firewall"]{--c:#ff5c5c}
   .card[data-id="proxy"]{--c:#ffb347}   .card[data-id="domain"]{--c:#ff7b7b}
   .card[data-id="postgres"]{--c:#4fa3ff}.card[data-id="web"]{--c:#c77bff}
   .card[data-id="vm"]{--c:#59d9e8}      .card[data-id="storage"]{--c:#ffc16b}
-  .card[data-id="network"]{--c:#63e6a4} .card[data-id="terminal"]{--c:#dfe6ee}
+  .card[data-id="network"]{--c:#63e6a4} .card[data-id="terminal"]{--c:#5aff96}
 
   /* ===== Modal do Terminal ===== */
   .hidden{display:none}
@@ -59,11 +91,12 @@
 <body>
 <h1 th:text="${pageTitle}">ASTRAL PLATFORM</h1>
 
-<div class="grid" id="grid">
-  <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}" th:data-id="${btn.id}" th:title="${btn.label}">
-    <div class="label" th:text="${btn.label}">Card</div>
-    <img th:src="@{'/images/' + ${btn.image}}" alt="" onerror="this.style.display='none'">
-  </a>
+<div class="stage">
+  <div class="grid" id="grid">
+    <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}" th:data-id="${btn.id}" th:title="${btn.label}">
+      <img th:src="@{'/images/' + ${btn.image}}" th:alt="${btn.label}">
+    </a>
+  </div>
 </div>
 
 <!-- Terminal no centro da tela -->
@@ -82,9 +115,9 @@
 </div>
 
 <script>
-/* ===== GRID AUTO-AJUSTÁVEL =====
-   1) maior divisor de N entre 6..2  -> linhas perfeitas
-   2) senão, maior divisor de N-1    -> 1 botão extra numa linha nova */
+/* ===== GRID AUTO-AJUSTAVEL =====
+   1) maior divisor de N entre 5..2  -> linhas perfeitas
+   2) senao, maior divisor de (N-1)  -> 1 botao extra centralizado numa nova linha */
 function layout(n){
   if (n <= 1) return {c:1, r:1};
   let c = 0;
@@ -98,7 +131,6 @@ function layout(n){
   const n = grid.querySelectorAll('.card').length;
   const L = layout(n);
   grid.style.setProperty('--cols', L.c);
-  grid.style.setProperty('--rows', L.r);
 })();
 
 /* ===== TERMINAL (modal + destacar) ===== */
@@ -111,7 +143,7 @@ function clean(s){
 function attachTerminal(out, inp){
   const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
   ws.onmessage = e => { out.textContent += clean(e.data); out.scrollTop = out.scrollHeight; };
-  ws.onclose   = () => { out.textContent += '\n[conexão encerrada]\n'; };
+  ws.onclose   = () => { out.textContent += '\n[conexao encerrada]\n'; };
   inp.addEventListener('keydown', e => {
     if(e.key==='Enter' && ws.readyState===1){ ws.send(inp.value+'\n'); inp.value=''; }
   });
