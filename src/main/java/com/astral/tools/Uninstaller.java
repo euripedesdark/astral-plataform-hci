@@ -33,8 +33,9 @@ public class Uninstaller {
         step(60, "Removendo PostgreSQL, Maven, JDK e Node.js...");
         run("systemctl stop postgresql postgresql-server 2>/dev/null || true", false);
         run("dnf remove -y postgresql postgresql-server postgresql-contrib maven nodejs npm 2>/dev/null || " +
-            "apt-get purge -y postgresql postgresql-contrib maven nodejs npm 2>/dev/null || true", true);
-        run("rm -rf /var/lib/pgsql /var/lib/postgres /opt/jdk-21*", true);
+            "apt-get purge -y postgresql postgresql-client postgresql-contrib maven nodejs npm 2>/dev/null || true", true);
+        // Extermina todos os diretórios possíveis do PostgreSQL (Debian, RHEL, Arch)
+        run("rm -rf /var/lib/pgsql /var/lib/postgres /var/lib/postgresql /etc/postgresql /var/log/postgresql /run/postgresql /opt/jdk-21*", true);
 
         step(75, "Limpando regras de firewall injetadas...");
         int[] ports = {22, 80, 443, 3000, 5000, 5173, 5432, 8081, 9090};
@@ -49,7 +50,7 @@ public class Uninstaller {
 
         step(100, "Desinstalação concluída!");
         System.out.println("=".repeat(60));
-        System.out.println("Ambiente limpo. Para reinstalar: sudo java -jar installer.jar");
+        System.out.println("Ambiente limpo. Para reinstalar: sudo /usr/lib/jvm/jdk-21.0.12.1-oracle-x64/bin/java -jar installer.jar");
         System.out.println("=".repeat(60));
     }
 
