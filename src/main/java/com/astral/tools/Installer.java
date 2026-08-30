@@ -39,62 +39,111 @@ public class Installer {
         Thread.currentThread().join();
     }
 
+    // ============================================================
+    // ORDEM FIEL AO install.py ORIGINAL (adaptada p/ WebFlux sem Nginx)
+    // ============================================================
     private static void runInstallation() {
         try {
-            updateProgress(5, "Detectando distribuição...");
-            String distro = detectDistro();
-            sleep(500);
-
-            updateProgress(8, "Verificando conectividade...");
-            if (!checkInternet()) {
-                updateProgress(10, "SEM INTERNET - configurando rede automaticamente...");
-                try { NetworkConfig.main(new String[]{"--auto"}); } catch (Exception e) { e.printStackTrace(); }
-            } else {
-                updateProgress(10, "Internet ativa - NetworkConfig opcional (manual)");
-            }
-
-            updateProgress(12, "Removendo Nginx de vez (Reactor Netty assume a porta 80)...");
-            removeNginx();
-
-            updateProgress(15, "Configurando firewall (iptables)...");
+            // Pré-configurações (antes do loop de progresso, igual ao Python)
             configureFirewall();
+            ensureProjectLayout();
+            ensureFonts();
 
-            updateProgress(25, "Instalando dependências do sistema...");
-            installSystemDependencies(distro);
+            String distro = detectDistro();
 
-            updateProgress(40, "Instalando Oracle JDK 21...");
+            updateProgress(5, "Sincronizando repositórios do Linux...");
+            syncRepos(distro);
+            updateProgress(15, "Repositórios sincronizados.");
+
+            updateProgress(20, "Verificando Node.js, NPM e dependências JS...");
+            installNode(distro);
+            updateProgress(35, "Ambiente JS e dependências prontos.");
+
+            updateProgress(40, "Avaliando instalação do Oracle Java 21 LTS...");
             installJava(distro);
+            updateProgress(50, "Oracle Java configurado.");
 
-            updateProgress(55, "Instalando Maven...");
+            updateProgress(52, "Instalando o Maven...");
             installMaven(distro);
 
-            updateProgress(65, "Instalando PostgreSQL...");
+            updateProgress(53, "Pré-baixando dependências do Spring Boot (Maven)...");
+            preDownloadMavenDeps();
+            updateProgress(54, "Maven configurado.");
+
+            // ★ PostgreSQL INSTALL (só o pacote, sem initdb) — igual ao Python (55%)
+            updateProgress(55, "Instalando o motor de banco de dados (PostgreSQL)...");
             installPostgreSQL(distro);
+            updateProgress(65, "PostgreSQL instalado.");
 
-            updateProgress(75, "Configurando PostgreSQL...");
+            // Nginx removido — WebFlux/Reactor Netty assume porta 80 direta
+            updateProgress(70, "Removendo Nginx (Reactor Netty assume porta 80)...");
+            removeNginx();
+            updateProgress(80, "Nginx removido.");
+
+            // ★ PostgreSQL CONFIG (initdb + pg_hba + listen_addresses) + SELinux — igual ao Python (85%)
+            updateProgress(85, "Ativando serviços de dados e ajustando SELinux...");
+            relaxSelinux();
             configurePostgreSQL(distro);
+            ensureDatabaseBase();
 
-            updateProgress(78, "Criando grupo 'astral' e adicionando usuários...");
+            // ★ Grupo astral (melhoria sobre o Python original)
             createAstralGroup();
 
-            updateProgress(80, "Escrevendo pom.xml + sources + templates (sempre sobrescreve)...");
-            ensureProjectLayout();
-            copyStaticFrontend();
-            ensureFonts();
+            updateProgress(88, "Organizando projeto e aplicando chown...");
             fixOwnership();
 
-            updateProgress(88, "Compilando projeto Spring Boot (WebFlux)...");
-            buildProject();
+            // ★ build + systemd + deploy — igual ao Python (90%)
+            updateProgress(90, "Compilando Spring Boot e criando systemd service...");
+            buildAndDeploySpringBoot();
 
-            updateProgress(95, "Deploy em /opt + systemd service (porta 80, group=astral)...");
-            deploy();
+            // ★ aguarda 5432 — igual ao Python (95%)
+            updateProgress(95, "Aguardando o serviço de banco de dados iniciar...");
+            boolean dbReady = waitForPort(5432, 30);
 
-            updateProgress(100, "Instalação concluída! Configure o banco de dados abaixo.");
+            if (dbReady) {
+                updateProgress(100, "Instalação concluída! Configure o banco na próxima tela.");
+            } else {
+                updateProgress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.");
+            }
+
             while (true) { sleep(1000); }
         } catch (Exception e) {
             e.printStackTrace();
             updateProgress(100, "ERRO: " + e.getMessage());
         }
+    }
+
+    private static boolean waitForPort(int port, int seconds) {
+        for (int i = 0; i < seconds; i++) {
+            try (var s = new java.net.Socket()) {
+                s.connect(new InetSocketAddress("127.0.0.1", port), 500);
+                return true;
+            } catch (IOException e) { sleep(1000); }
+        }
+        return false;
+    }
+
+    private static void relaxSelinux() {
+        runCmd("setenforce 0 2>/dev/null || true", false);
+        runCmd("sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true", false);
+        System.out.println("[OK] SELinux em permissive (persistente).");
+    }
+
+    // Cria base 'astral' + role padrão via arquivo SQL (idempotente)
+    private static void ensureDatabaseBase() {
+        try {
+            String sql = "SELECT 'CREATE DATABASE astral'\n"
+                + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n"
+                + "DO $$ BEGIN\n"
+                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\n"
+                + "CREATE ROLE astral LOGIN SUPERUSER PASSWORD 'astral';\n"
+                + "END IF; END $$;\n";
+            Path f = Paths.get("/tmp/astral-init.sql");
+            Files.writeString(f, sql);
+            runCmd("chmod 0644 /tmp/astral-init.sql", false);
+            runCmd("runuser -u postgres -- psql -f /tmp/astral-init.sql", true);
+            System.out.println("[OK] Base 'astral' garantida.");
+        } catch (IOException ignored) {}
     }
 
     private static void createAstralGroup() {
@@ -109,7 +158,7 @@ public class Installer {
             String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
             runCmd("usermod -aG " + ASTRAL_GROUP + " " + owner + " 2>/dev/null || true", false);
             runCmd("usermod -aG " + ASTRAL_GROUP + " root 2>/dev/null || true", false);
-            System.out.println("[OK] Usuários '" + owner + "' e 'root' adicionados ao grupo '" + ASTRAL_GROUP + "'.");
+            System.out.println("[OK] Usuários '" + owner + "' e 'root' no grupo '" + ASTRAL_GROUP + "'.");
         } catch (IOException ignored) {}
     }
 
@@ -122,7 +171,9 @@ public class Installer {
         runCmd("rm -f /etc/nginx/conf.d/astral.conf /etc/nginx/sites-enabled/astral.conf /etc/nginx/sites-available/astral.conf", false);
     }
 
-    // CORRIGIDO: usa arquivo SQL em vez de -c para evitar problemas de escaping
+    // ============================================================
+    // SETUP-DB (formulário da UI) — SQL via arquivo (sem escaping de shell)
+    // ============================================================
     private static void handleSetupDB(HttpExchange ex) throws IOException {
         if (!"POST".equals(ex.getRequestMethod())) {
             sendResponse(ex, 405, "{\"error\":\"Method not allowed\"}", "application/json");
@@ -142,7 +193,6 @@ public class Installer {
                 return;
             }
 
-            // Escreve SQL em arquivo temporário (evita problemas de escaping do shell)
             Path sqlFile = Paths.get("/tmp/astral-setup.sql");
             String sql = "DO $$ BEGIN\n"
                 + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + username + "') THEN\n"
@@ -155,14 +205,13 @@ public class Installer {
 
             Files.writeString(sqlFile, sql);
             runCmd("chmod 0644 " + sqlFile, false);
-
-            // Executa via arquivo (não via -c)
-            String result = runCmd("sudo -i -u postgres psql -f " + sqlFile, true);
+            String result = runCmd("runuser -u postgres -- psql -f " + sqlFile, true);
             if (result == null) {
                 sendResponse(ex, 500, "{\"error\":\"Falha ao executar SQL no PostgreSQL\"}", "application/json");
                 return;
             }
 
+            // application.properties em /etc/astral (sobrevive rebuilds)
             Path props = Paths.get("/etc/astral/application.properties");
             Files.createDirectories(props.getParent());
             Files.writeString(props, "server.port=80\n"
@@ -196,6 +245,9 @@ public class Installer {
         return m.find() ? m.group(1) : null;
     }
 
+    // ============================================================
+    // UI DO INSTALADOR
+    // ============================================================
     private static void handleIndex(HttpExchange ex) throws IOException {
         sendResponse(ex, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html");
     }
@@ -273,6 +325,9 @@ public class Installer {
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
+    // ============================================================
+    // LAYOUT DO PROJETO — SEMPRE SOBRESCREVE
+    // ============================================================
     private static void ensureProjectLayout() throws IOException {
         String app = System.getProperty("user.dir");
         Path base  = Paths.get(app, "src", "main", "java", "com", "astral", "main");
@@ -347,32 +402,24 @@ public class Installer {
         } catch (IOException ignored) {}
     }
 
-    private static void buildProject() {
+    // ============================================================
+    // BUILD + DEPLOY — igual ao Python (90%)
+    // ============================================================
+    private static void buildAndDeploySpringBoot() {
         String app = System.getProperty("user.dir");
         runCmd("cd " + app + " && mvn -B -DskipTests clean package", true);
-        try {
-            String owner = Files.getOwner(Paths.get(app)).getName();
-            runCmd("chown -R " + owner + ":" + ASTRAL_GROUP + " " + app + "/target", false);
-        } catch (IOException ignored) {}
-    }
 
-    private static String detectJavaBin() {
-        String cand = runCmd("readlink -f $(which java) 2>/dev/null", false);
-        if (cand != null && !cand.trim().isEmpty() && Files.exists(Paths.get(cand.trim()))) return cand.trim();
-        cand = runCmd("ls -d /usr/lib/jvm/jdk-*/bin/java 2>/dev/null | head -1", false);
-        if (cand != null && !cand.trim().isEmpty()) return cand.trim();
-        cand = runCmd("ls -d /usr/lib/jvm/*/bin/java 2>/dev/null | head -1", false);
-        if (cand != null && !cand.trim().isEmpty()) return cand.trim();
-        return "/usr/bin/java";
-    }
+        String jar = app + "/target/astral-platform-1.0.0.jar";
+        if (!Files.exists(Paths.get(jar))) {
+            System.err.println("[ERRO] JAR não encontrado em " + jar);
+            return;
+        }
 
-    private static void deploy() {
         String javaBin = detectJavaBin();
         System.out.println("[OK] Binário Java detectado: " + javaBin);
         runCmd("ln -sf " + javaBin + " /usr/bin/java", false);
 
-        String jar = System.getProperty("user.dir") + "/target/astral-platform-1.0.0.jar";
-
+        // Deploy em /opt/astral-platform (fora do /home, igual ao Python)
         runCmd("mkdir -p /opt/astral-platform", true);
         runCmd("cp " + jar + " /opt/astral-platform/", true);
         runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform", true);
@@ -419,31 +466,38 @@ public class Installer {
         runCmd("systemctl daemon-reload", false);
         runCmd("systemctl enable astral-platform.service", false);
         runCmd("systemctl restart astral-platform.service", false);
-
-        for (int i = 0; i < 30; i++) {
-            try (var s = new java.net.Socket()) {
-                s.connect(new InetSocketAddress("127.0.0.1", 80), 500);
-                System.out.println("[OK] Reactor Netty rodando na porta 80!");
-                return;
-            } catch (IOException e) { sleep(1000); }
-        }
-        System.out.println("[AVISO] Porta 80 não respondeu. journalctl -u astral-platform.service");
     }
 
-    private static void configureFirewall() {
-        int[] ports = {22, 80, 443, 5432, 5000, 9090};
-        runCmd("systemctl stop firewalld ufw 2>/dev/null || true", false);
-        runCmd("systemctl disable firewalld ufw 2>/dev/null || true", false);
-        for (int p : ports) runCmd("iptables -I INPUT 1 -p tcp --dport " + p + " -j ACCEPT", false);
-        runCmd("iptables-save > /etc/sysconfig/iptables 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true", false);
+    private static String detectJavaBin() {
+        String cand = runCmd("readlink -f $(which java) 2>/dev/null", false);
+        if (cand != null && !cand.trim().isEmpty() && Files.exists(Paths.get(cand.trim()))) return cand.trim();
+        cand = runCmd("ls -d /usr/lib/jvm/jdk-*/bin/java 2>/dev/null | head -1", false);
+        if (cand != null && !cand.trim().isEmpty()) return cand.trim();
+        cand = runCmd("ls -d /usr/lib/jvm/*/bin/java 2>/dev/null | head -1", false);
+        if (cand != null && !cand.trim().isEmpty()) return cand.trim();
+        return "/usr/bin/java";
     }
 
-    private static void installSystemDependencies(String distro) {
+    // ============================================================
+    // ETAPAS DE SISTEMA (ordem fiel ao install.py)
+    // ============================================================
+    private static void syncRepos(String distro) {
         switch (distro) {
-            case "debian": runCmd("apt-get update", true); runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y curl git", true); break;
-            case "rhel": runCmd("dnf makecache", true); runCmd("dnf install -y curl git", true); break;
-            case "arch": runCmd("pacman -Sy --noconfirm curl git", true); break;
+            case "debian": runCmd("apt-get update", true); break;
+            case "rhel": runCmd("dnf makecache", true); break;
+            case "arch": runCmd("pacman -Sy", true); break;
         }
+    }
+
+    private static void installNode(String distro) {
+        if (runCmd("which node", false) != null && runCmd("which npm", false) != null) return;
+        String pkg = distro.equals("rhel") ? "nodejs nodejs-npm curl" : "nodejs npm curl";
+        switch (distro) {
+            case "debian": runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y " + pkg, true); break;
+            case "rhel": runCmd("dnf install -y " + pkg, true); break;
+            case "arch": runCmd("pacman -S --noconfirm " + pkg, true); break;
+        }
+        runCmd("npm install -g pg express cors 2>/dev/null || true", false);
     }
 
     private static void installJava(String distro) {
@@ -465,6 +519,14 @@ public class Installer {
         }
     }
 
+    private static void preDownloadMavenDeps() {
+        String app = System.getProperty("user.dir");
+        if (Files.exists(Paths.get(app, "pom.xml"))) {
+            runCmd("cd " + app + " && mvn -B -q dependency:go-offline 2>/dev/null || true", false);
+        }
+    }
+
+    // ★ PostgreSQL INSTALL (só pacote, sem initdb) — igual ao Python step 55%
     private static void installPostgreSQL(String distro) {
         String pkg = distro.equals("rhel") ? "postgresql postgresql-server postgresql-contrib" : "postgresql postgresql-contrib";
         switch (distro) {
@@ -474,27 +536,49 @@ public class Installer {
         }
     }
 
+    // ★ PostgreSQL CONFIG (initdb + pg_hba + listen_addresses) — igual ao Python step 85%
     private static void configurePostgreSQL(String distro) {
+        String svc = "postgresql";
         if (distro.equals("rhel")) {
+            svc = detectPgService();
             String pg = runCmd("ls -A /var/lib/pgsql/data 2>/dev/null", false);
             if (pg == null || pg.trim().isEmpty()) {
-                runCmd("chown -R postgres:postgres /var/lib/pgsql && /usr/bin/postgresql-setup --initdb", true);
+                runCmd("chown -R postgres:postgres /var/lib/pgsql", false);
+                runCmd("/usr/bin/postgresql-setup --initdb", true);
+                runCmd("chown -R postgres:postgres /var/lib/pgsql/data", false);
+                runCmd("chmod 700 /var/lib/pgsql/data", false);
             }
+            runCmd("grep -q '^listen_addresses' /var/lib/pgsql/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", false);
+            runCmd("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || echo 'host all all 0.0.0.0/0 md5' >> /var/lib/pgsql/data/pg_hba.conf", false);
+            runCmd("grep -q '^host.*127.0.0.1/32.*md5' /var/lib/pgsql/data/pg_hba.conf || sed -i '1i host all all 127.0.0.1/32 md5' /var/lib/pgsql/data/pg_hba.conf", false);
         } else if (distro.equals("arch")) {
             if (!Files.exists(Paths.get("/var/lib/postgres/data/PG_VERSION"))) {
-                runCmd("sudo -u postgres initdb -D /var/lib/postgres/data", true);
+                runCmd("runuser -u postgres -- initdb -D /var/lib/postgres/data", true);
             }
         }
-        runCmd("systemctl enable postgresql", false);
-        runCmd("systemctl start postgresql", false);
-        String hba = distro.equals("rhel") ? "/var/lib/pgsql/data/pg_hba.conf" :
-                     distro.equals("arch") ? "/var/lib/postgres/data/pg_hba.conf" :
-                     "/etc/postgresql/*/main/pg_hba.conf";
-        runCmd("grep -q '0.0.0.0/0' " + hba + " || echo 'host all all 0.0.0.0/0 md5' >> " + hba, false);
-        runCmd("grep -q '^host.*127.0.0.1/32.*md5' " + hba + " || sed -i '1i host all all 127.0.0.1/32 md5' " + hba, false);
-        runCmd("systemctl restart postgresql", false);
+        runCmd("systemctl enable " + svc, false);
+        runCmd("systemctl start " + svc, false);
     }
 
+    private static String detectPgService() {
+        String[] names = {"postgresql", "postgresql-server", "postgresql-16", "postgresql-15", "postgresql-14"};
+        for (String n : names) {
+            if (runCmd("systemctl cat " + n + " >/dev/null 2>&1", false) != null) return n;
+        }
+        return "postgresql";
+    }
+
+    private static void configureFirewall() {
+        int[] ports = {22, 80, 443, 3000, 5000, 5173, 5432, 8081, 9090};
+        runCmd("systemctl stop firewalld ufw 2>/dev/null || true", false);
+        runCmd("systemctl disable firewalld ufw 2>/dev/null || true", false);
+        for (int p : ports) runCmd("iptables -I INPUT 1 -p tcp --dport " + p + " -j ACCEPT", false);
+        runCmd("iptables-save > /etc/sysconfig/iptables 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true", false);
+    }
+
+    // ============================================================
+    // UTILITÁRIOS
+    // ============================================================
     private static void sendResponse(HttpExchange ex, int code, String body, String type) throws IOException {
         byte[] b = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", type + "; charset=UTF-8");
@@ -527,11 +611,6 @@ public class Installer {
         return "unknown";
     }
 
-    private static boolean checkInternet() {
-        try (var s = new java.net.Socket()) { s.connect(new InetSocketAddress("8.8.8.8", 53), 3000); return true; }
-        catch (IOException e) { return false; }
-    }
-
     private static String getLocalIP() {
         try {
             ProcessBuilder pb = new ProcessBuilder("bash", "-c",
@@ -555,6 +634,9 @@ public class Installer {
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
 
+    // ============================================================
+    // ARQUIVOS EMBUTIDOS
+    // ============================================================
     private static final String POM_XML = """
         <?xml version="1.0" encoding="UTF-8"?>
         <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -785,7 +867,6 @@ public class Installer {
         }
         """;
 
-    // CORRIGIDO: usa runuser + arquivo SQL (não sudo + -c)
     private static final String DB_BOOTSTRAP_JAVA = """
         package com.astral.main.config;
         import org.springframework.beans.factory.annotation.Value;
