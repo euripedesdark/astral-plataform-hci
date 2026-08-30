@@ -17,10 +17,11 @@ public class Uninstaller {
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: Execute com sudo"); System.exit(1); }
 
+        String localIP = getLocalIP();
         System.out.println("=".repeat(60));
         System.out.println("[ASTRAL PLATFORM] DESINSTALADOR JAVA (Web UI)");
         System.out.println("=".repeat(60));
-        System.out.println("Acesse: http://" + getLocalIP() + ":" + PORT);
+        System.out.println("Acesse: http://" + localIP + ":" + PORT);
         System.out.println("=".repeat(60));
 
         HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
@@ -175,8 +176,21 @@ public class Uninstaller {
     }
 
     private static String getLocalIP() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("bash", "-c",
+                "ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i==\"src\") print $(i+1)}'");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                String l; while ((l = br.readLine()) != null) out.append(l);
+            }
+            int code = p.waitFor();
+            String result = out.toString().trim();
+            if (code == 0 && !result.isEmpty() && result.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return result;
+        } catch (Exception ignored) {}
         try (java.net.Socket s = new java.net.Socket()) {
-            s.connect(new InetSocketAddress("8.8.8.8", 80));
+            s.connect(new InetSocketAddress("8.8.8.8", 80), 3000); // 3 segundos timeout
             return s.getLocalAddress().getHostAddress();
         } catch (IOException e) {
             return "127.0.0.1";

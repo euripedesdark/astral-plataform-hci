@@ -97,11 +97,7 @@ public class Installer {
         }
     }
 
-    // ============================================================
-    // GRUPO ASTRAL — compartilhado entre root e euripedes (e futuro AD)
-    // ============================================================
     private static void createAstralGroup() {
-        // Cria grupo se não existir
         String exists = runCmd("getent group " + ASTRAL_GROUP, false);
         if (exists == null) {
             runCmd("groupadd " + ASTRAL_GROUP, true);
@@ -109,14 +105,11 @@ public class Installer {
         } else {
             System.out.println("[OK] Grupo '" + ASTRAL_GROUP + "' já existe.");
         }
-
-        // Adiciona o dono do projeto (euripedes) ao grupo
         try {
             String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
             runCmd("usermod -aG " + ASTRAL_GROUP + " " + owner + " 2>/dev/null || true", false);
             runCmd("usermod -aG " + ASTRAL_GROUP + " root 2>/dev/null || true", false);
             System.out.println("[OK] Usuários '" + owner + "' e 'root' adicionados ao grupo '" + ASTRAL_GROUP + "'.");
-            System.out.println("     ℹ️  Para aplicar agora: 'newgrp " + ASTRAL_GROUP + "' ou relogin.");
         } catch (IOException ignored) {}
     }
 
@@ -129,9 +122,7 @@ public class Installer {
         runCmd("rm -f /etc/nginx/conf.d/astral.conf /etc/nginx/sites-enabled/astral.conf /etc/nginx/sites-available/astral.conf", false);
     }
 
-    // ============================================================
-    // SETUP-DB (formulário da UI) — upsert idempotente + 127.0.0.1
-    // ============================================================
+    // CORRIGIDO: usa arquivo SQL em vez de -c para evitar problemas de escaping
     private static void handleSetupDB(HttpExchange ex) throws IOException {
         if (!"POST".equals(ex.getRequestMethod())) {
             sendResponse(ex, 405, "{\"error\":\"Method not allowed\"}", "application/json");
@@ -151,14 +142,26 @@ public class Installer {
                 return;
             }
 
-            // Upsert de role (cria ou atualiza senha) — idempotente
-            runCmd("sudo -i -u postgres psql -c \"DO $$ BEGIN "
-                 + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + username + "') THEN "
-                 + "CREATE ROLE " + username + " LOGIN SUPERUSER PASSWORD '" + password + "'; "
-                 + "ELSE ALTER ROLE " + username + " WITH LOGIN SUPERUSER PASSWORD '" + password + "'; "
-                 + "END IF; END $$;\"", true);
-            runCmd("sudo -i -u postgres psql -c \"SELECT 'CREATE DATABASE astral OWNER " + username
-                 + "' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\\\gexec\"", true);
+            // Escreve SQL em arquivo temporário (evita problemas de escaping do shell)
+            Path sqlFile = Paths.get("/tmp/astral-setup.sql");
+            String sql = "DO $$ BEGIN\n"
+                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + username + "') THEN\n"
+                + "CREATE ROLE " + username + " LOGIN SUPERUSER PASSWORD '" + password + "';\n"
+                + "ELSE\n"
+                + "ALTER ROLE " + username + " WITH LOGIN SUPERUSER PASSWORD '" + password + "';\n"
+                + "END IF; END $$;\n\n"
+                + "SELECT 'CREATE DATABASE astral OWNER " + username + "'\n"
+                + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
+
+            Files.writeString(sqlFile, sql);
+            runCmd("chmod 0644 " + sqlFile, false);
+
+            // Executa via arquivo (não via -c)
+            String result = runCmd("sudo -i -u postgres psql -f " + sqlFile, true);
+            if (result == null) {
+                sendResponse(ex, 500, "{\"error\":\"Falha ao executar SQL no PostgreSQL\"}", "application/json");
+                return;
+            }
 
             Path props = Paths.get("/etc/astral/application.properties");
             Files.createDirectories(props.getParent());
@@ -174,7 +177,6 @@ public class Installer {
                 + "spring.web.resources.static-locations=classpath:/static/\n"
                 + "spring.thymeleaf.cache=false\n");
 
-            // Propriedade do grupo astral (0640: root lê/escreve, grupo lê, outros nada)
             runCmd("chown root:" + ASTRAL_GROUP + " /etc/astral/application.properties", false);
             runCmd("chmod 0640 /etc/astral/application.properties", false);
 
@@ -194,9 +196,6 @@ public class Installer {
         return m.find() ? m.group(1) : null;
     }
 
-    // ============================================================
-    // UI DO INSTALADOR
-    // ============================================================
     private static void handleIndex(HttpExchange ex) throws IOException {
         sendResponse(ex, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html");
     }
@@ -274,9 +273,6 @@ public class Installer {
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
-    // ============================================================
-    // LAYOUT DO PROJETO — SEMPRE SOBRESCREVE
-    // ============================================================
     private static void ensureProjectLayout() throws IOException {
         String app = System.getProperty("user.dir");
         Path base  = Paths.get(app, "src", "main", "java", "com", "astral", "main");
@@ -344,18 +340,13 @@ public class Installer {
     private static void fixOwnership() {
         try {
             String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
-            // Devolve ownership ao dono + grupo astral
             runCmd("chown -R " + owner + ":" + ASTRAL_GROUP + " " + System.getProperty("user.dir") + " 2>/dev/null || true", false);
-            // Permissões: diretórios 2775 (setgid), arquivos 0664
             runCmd("find " + System.getProperty("user.dir") + " -type d -exec chmod 2775 {} \\; 2>/dev/null || true", false);
             runCmd("find " + System.getProperty("user.dir") + " -type f -exec chmod 0664 {} \\; 2>/dev/null || true", false);
             System.out.println("[OK] Ownership devolvido: " + owner + ":" + ASTRAL_GROUP + " (2775/0664 com setgid).");
         } catch (IOException ignored) {}
     }
 
-    // ============================================================
-    // BUILD + DEPLOY (com grupo astral + permissões 2770)
-    // ============================================================
     private static void buildProject() {
         String app = System.getProperty("user.dir");
         runCmd("cd " + app + " && mvn -B -DskipTests clean package", true);
@@ -382,7 +373,6 @@ public class Installer {
 
         String jar = System.getProperty("user.dir") + "/target/astral-platform-1.0.0.jar";
 
-        // /opt/astral-platform: root:astral, setgid 2770 (grupo herda, root+grupo leem/escrevem)
         runCmd("mkdir -p /opt/astral-platform", true);
         runCmd("cp " + jar + " /opt/astral-platform/", true);
         runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform", true);
@@ -408,7 +398,6 @@ public class Installer {
             } catch (IOException ignored) {}
         }
 
-        // Service: roda como root mas com Group=astral (herda acesso ao /opt/astral-platform e /etc/astral)
         String svc = "[Unit]\n"
             + "Description=Astral Platform (Reactor Netty)\n"
             + "After=network.target postgresql.service\n"
@@ -441,9 +430,6 @@ public class Installer {
         System.out.println("[AVISO] Porta 80 não respondeu. journalctl -u astral-platform.service");
     }
 
-    // ============================================================
-    // ETAPAS DE SISTEMA
-    // ============================================================
     private static void configureFirewall() {
         int[] ports = {22, 80, 443, 5432, 5000, 9090};
         runCmd("systemctl stop firewalld ufw 2>/dev/null || true", false);
@@ -509,9 +495,6 @@ public class Installer {
         runCmd("systemctl restart postgresql", false);
     }
 
-    // ============================================================
-    // UTILITÁRIOS
-    // ============================================================
     private static void sendResponse(HttpExchange ex, int code, String body, String type) throws IOException {
         byte[] b = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", type + "; charset=UTF-8");
@@ -572,9 +555,6 @@ public class Installer {
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
 
-    // ============================================================
-    // ARQUIVOS EMBUTIDOS
-    // ============================================================
     private static final String POM_XML = """
         <?xml version="1.0" encoding="UTF-8"?>
         <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -644,7 +624,6 @@ public class Installer {
         }
         """;
 
-    // Login controller: 127.0.0.1 fixo + mensagem de erro real do SQL
     private static final String LOGIN_CONTROLLER_JAVA = """
         package com.astral.main.controller;
         import org.springframework.http.HttpStatus;
@@ -806,8 +785,7 @@ public class Installer {
         }
         """;
 
-    // DatabaseBootstrap CORRIGIDO: usa runuser em vez de sudo (sudo falha com error=13 dentro do systemd)
-    // + chmod 0644 no SQL file para o postgres conseguir ler
+    // CORRIGIDO: usa runuser + arquivo SQL (não sudo + -c)
     private static final String DB_BOOTSTRAP_JAVA = """
         package com.astral.main.config;
         import org.springframework.beans.factory.annotation.Value;
@@ -834,21 +812,18 @@ public class Installer {
                     System.out.println("[BOOTSTRAP] Credenciais ausentes; auto-criando via psql... (" + e.getMessage() + ")");
                 }
                 try {
-                    String gexec = (char) 92 + "gexec";
-                    String nl = System.lineSeparator();
-                    String sql = "DO $$ BEGIN "
-                        + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + username + "') THEN "
-                        + "CREATE ROLE " + username + " LOGIN SUPERUSER PASSWORD '" + password + "'; "
-                        + "ELSE ALTER ROLE " + username + " WITH LOGIN SUPERUSER PASSWORD '" + password + "'; "
-                        + "END IF; END $$;" + nl
-                        + "SELECT 'CREATE DATABASE astral OWNER " + username + "' "
-                        + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')" + gexec + nl;
+                    String sql = "DO $$ BEGIN\\n"
+                        + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + username + "') THEN\\n"
+                        + "CREATE ROLE " + username + " LOGIN SUPERUSER PASSWORD '" + password + "';\\n"
+                        + "ELSE\\n"
+                        + "ALTER ROLE " + username + " WITH LOGIN SUPERUSER PASSWORD '" + password + "';\\n"
+                        + "END IF; END $$;\\n\\n"
+                        + "SELECT 'CREATE DATABASE astral OWNER " + username + "'\\n"
+                        + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\\\gexec\\n";
                     Path tmp = Path.of("/tmp/astral-bootstrap.sql");
                     Files.writeString(tmp, sql);
-                    // Permissão 0644: owner rw, group r, others r (postgres precisa ler)
                     Set<PosixFilePermission> perms = PosixFilePermissions.fromString("rw-r--r--");
                     Files.setPosixFilePermissions(tmp, perms);
-                    // runuser é mais limpo que sudo dentro de systemd (não depende de PAM/sudoers)
                     Process p = new ProcessBuilder("runuser", "-u", "postgres", "--", "psql", "-f", "/tmp/astral-bootstrap.sql")
                             .redirectErrorStream(true).start();
                     int code = p.waitFor();
