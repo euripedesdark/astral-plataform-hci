@@ -13,7 +13,6 @@ public class Installer {
     private static final int PORT = 5000;
     private static final AtomicInteger progress = new AtomicInteger(0);
     private static String status = "Aguardando conexão...";
-    private static volatile boolean installationComplete = false;
 
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: Execute com sudo"); System.exit(1); }
@@ -29,9 +28,10 @@ public class Installer {
         server.createContext("/install.html", Installer::handleInstallHTML);
         server.createContext("/api/stream", Installer::handleStream);
         server.createContext("/api/setup-db", Installer::handleSetupDB);
-        server.setExecutor(Executors.newFixedThreadPool(8));
+        server.setExecutor(Executors.newFixedThreadPool(8)); // pool só pro HTTP
         server.start();
 
+        // Instalação em thread SEPARADA (nunca bloqueia o servidor web)
         Thread installThread = new Thread(Installer::runInstallation, "installer");
         installThread.setDaemon(true);
         installThread.start();
@@ -39,6 +39,9 @@ public class Installer {
         Thread.currentThread().join();
     }
 
+    // ============================================================
+    // FLUXO DE INSTALAÇÃO
+    // ============================================================
     private static void runInstallation() {
         try {
             updateProgress(5, "Detectando distribuição...");
@@ -53,9 +56,8 @@ public class Installer {
                 updateProgress(10, "Internet ativa - NetworkConfig opcional (manual)");
             }
 
-            updateProgress(12, "Removendo Nginx (Reactor Netty assume a porta 80)...");
-            runCmd("systemctl stop nginx 2>/dev/null || true", false);
-            runCmd("dnf remove -y nginx 2>/dev/null || apt-get purge -y nginx 2>/dev/null || true", true);
+            updateProgress(12, "Removendo Nginx de vez (Reactor Netty assume a porta 80)...");
+            removeNginx();
 
             updateProgress(15, "Configurando firewall (iptables)...");
             configureFirewall();
@@ -75,10 +77,11 @@ public class Installer {
             updateProgress(75, "Configurando PostgreSQL...");
             configurePostgreSQL(distro);
 
-            updateProgress(80, "Escrevendo pom.xml + sources + templates (TUDO embutido, sempre sobrescreve)...");
+            updateProgress(80, "Escrevendo pom.xml + sources + templates (sempre sobrescreve)...");
             ensureProjectLayout();
             copyStaticFrontend();
             ensureFonts();
+            fixOwnership(); // devolve tudo pro seu usuário
 
             updateProgress(88, "Compilando projeto Spring Boot (WebFlux)...");
             buildProject();
@@ -86,13 +89,8 @@ public class Installer {
             updateProgress(95, "Deploy em /opt + systemd service (porta 80)...");
             deploy();
 
-            updateProgress(100, "Instalação concluída! Configure o banco de dados.");
-            installationComplete = true;
-
-            // Mantém o servidor rodando para o formulário de setup-db
-            while (true) {
-                Thread.sleep(1000);
-            }
+            updateProgress(100, "Instalação concluída! Configure o banco de dados abaixo.");
+            while (true) { sleep(1000); } // mantém o servidor de setup vivo
         } catch (Exception e) {
             e.printStackTrace();
             updateProgress(100, "ERRO: " + e.getMessage());
@@ -100,14 +98,25 @@ public class Installer {
     }
 
     // ============================================================
-    // HANDLER DO FORMULÁRIO DE SETUP-DB
+    // REMOÇÃO DO NGINX (inclusive processo órfão)
+    // ============================================================
+    private static void removeNginx() {
+        runCmd("systemctl stop nginx 2>/dev/null || true", false);
+        runCmd("systemctl disable nginx 2>/dev/null || true", false);
+        runCmd("pkill -x nginx 2>/dev/null || true", false);          // mata órfãos
+        runCmd("dnf remove -y nginx 2>/dev/null || apt-get purge -y nginx 2>/dev/null || true", true);
+        runCmd("pkill -x nginx 2>/dev/null || true", false);          // garante pós-remove
+        runCmd("rm -f /etc/nginx/conf.d/astral.conf /etc/nginx/sites-enabled/astral.conf /etc/nginx/sites-available/astral.conf", false);
+    }
+
+    // ============================================================
+    // SETUP-DB (formulário da UI)
     // ============================================================
     private static void handleSetupDB(HttpExchange ex) throws IOException {
         if (!"POST".equals(ex.getRequestMethod())) {
             sendResponse(ex, 405, "{\"error\":\"Method not allowed\"}", "application/json");
             return;
         }
-
         try (BufferedReader br = new BufferedReader(new InputStreamReader(ex.getRequestBody()))) {
             StringBuilder body = new StringBuilder();
             String line;
@@ -122,56 +131,41 @@ public class Installer {
                 return;
             }
 
-            // Cria usuário e banco
             runCmd("sudo -i -u postgres psql -c \"CREATE USER " + username + " WITH PASSWORD '" + password + "' SUPERUSER;\"", true);
             runCmd("sudo -i -u postgres psql -c \"CREATE DATABASE astral OWNER " + username + ";\"", true);
 
-            // Injeta application.properties
             Path props = Paths.get("/etc/astral/application.properties");
             Files.createDirectories(props.getParent());
-            String propsContent = String.format("""
-                server.port=80
-                server.address=0.0.0.0
-                spring.datasource.url=jdbc:postgresql://localhost:5432/astral
-                spring.datasource.username=%s
-                spring.datasource.password=%s
-                spring.datasource.driver-class-name=org.postgresql.Driver
-                spring.jpa.hibernate.ddl-auto=update
-                spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
-                spring.jackson.serialization.fail-on-empty-beans=false
-                spring.web.resources.static-locations=classpath:/static/
-                spring.thymeleaf.cache=false
-                """, username, password);
-            Files.writeString(props, propsContent);
+            Files.writeString(props, "server.port=80\n"
+                + "server.address=0.0.0.0\n"
+                + "spring.datasource.url=jdbc:postgresql://localhost:5432/astral\n"
+                + "spring.datasource.username=" + username + "\n"
+                + "spring.datasource.password=" + password + "\n"
+                + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
+                + "spring.jpa.hibernate.ddl-auto=update\n"
+                + "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect\n"
+                + "spring.jackson.serialization.fail-on-empty-beans=false\n"
+                + "spring.web.resources.static-locations=classpath:/static/\n"
+                + "spring.thymeleaf.cache=false\n");
 
-            // Reinicia o serviço
             runCmd("systemctl restart astral-platform.service", false);
 
             String localIP = getLocalIP();
-            String response = String.format("{\"success\":true,\"message\":\"Banco 'astral' criado!\",\"redirect_url\":\"http://%s/\"}", localIP);
-            sendResponse(ex, 200, response, "application/json");
+            sendResponse(ex, 200, "{\"success\":true,\"message\":\"Banco 'astral' criado!\",\"redirect_url\":\"http://" + localIP + "/\"}", "application/json");
 
-            // Agenda encerramento em 60s
-            new Thread(() -> {
-                try {
-                    Thread.sleep(60000);
-                    System.exit(0);
-                } catch (InterruptedException ignored) {}
-            }).start();
-
+            new Thread(() -> { try { Thread.sleep(60000); System.exit(0); } catch (InterruptedException ignored) {} }).start();
         } catch (Exception e) {
             sendResponse(ex, 500, "{\"error\":\"" + e.getMessage() + "\"}", "application/json");
         }
     }
 
     private static String extractJsonValue(String json, String key) {
-        String pattern = "\"" + key + "\"\\s*:\\s*\"([^\"]*)\"";
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern).matcher(json);
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
         return m.find() ? m.group(1) : null;
     }
 
     // ============================================================
-    // HANDLERS HTTP (UI do instalador)
+    // UI DO INSTALADOR
     // ============================================================
     private static void handleIndex(HttpExchange ex) throws IOException {
         sendResponse(ex, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html");
@@ -190,51 +184,35 @@ public class Installer {
             #setupForm{display:none;margin-top:20px}
             #setupForm input{width:80%;padding:10px;margin:8px 0;border:1px solid #3fa9ff;border-radius:6px;background:#0b0f14;color:#fff;font-size:14px}
             #setupForm button{padding:12px 30px;background:#3fa9ff;color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-top:10px}
-            #setupForm button:hover{background:#5fc3ff}
             #redirectBtn{display:none;padding:12px 30px;background:#57e389;color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-top:20px}
-            #redirectBtn:hover{background:#7fffaa}
             </style></head>
             <body>
             <div class="box">
             <h1>🚀 Instalando Astral Platform</h1>
             <div class="bar"><div class="fill" id="fill"></div></div>
             <div id="status">Iniciando...</div>
-
             <div id="setupForm">
                 <h2 style="color:#9fd8ff;margin-top:0">Configurar Banco de Dados</h2>
                 <input type="text" id="dbUser" placeholder="Usuário do banco (ex: astral)">
                 <input type="password" id="dbPass" placeholder="Senha do banco">
                 <button onclick="setupDB()">Criar Banco e Configurar</button>
             </div>
-
             <button id="redirectBtn" onclick="redirectToLogin()">Acessar Sistema</button>
             </div>
-
             <script>
             var evt = new EventSource('/api/stream');
             evt.onmessage = function(e) {
                 var d = JSON.parse(e.data);
                 document.getElementById('fill').style.width = d.progress + '%';
                 document.getElementById('status').textContent = d.status;
-                if (d.progress >= 100) {
-                    evt.close();
-                    document.getElementById('setupForm').style.display = 'block';
-                }
+                if (d.progress >= 100) { evt.close(); document.getElementById('setupForm').style.display = 'block'; }
             };
-
             function setupDB() {
                 var user = document.getElementById('dbUser').value;
                 var pass = document.getElementById('dbPass').value;
-                if (!user || !pass) {
-                    alert('Preencha usuário e senha!');
-                    return;
-                }
-
-                fetch('/api/setup-db', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({username: user, password: pass})
-                })
+                if (!user || !pass) { alert('Preencha usuário e senha!'); return; }
+                fetch('/api/setup-db', {method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({username:user, password:pass})})
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) {
@@ -242,16 +220,11 @@ public class Installer {
                         document.getElementById('setupForm').style.display = 'none';
                         document.getElementById('redirectBtn').style.display = 'inline-block';
                         window.redirectUrl = data.redirect_url;
-                    } else {
-                        alert('Erro: ' + data.error);
-                    }
+                    } else { alert('Erro: ' + data.error); }
                 })
                 .catch(e => alert('Erro: ' + e));
             }
-
-            function redirectToLogin() {
-                window.location.href = window.redirectUrl || '/';
-            }
+            function redirectToLogin() { window.location.href = window.redirectUrl || '/'; }
             </script>
             </body></html>""";
         sendResponse(ex, 200, html, "text/html");
@@ -260,12 +233,12 @@ public class Installer {
     private static void handleStream(HttpExchange ex) throws IOException {
         ex.getResponseHeaders().set("Content-Type", "text/event-stream");
         ex.getResponseHeaders().set("Cache-Control", "no-cache");
-        ex.getResponseHeaders().set("Connection", "keep-alive");
         ex.sendResponseHeaders(200, 0);
         try (OutputStream os = ex.getResponseBody()) {
             while (true) {
                 os.write(("data: {\"progress\": " + progress.get() + ", \"status\": \"" + status + "\"}\n\n").getBytes());
                 os.flush();
+                if (progress.get() >= 100) break;
                 Thread.sleep(500);
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -338,6 +311,14 @@ public class Installer {
         } catch (IOException ignored) {}
     }
 
+    private static void fixOwnership() {
+        try {
+            String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
+            runCmd("chown -R " + owner + ":" + owner + " " + System.getProperty("user.dir") + " 2>/dev/null || true", false);
+            System.out.println("[OK] Ownership devolvido para: " + owner);
+        } catch (IOException ignored) {}
+    }
+
     // ============================================================
     // BUILD + DEPLOY
     // ============================================================
@@ -350,7 +331,21 @@ public class Installer {
         } catch (IOException ignored) {}
     }
 
+    private static String detectJavaBin() {
+        String cand = runCmd("readlink -f $(which java) 2>/dev/null", false);
+        if (cand != null && !cand.trim().isEmpty() && Files.exists(Paths.get(cand.trim()))) return cand.trim();
+        cand = runCmd("ls -d /usr/lib/jvm/jdk-*/bin/java 2>/dev/null | head -1", false);
+        if (cand != null && !cand.trim().isEmpty()) return cand.trim();
+        cand = runCmd("ls -d /usr/lib/jvm/*/bin/java 2>/dev/null | head -1", false);
+        if (cand != null && !cand.trim().isEmpty()) return cand.trim();
+        return "/usr/bin/java";
+    }
+
     private static void deploy() {
+        String javaBin = detectJavaBin();
+        System.out.println("[OK] Binário Java detectado: " + javaBin);
+        runCmd("ln -sf " + javaBin + " /usr/bin/java", false); // garante symlink p/ futuro
+
         String jar = System.getProperty("user.dir") + "/target/astral-platform-1.0.0.jar";
         runCmd("mkdir -p /opt/astral-platform && cp " + jar + " /opt/astral-platform/ && chown -R root:root /opt/astral-platform && chmod 755 /opt/astral-platform", true);
 
@@ -358,45 +353,35 @@ public class Installer {
         Path props = Paths.get("/etc/astral/application.properties");
         if (!Files.exists(props)) {
             try {
-                Files.writeString(props, """
-                    server.port=80
-                    server.address=0.0.0.0
-                    spring.datasource.url=jdbc:postgresql://localhost:5432/astral
-                    spring.datasource.username=astral
-                    spring.datasource.password=astral
-                    spring.datasource.driver-class-name=org.postgresql.Driver
-                    spring.jpa.hibernate.ddl-auto=update
-                    spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
-                    spring.jackson.serialization.fail-on-empty-beans=false
-                    spring.web.resources.static-locations=classpath:/static/
-                    spring.thymeleaf.cache=false
-                    """);
+                Files.writeString(props, "server.port=80\nserver.address=0.0.0.0\n"
+                    + "spring.datasource.url=jdbc:postgresql://localhost:5432/astral\n"
+                    + "spring.datasource.username=astral\nspring.datasource.password=astral\n"
+                    + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
+                    + "spring.jpa.hibernate.ddl-auto=update\n"
+                    + "spring.web.resources.static-locations=classpath:/static/\n"
+                    + "spring.thymeleaf.cache=false\n");
             } catch (IOException ignored) {}
         }
 
-        String svc = String.format("""
-            [Unit]
-            Description=Astral Platform (Reactor Netty)
-            After=network.target postgresql.service
-            Requires=postgresql.service
-
-            [Service]
-            Type=simple
-            User=root
-            WorkingDirectory=/opt/astral-platform
-            ExecStart=/usr/bin/java -jar /opt/astral-platform/astral-platform-1.0.0.jar --spring.config.location=file:/etc/astral/application.properties
-            Restart=always
-            RestartSec=10
-            StandardOutput=journal
-            StandardError=journal
-
-            [Install]
-            WantedBy=multi-user.target
-            """);
+        String svc = "[Unit]\n"
+            + "Description=Astral Platform (Reactor Netty)\n"
+            + "After=network.target postgresql.service\n"
+            + "Requires=postgresql.service\n\n"
+            + "[Service]\n"
+            + "Type=simple\n"
+            + "User=root\n"
+            + "WorkingDirectory=/opt/astral-platform\n"
+            + "ExecStart=" + javaBin + " -jar /opt/astral-platform/astral-platform-1.0.0.jar --spring.config.location=file:/etc/astral/application.properties\n"
+            + "Restart=always\n"
+            + "RestartSec=10\n"
+            + "StandardOutput=journal\n"
+            + "StandardError=journal\n\n"
+            + "[Install]\n"
+            + "WantedBy=multi-user.target\n";
         try { Files.writeString(Paths.get("/etc/systemd/system/astral-platform.service"), svc); } catch (IOException ignored) {}
         runCmd("systemctl daemon-reload", false);
         runCmd("systemctl enable astral-platform.service", false);
-        runCmd("systemctl start astral-platform.service", false);
+        runCmd("systemctl restart astral-platform.service", false);
 
         for (int i = 0; i < 30; i++) {
             try (var s = new java.net.Socket()) {
@@ -540,7 +525,7 @@ public class Installer {
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
 
     // ============================================================
-    // ARQUIVOS EMBUTIDOS (mesmos da versão anterior)
+    // ARQUIVOS EMBUTIDOS
     // ============================================================
     private static final String POM_XML = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -883,11 +868,11 @@ public class Installer {
         return{c:c||3}}
         (function(){var g=document.getElementById('grid');
         g.style.setProperty('--cols',layout(g.querySelectorAll('.card').length).c)})();
-        function clean(s){return s.replace(/\\\\x1b\\\\[[0-9;?]*[a-zA-Z]/g,'').replace(/\\\\r/g,'')}
+        function clean(s){return s.replace(/\\x1b\\[[0-9;?]*[a-zA-Z]/g,'').replace(/\\r/g,'')}
         function attach(out,inp){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
         ws.onmessage=function(e){out.textContent+=clean(e.data);out.scrollTop=out.scrollHeight};
-        ws.onclose=function(){out.textContent+='\\\\n[conexao encerrada]\\\\n'};
-        inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws.readyState===1){ws.send(inp.value+'\\\\n');inp.value=''}});
+        ws.onclose=function(){out.textContent+='\\n[conexao encerrada]\\n'};
+        inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws.readyState===1){ws.send(inp.value+'\\n');inp.value=''}});
         return ws}
         var ws=null;
         var modal=document.getElementById('termModal'),out=document.getElementById('termOut'),inp=document.getElementById('termIn');
