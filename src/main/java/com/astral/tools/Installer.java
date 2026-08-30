@@ -374,9 +374,40 @@ public class Installer {
     }
 
     private static String getLocalIP() {
-        try (var s = new java.net.Socket()) { s.connect(new InetSocketAddress("8.8.8.8", 80), 3000); return s.getLocalAddress().getHostAddress(); }
-        catch (IOException e) { return "127.0.0.1"; }
+    // Tenta pegar o IP da interface padrão via ip route
+    try {
+        String route = runCmd("ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \\K[\\d.]+' | head -1", false);
+        if (route != null && !route.trim().isEmpty()) {
+            return route.trim();
+        }
+    } catch (Exception e) {
+        // Ignora e tenta próximo método
     }
+
+    // Fallback: tenta conectar em 8.8.8.8
+    try (java.net.Socket s = new java.net.Socket()) {
+        s.connect(new InetSocketAddress("8.8.8.8", 80), 3000);
+        return s.getLocalAddress().getHostAddress();
+    } catch (IOException e) {
+        // Último fallback: pega o primeiro IP não-loopback
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                java.net.NetworkInterface iface = interfaces.nextElement();
+                java.util.Enumeration<java.net.InetAddress> addrs = iface.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    java.net.InetAddress addr = addrs.nextElement();
+                    if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+        } catch (java.net.SocketException ex) {
+            // Ignora
+        }
+    }
+    return "127.0.0.1";
+}
 
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
