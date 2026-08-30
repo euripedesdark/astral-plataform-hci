@@ -374,38 +374,58 @@ public class Installer {
     }
 
     private static String getLocalIP() {
-    // Tenta pegar o IP da interface padrão via ip route
+    System.out.println("[DEBUG] Tentando detectar IP local...");
+
+    // Estratégia 1: ip route get + awk (mais confiável que grep -oP)
     try {
-        String route = runCmd("ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \\K[\\d.]+' | head -1", false);
-        if (route != null && !route.trim().isEmpty()) {
-            return route.trim();
+        ProcessBuilder pb = new ProcessBuilder("bash", "-c",
+            "ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i==\"src\") print $(i+1)}'");
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        StringBuilder out = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                out.append(line).append("\n");
+            }
+        }
+        int code = p.waitFor();
+        String result = out.toString().trim();
+        System.out.println("[DEBUG] ip route + awk retornou: '" + result + "' (exit code: " + code + ")");
+
+        if (code == 0 && !result.isEmpty() && result.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+            System.out.println("[DEBUG] ✓ IP detectado via ip route: " + result);
+            return result;
         }
     } catch (Exception e) {
-        // Ignora e tenta próximo método
+        System.err.println("[DEBUG] ✗ Falha no método ip route: " + e.getMessage());
     }
 
-    // Fallback: tenta conectar em 8.8.8.8
-    try (java.net.Socket s = new java.net.Socket()) {
-        s.connect(new InetSocketAddress("8.8.8.8", 80), 3000);
-        return s.getLocalAddress().getHostAddress();
-    } catch (IOException e) {
-        // Último fallback: pega o primeiro IP não-loopback
-        try {
-            java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
-            while (interfaces.hasMoreElements()) {
-                java.net.NetworkInterface iface = interfaces.nextElement();
-                java.util.Enumeration<java.net.InetAddress> addrs = iface.getInetAddresses();
-                while (addrs.hasMoreElements()) {
-                    java.net.InetAddress addr = addrs.nextElement();
-                    if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
-                        return addr.getHostAddress();
-                    }
+    // Estratégia 2: Enumerar todas as interfaces de rede
+    try {
+        System.out.println("[DEBUG] Tentando enumeração de interfaces...");
+        java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
+        while (interfaces.hasMoreElements()) {
+            java.net.NetworkInterface iface = interfaces.nextElement();
+            if (iface.isLoopback() || !iface.isUp()) continue;
+
+            System.out.println("[DEBUG] Verificando interface: " + iface.getName());
+            java.util.Enumeration<java.net.InetAddress> addrs = iface.getInetAddresses();
+            while (addrs.hasMoreElements()) {
+                java.net.InetAddress addr = addrs.nextElement();
+                if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
+                    String ip = addr.getHostAddress();
+                    System.out.println("[DEBUG] ✓ IP encontrado na interface " + iface.getName() + ": " + ip);
+                    return ip;
                 }
             }
-        } catch (java.net.SocketException ex) {
-            // Ignora
         }
+    } catch (Exception e) {
+        System.err.println("[DEBUG] ✗ Falha na enumeração de interfaces: " + e.getMessage());
     }
+
+    // Último recurso
+    System.err.println("[DEBUG] ⚠ Nenhum IP detectado, usando fallback 127.0.0.1");
     return "127.0.0.1";
 }
 
