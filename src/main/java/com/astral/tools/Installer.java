@@ -13,11 +13,9 @@ public class Installer {
     private static final int PORT = 5000;
     private static final AtomicInteger progress = new AtomicInteger(0);
     private static String status = "Aguardando conexão...";
-    private static final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: Execute com sudo"); System.exit(1); }
-
         String localIP = getLocalIP();
         System.out.println("=".repeat(60));
         System.out.println("[ASTRAL PLATFORM] INSTALADOR JAVA (100% WebFlux / Reactor Netty)");
@@ -29,9 +27,13 @@ public class Installer {
         server.createContext("/", Installer::handleIndex);
         server.createContext("/install.html", Installer::handleInstallHTML);
         server.createContext("/api/stream", Installer::handleStream);
-        server.setExecutor(executor);
+        server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
-        executor.submit(Installer::runInstallation);
+
+        Thread installThread = new Thread(Installer::runInstallation, "installer");
+        installThread.setDaemon(true);
+        installThread.start();
+
         Thread.currentThread().join();
     }
 
@@ -42,10 +44,9 @@ public class Installer {
             sleep(500);
 
             updateProgress(8, "Verificando conectividade...");
-            boolean online = checkInternet();
-            if (!online) {
+            if (!checkInternet()) {
                 updateProgress(10, "SEM INTERNET - configurando rede automaticamente...");
-                NetworkConfig.main(new String[]{"--auto"});
+                try { NetworkConfig.main(new String[]{"--auto"}); } catch (Exception e) { e.printStackTrace(); }
             } else {
                 updateProgress(10, "Internet ativa - NetworkConfig opcional (manual)");
             }
@@ -72,7 +73,7 @@ public class Installer {
             updateProgress(75, "Configurando PostgreSQL...");
             configurePostgreSQL(distro);
 
-            updateProgress(80, "Escrevendo pom.xml + sources + templates (TUDO embutido)...");
+            updateProgress(80, "Escrevendo pom.xml + sources + templates (TUDO embutido, sempre sobrescreve)...");
             ensureProjectLayout();
             copyStaticFrontend();
             ensureFonts();
@@ -93,7 +94,7 @@ public class Installer {
     }
 
     // ============================================================
-    // LAYOUT DO PROJETO
+    // LAYOUT DO PROJETO — SEMPRE SOBRESCREVE
     // ============================================================
     private static void ensureProjectLayout() throws IOException {
         String app = System.getProperty("user.dir");
@@ -106,20 +107,19 @@ public class Installer {
         Path fonts = Paths.get(app, "src", "main", "resources", "static", "fonts");
         for (Path d : new Path[]{base, ctrl, model, cfg, tpl, imgs, fonts}) Files.createDirectories(d);
 
-        writeIfMissing(Paths.get(app, "pom.xml"), POM_XML);
-        writeIfMissing(base.resolve("AstralApplication.java"), ASTRAL_APP_JAVA);
-        writeIfMissing(ctrl.resolve("HomeController.java"), HOME_CONTROLLER_JAVA);
-        writeIfMissing(ctrl.resolve("LoginController.java"), LOGIN_CONTROLLER_JAVA);
-        writeIfMissing(ctrl.resolve("ProxyController.java"), PROXY_CONTROLLER_JAVA);
-        writeIfMissing(model.resolve("DashboardButton.java"), DASHBOARD_BUTTON_JAVA);
-        writeIfMissing(cfg.resolve("WebSocketConfig.java"), WS_CONFIG_JAVA);
-        writeIfMissing(cfg.resolve("TerminalWebSocketHandler.java"), WS_HANDLER_JAVA);
-        writeIfMissing(cfg.resolve("DatabaseBootstrap.java"), DB_BOOTSTRAP_JAVA);
-        writeIfMissing(tpl.resolve("home.html"), DEFAULT_HOME_HTML);
+        write(Paths.get(app, "pom.xml"), POM_XML);
+        write(base.resolve("AstralApplication.java"), ASTRAL_APP_JAVA);
+        write(ctrl.resolve("HomeController.java"), HOME_CONTROLLER_JAVA);
+        write(ctrl.resolve("LoginController.java"), LOGIN_CONTROLLER_JAVA);
+        write(ctrl.resolve("ProxyController.java"), PROXY_CONTROLLER_JAVA);
+        write(model.resolve("DashboardButton.java"), DASHBOARD_BUTTON_JAVA);
+        write(cfg.resolve("WebSocketConfig.java"), WS_CONFIG_JAVA);
+        write(cfg.resolve("TerminalWebSocketHandler.java"), WS_HANDLER_JAVA);
+        write(cfg.resolve("DatabaseBootstrap.java"), DB_BOOTSTRAP_JAVA);
+        write(tpl.resolve("home.html"), DEFAULT_HOME_HTML);
     }
 
-    private static void writeIfMissing(Path p, String content) throws IOException {
-        // SEMPRE sobrescreve: o instalador é a fonte da verdade dos arquivos gerados
+    private static void write(Path p, String content) throws IOException {
         Files.createDirectories(p.getParent());
         Files.writeString(p, content);
         System.out.println("[OK] " + p.getFileName() + " escrito/atualizado.");
@@ -173,8 +173,7 @@ public class Installer {
     }
 
     private static void deploy() {
-        String app = System.getProperty("user.dir");
-        String jar = app + "/target/astral-platform-1.0.0.jar";
+        String jar = System.getProperty("user.dir") + "/target/astral-platform-1.0.0.jar";
         runCmd("mkdir -p /opt/astral-platform && cp " + jar + " /opt/astral-platform/ && chown -R root:root /opt/astral-platform && chmod 755 /opt/astral-platform", true);
 
         runCmd("mkdir -p /etc/astral", false);
@@ -197,7 +196,7 @@ public class Installer {
             } catch (IOException ignored) {}
         }
 
-        String svc = """
+        String svc = String.format("""
             [Unit]
             Description=Astral Platform (Reactor Netty)
             After=network.target postgresql.service
@@ -215,7 +214,7 @@ public class Installer {
 
             [Install]
             WantedBy=multi-user.target
-            """;
+            """);
         try { Files.writeString(Paths.get("/etc/systemd/system/astral-platform.service"), svc); } catch (IOException ignored) {}
         runCmd("systemctl daemon-reload", false);
         runCmd("systemctl enable astral-platform.service", false);
@@ -279,26 +278,24 @@ public class Installer {
     }
 
     private static void configurePostgreSQL(String distro) {
-        String svc = "postgresql";
         if (distro.equals("rhel")) {
             String pg = runCmd("ls -A /var/lib/pgsql/data 2>/dev/null", false);
             if (pg == null || pg.trim().isEmpty()) {
                 runCmd("chown -R postgres:postgres /var/lib/pgsql && /usr/bin/postgresql-setup --initdb", true);
             }
-            svc = "postgresql";
         } else if (distro.equals("arch")) {
             if (!Files.exists(Paths.get("/var/lib/postgres/data/PG_VERSION"))) {
                 runCmd("sudo -u postgres initdb -D /var/lib/postgres/data", true);
             }
         }
-        runCmd("systemctl enable " + svc, false);
-        runCmd("systemctl start " + svc, false);
+        runCmd("systemctl enable postgresql", false);
+        runCmd("systemctl start postgresql", false);
         String hba = distro.equals("rhel") ? "/var/lib/pgsql/data/pg_hba.conf" :
                      distro.equals("arch") ? "/var/lib/postgres/data/pg_hba.conf" :
                      "/etc/postgresql/*/main/pg_hba.conf";
         runCmd("grep -q '0.0.0.0/0' " + hba + " || echo 'host all all 0.0.0.0/0 md5' >> " + hba, false);
         runCmd("grep -q '^host.*127.0.0.1/32.*md5' " + hba + " || sed -i '1i host all all 127.0.0.1/32 md5' " + hba, false);
-        runCmd("systemctl restart " + svc, false);
+        runCmd("systemctl restart postgresql", false);
     }
 
     // ============================================================
@@ -390,9 +387,7 @@ public class Installer {
             }
             int code = p.waitFor();
             String result = out.toString().trim();
-            if (code == 0 && !result.isEmpty() && result.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
-                return result;
-            }
+            if (code == 0 && !result.isEmpty() && result.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return result;
         } catch (Exception ignored) {}
         try (var s = new java.net.Socket()) {
             s.connect(new InetSocketAddress("8.8.8.8", 80), 3000);
@@ -404,10 +399,8 @@ public class Installer {
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
 
     // ============================================================
-    // ARQUIVOS EMBUTIDOS (TUDO AQUI, ZERO ARQUIVO MANUAL)
+    // ARQUIVOS EMBUTIDOS
     // ============================================================
-
-    // ----- pom.xml com WebFlux (Reactor Netty) + Thymeleaf + JPA + PostgreSQL -----
     private static final String POM_XML = """
         <?xml version="1.0" encoding="UTF-8"?>
         <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -435,7 +428,6 @@ public class Installer {
         </project>
         """;
 
-    // ----- Application principal -----
     private static final String ASTRAL_APP_JAVA = """
         package com.astral.main;
         import org.springframework.boot.SpringApplication;
@@ -446,14 +438,12 @@ public class Installer {
         }
         """;
 
-    // ----- HomeController (Thymeleaf funciona igual no WebFlux) -----
     private static final String HOME_CONTROLLER_JAVA = """
         package com.astral.main.controller;
         import com.astral.main.model.DashboardButton;
         import org.springframework.stereotype.Controller;
         import org.springframework.ui.Model;
         import org.springframework.web.bind.annotation.GetMapping;
-        import org.springframework.web.bind.annotation.ResponseBody;
         import java.util.List;
         @Controller
         public class HomeController {
@@ -462,11 +452,6 @@ public class Installer {
                 model.addAttribute("buttons", buildButtons());
                 model.addAttribute("pageTitle", "ASTRAL PLATFORM");
                 return "home";
-            }
-            @GetMapping("/")
-            @ResponseBody
-            public String index() {
-                return "<meta http-equiv='refresh' content='0; url=/index.html'>";
             }
             private List<DashboardButton> buildButtons() {
                 return List.of(
@@ -485,7 +470,6 @@ public class Installer {
         }
         """;
 
-    // ----- LoginController reativo (retorna Mono<ResponseEntity>) -----
     private static final String LOGIN_CONTROLLER_JAVA = """
         package com.astral.main.controller;
         import org.springframework.http.HttpStatus;
@@ -523,13 +507,11 @@ public class Installer {
         }
         """;
 
-    // ----- DashboardButton record -----
     private static final String DASHBOARD_BUTTON_JAVA = """
         package com.astral.main.model;
         public record DashboardButton(String id, String label, String image, String route) {}
         """;
 
-    // ----- WebSocketConfig reativo -----
     private static final String WS_CONFIG_JAVA = """
         package com.astral.main.config;
         import org.springframework.context.annotation.Bean;
@@ -555,7 +537,6 @@ public class Installer {
         }
         """;
 
-    // ----- TerminalWebSocketHandler reativo -----
     private static final String WS_HANDLER_JAVA = """
         package com.astral.main.config;
         import org.springframework.stereotype.Component;
@@ -602,7 +583,7 @@ public class Installer {
         }
         """;
 
-    // ----- ProxyController reativo (usa Map.ofEntries p/ >10 pares + WebClient + Mono) -----
+    // CORRIGIDO: statusCode() (sem get) + tipos fechados
     private static final String PROXY_CONTROLLER_JAVA = """
         package com.astral.main.controller;
         import org.springframework.http.ResponseEntity;
@@ -643,14 +624,13 @@ public class Installer {
                 String url = "http://127.0.0.1:" + port + rest + (q != null ? "?" + q : "");
                 return client.method(exchange.getRequest().getMethod()).uri(URI.create(url))
                     .exchangeToMono(resp -> resp.bodyToMono(byte[].class).defaultIfEmpty(new byte[0])
-                        .map(body -> ResponseEntity.status(resp.getStatusCode()).body(body)))
+                        .map(body -> ResponseEntity.status(resp.statusCode()).body(body)))
                     .onErrorResume(e -> Mono.just(ResponseEntity.status(502)
                         .body(("Backend " + first + " indisponivel").getBytes())));
             }
         }
         """;
 
-    // ----- DatabaseBootstrap (auto-provisiona usuário/banco via sudo -u postgres) -----
     private static final String DB_BOOTSTRAP_JAVA = """
         package com.astral.main.config;
         import org.springframework.beans.factory.annotation.Value;
@@ -696,7 +676,6 @@ public class Installer {
         }
         """;
 
-    // ----- home.html (Thymeleaf) -----
     private static final String DEFAULT_HOME_HTML = """
         <!DOCTYPE html>
         <html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
