@@ -24,7 +24,7 @@ public class InstallerFirewall {
         s.createContext("/install.html", InstallerFirewall::ui);
         s.createContext("/api/stream", InstallerFirewall::stream);
         s.createContext("/api/setup-db", InstallerFirewall::setupDb);
-        s.setExecutor(Executors.newFixedThreadPool(4));
+        s.setExecutor(Executors.newCachedThreadPool()); // CORRIGIDO: não esgota com abas abertas
         s.start();
         System.out.println("=".repeat(60));
         System.out.println("[ASTRAL FIREWALL] Instalador em http://" + getLocalIP() + ":" + PORT);
@@ -33,9 +33,6 @@ public class InstallerFirewall {
         Thread.currentThread().join();
     }
 
-    // ============================================================
-    // FLUXO: credenciais no navegador -> banco/tabelas -> arquivos -> build -> deploy
-    // ============================================================
     private static void run() {
         try {
             up(5, "Detectando distribuição...");
@@ -111,9 +108,6 @@ public class InstallerFirewall {
         run("systemctl daemon-reload && systemctl enable astral-firewall && systemctl restart astral-firewall", false);
     }
 
-    // ============================================================
-    // UI + setup-db (usuário/senha no navegador)
-    // ============================================================
     private static void setupDb(HttpExchange ex) throws IOException {
         if (!"POST".equals(ex.getRequestMethod())) { send(ex, 405, "{}", "application/json"); return; }
         String body = new String(ex.getRequestBody().readAllBytes());
@@ -146,13 +140,24 @@ public class InstallerFirewall {
             body:JSON.stringify({username:u.value,password:p.value})}).then(r=>r.json()).then(d=>{if(d.success)sf.style.display='none';})}
             </script></body></html>""", "text/html");
     }
+
+    // CORRIGIDO: libera a thread quando a aba fecha (IOException no write)
     private static void stream(HttpExchange ex) throws IOException {
         ex.getResponseHeaders().set("Content-Type", "text/event-stream");
+        ex.getResponseHeaders().set("Cache-Control", "no-cache");
         ex.sendResponseHeaders(200, 0);
         try (OutputStream os = ex.getResponseBody()) {
-            while (true) { os.write(("data: {\"progress\": " + progress.get() + ", \"status\": \"" + status + "\"}\n\n").getBytes()); os.flush(); if (done) break; Thread.sleep(500); }
-        } catch (Exception ignored) {}
+            while (true) {
+                os.write(("data: {\"progress\": " + progress.get() + ", \"status\": \"" + status + "\"}\n\n").getBytes());
+                os.flush();
+                if (done) break;
+                Thread.sleep(500);
+            }
+        } catch (IOException clientGone) {
+            // aba fechou; thread liberada
+        } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
     }
+
     private static void send(HttpExchange ex, int c, String b, String t) throws IOException { byte[] x = b.getBytes(); ex.getResponseHeaders().set("Content-Type", t); ex.sendResponseHeaders(c, x.length); ex.getResponseBody().write(x); ex.close(); }
     private static void up(int p, String s) { progress.set(p); status = s; System.out.println("[" + p + "%] " + s); }
     private static String run(String c, boolean log) { if (log) System.out.println("$ " + c); try { Process p = new ProcessBuilder("bash", "-c", c).redirectErrorStream(true).start(); String o = new String(p.getInputStream().readAllBytes()); p.waitFor(); return o; } catch (Exception e) { return ""; } }
@@ -161,9 +166,6 @@ public class InstallerFirewall {
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (Exception ignored) {} }
 
-    // ============================================================
-    // CRIA OS ARQUIVOS DO MÓDULO (pom, sources, template)
-    // ============================================================
     private static void writeProject() throws IOException {
         String base = app() + "/fabric/firewall";
         String jbase = base + "/src/main/java/com/astral/firewall";
@@ -187,7 +189,6 @@ public class InstallerFirewall {
         write(jbase + "/model/AuditLog.java", FW_AL);
         write(jbase + "/model/FirewallSnapshot.java", FW_SNAP);
         write(jbase + "/model/FirewallState.java", FW_STATE);
-        write(jbase + "/repo/Repos.java", FW_REPOS_NOTE);
         write(jbase + "/repo/FirewallRuleRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface FirewallRuleRepo extends JpaRepository<FirewallRule,Long> { java.util.List<FirewallRule> findByChainOrderByPriority(String chain); }\n");
         write(jbase + "/repo/PortForwardRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface PortForwardRepo extends JpaRepository<PortForward,Long> {}\n");
         write(jbase + "/repo/MasqueradeRuleRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface MasqueradeRuleRepo extends JpaRepository<MasqueradeRule,Long> {}\n");
@@ -213,9 +214,6 @@ public class InstallerFirewall {
     }
     private static void write(String p, String c) throws IOException { Files.writeString(Paths.get(p), c); System.out.println("[OK] " + Paths.get(p).getFileName()); }
 
-    // ============================================================
-    // SQL DAS TABELAS (criadas pelo instalador, campos inclusos)
-    // ============================================================
     private static final String TABLES_SQL = """
         CREATE TABLE IF NOT EXISTS firewall_rule (id BIGSERIAL PRIMARY KEY, chain VARCHAR(20), priority INT, protocol VARCHAR(10), src_cidr VARCHAR(50), dst_cidr VARCHAR(50), port VARCHAR(30), iface VARCHAR(30), action VARCHAR(10), enabled BOOLEAN, comment VARCHAR(512), applied_at TIMESTAMP);
         CREATE TABLE IF NOT EXISTS port_forward (id BIGSERIAL PRIMARY KEY, iface VARCHAR(30), external_port VARCHAR(30), protocol VARCHAR(10), internal_ip VARCHAR(50), internal_port VARCHAR(30), enabled BOOLEAN, description VARCHAR(512));
@@ -235,9 +233,6 @@ public class InstallerFirewall {
         CREATE TABLE IF NOT EXISTS firewall_state (key VARCHAR(40) PRIMARY KEY, value VARCHAR(80));
         """;
 
-    // ============================================================
-    // ARQUIVOS EMBUTIDOS DO MÓDULO (sem backslash p/ segurança de escaping)
-    // ============================================================
     private static final String FW_POM = """
         <?xml version="1.0" encoding="UTF-8"?>
         <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
@@ -358,10 +353,6 @@ public class InstallerFirewall {
         import jakarta.persistence.*;
         @Entity public class FirewallState { @Id public String key; public String value; }
         """;
-    private static final String FW_REPOS_NOTE = """
-        // Os repositories estão em arquivos separados (um interface top-level por arquivo),
-        // criados automaticamente por este instalador ao lado deste arquivo.
-        """;
     private static final String FW_AUDIT = """
         package com.astral.firewall.service;
         import com.astral.firewall.model.AuditLog; import com.astral.firewall.repo.AuditLogRepo;
@@ -466,9 +457,11 @@ public class InstallerFirewall {
         for(String line:l.split(NL)) if(line.contains("ACCEPT")){ String[] c=line.trim().split(" "); try{accepted+=Long.parseLong(c[0].replaceAll("[^0-9]",""));}catch(Exception ignored){} }
         for(int i=0;i<24;i++) hourA[i]=(int)(accepted/24);
         m.put("blocked24",blocked); m.put("rejected24",rejected); m.put("accepted24",accepted); m.put("sshAttempts",ssh);
-        m.put("topBlocked", top.entrySet().stream().sorted((a,b)->b.getValue()[0]-a.getValue()[0]).limit(6)
-        .map(e->{String[] p=e.getKey().split("|");return Map.of("ip",p[0],"port",p.length>1?p[1]:"","action","DROP","count",e.getValue()[0]);}).toList());
-        List<Map<String,Object>> series=new ArrayList<>(); for(int i=23;i>=0;i--) series.add(Map.of("h",i,"blocked",hourB[i],"allowed",hourA[i]));
+        List<Map<String,Object>> topList=new ArrayList<>();
+        top.entrySet().stream().sorted((a,b)->b.getValue()[0]-a.getValue()[0]).limit(6).forEach(e->{
+        String[] p=e.getKey().split("|"); Map<String,Object> row=new HashMap<>(); row.put("ip",p[0]); row.put("port",p.length>1?p[1]:""); row.put("action","DROP"); row.put("count",e.getValue()[0]); topList.add(row);});
+        m.put("topBlocked",topList);
+        List<Map<String,Object>> series=new ArrayList<>(); for(int i=23;i>=0;i--){Map<String,Object> b=new HashMap<>();b.put("h",i);b.put("blocked",hourB[i]);b.put("allowed",hourA[i]);series.add(b);}
         m.put("series",series); return m;
         }
         }
@@ -499,7 +492,7 @@ public class InstallerFirewall {
         import java.net.InetAddress; import java.util.*;
         @RestController @RequestMapping("/firewall/api")
         public class FirewallApiController {
-        private static final String Q=String.valueOf((char)34);
+        private static final String NL=String.valueOf((char)10);
         private final IptablesService ipt; private final StatsService stats; private final AuditService audit; private final BackupService backup;
         private final FirewallRuleRepo rules; private final PortForwardRepo forwards; private final MasqueradeRuleRepo masq;
         private final ZoneRepo zones; private final ZoneInterfaceRepo zifaces; private final HostGroupRepo hgroups; private final PortGroupRepo pgroups;
@@ -546,12 +539,10 @@ public class InstallerFirewall {
         @DeleteMapping("/autoban/{id}") public Mono<Map<String,String>> delAb(@PathVariable Long id){return call(()->{bans.deleteById(id);return Map.of("success","true");});}
         @GetMapping("/threatlists") public Mono<List<ThreatList>> tl(){return call(threats::findAll);}
         @PostMapping("/threatlists") public Mono<ThreatList> saveTl(@RequestBody ThreatList t){return call(threats::save);}
-        @PostMapping("/threatlists/{id}/refresh") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh("ipset create astral-threats hash:net -!");String raw=ipt.sh("curl -fsSL "+t.sourceUrl);int n=0;for(String line:raw.split(NL())){String ip=line.trim().split(" ")[0];if(isIpish(ip)){ipt.sh("ipset add astral-threats "+ip+" -!");n++;}}t.ipCount=n;t.lastUpdated=java.time.Instant.now();threats.save(t);return Map.of("success",true,"ipCount",n);});}
-        private String NL(){return String.valueOf((char)10);}
+        @PostMapping("/threatlists/{id}/refresh") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh("ipset create astral-threats hash:net -!");String raw=ipt.sh("curl -fsSL "+t.sourceUrl);int n=0;for(String line:raw.split(NL)){String ip=line.trim().split(" ")[0];if(isIpish(ip)){ipt.sh("ipset add astral-threats "+ip+" -!");n++;}}t.ipCount=n;t.lastUpdated=java.time.Instant.now();threats.save(t);return Map.of("success",true,"ipCount",n);});}
         private boolean isIpish(String s){if(s.isEmpty())return false;int dots=0;for(char c:s.toCharArray()){if(c=='.')dots++;else if(!Character.isDigit(c)&&c!='/'&&c!='-')return false;}return dots>=1;}
-        @GetMapping("/logs") public Mono<List<Map<String,String>>> logs(@RequestParam(required=false) String ip,@RequestParam(required=false) String action){return call(()->{List<Map<String,String>> out=new ArrayList<>();for(String line:ipt.sh("journalctl -k -o short-unix --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' | tail -200").split(NL())){if(line.isBlank())continue;if(ip!=null&&!line.contains("SRC="+ip))continue;if(action!=null&&!line.contains("ASTRAL-FW-"+action))continue;out.add(Map.of("raw",line));}return out;});}
-        private String NL(){return String.valueOf((char)10);}
-        @GetMapping("/logs/export") public Mono<String> exportLogs(@RequestParam(defaultValue="json") String format){return call(()->{String raw=ipt.sh("journalctl -k --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' || true");if(format.equals("csv")){StringBuilder b=new StringBuilder("line"+NL());for(String l:raw.split(NL()))b.append(Q).append(l.replace(Q,"'")).append(Q).append(NL());return b.toString();}return raw;});}
+        @GetMapping("/logs") public Mono<List<Map<String,String>>> logs(@RequestParam(required=false) String ip,@RequestParam(required=false) String action){return call(()->{List<Map<String,String>> out=new ArrayList<>();for(String line:ipt.sh("journalctl -k -o short-unix --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' | tail -200").split(NL)){if(line.isBlank())continue;if(ip!=null&&!line.contains("SRC="+ip))continue;if(action!=null&&!line.contains("ASTRAL-FW-"+action))continue;out.add(Map.of("raw",line));}return out;});}
+        @GetMapping("/logs/export") public Mono<String> exportLogs(@RequestParam(defaultValue="json") String format){return call(()->{String raw=ipt.sh("journalctl -k --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' || true");if(format.equals("csv")){StringBuilder b=new StringBuilder("line"+NL);for(String l:raw.split(NL))b.append(l.replace(",",";")).append(NL);return b.toString();}return raw;});}
         @GetMapping("/snapshots") public Mono<List<FirewallSnapshot>> snapList(){return call(()->snaps.findAllByOrderByCreatedAtDesc());}
         @PostMapping("/snapshots/revert/{id}") public Mono<Map<String,Object>> snapRevert(@PathVariable Long id){return call(()->{Optional<FirewallSnapshot> s=snaps.findById(id);if(s.isEmpty())return Map.of("success",false);ipt.restoreDump(s.get().dumpText);ipt.persist();audit.log("admin","SNAPSHOT",id.toString(),"REVERT","");return Map.of("success",true);});}
         @GetMapping(value="/backup",produces=MediaType.TEXT_PLAIN_VALUE) public Mono<String> backup(){return call(backup::exportSql);}
@@ -643,19 +634,19 @@ public class InstallerFirewall {
         <script>
         const SECS=[['dashboard','Dashboard'],['rules','Regras'],['nat','Port Forwarding'],['zones','Zonas'],['groups','Grupos'],['protections','Proteções'],['logs','Logs'],['backup','Backup & Auditoria']];
         let cur='dashboard';nav();show('dashboard');
-        function nav(){document.getElementById('nav').innerHTML=SECS.map((s,i)=>'<button class="'+(s[0]===cur?'on':'')+'" onclick="show(\\''+s[0]+'\\')"><span class="n">0'+(i+1)+'</span>'+s[1]+'</button>').join('')}
+        function nav(){document.getElementById('nav').innerHTML=SECS.map((s,i)=>'<button class="'+(s[0]===cur?'on':'')+'" data-s="'+s[0]+'" onclick="show(this.dataset.s)"><span class="n">0'+(i+1)+'</span>'+s[1]+'</button>').join('')}
         async function api(p,o){const r=await fetch('/firewall/api'+p,Object.assign({headers:{'Content-Type':'application/json'}},o));return r.json()}
         function panic(){if(!confirm('Ativar MODO PÂNICO?'))return;api('/panic',{method:'POST'}).then(()=>show('dashboard'))}
         async function show(s){cur=s;nav();document.getElementById('secTitle').textContent=SECS.find(x=>x[0]===s)[1].toUpperCase();const c=document.getElementById('content');c.innerHTML='';
         if(s==='dashboard'){const[st,sm]=await Promise.all([api('/status'),api('/stats')]);
-        c.innerHTML='<div class="cards"><div class="card"><div class="k">BLOQUEADOS (24H)</div><div class="v amber">'+sm.blocked24+'</div><div class="s">+'+sm.rejected24+' rejeitados</div></div><div class="card"><div class="k">PERMITIDOS (24H)</div><div class="v green">'+sm.accepted24+'</div><div class="s">tráfego normal</div></div><div class="card"><div class="k">REGRAS ATIVAS</div><div class="v white">'+st.rulesActive+'</div><div class="s">'+st.pending+' pendentes</div></div><div class="card"><div class="k">TENTATIVAS SSH</div><div class="v amber">'+sm.sshAttempts+'</div><div class="s">bloqueadas</div></div></div><div class="panel"><h3>TRÁFEGO — BLOQUEADO x PERMITIDO</h3><div class="bars">'+sm.series.map(b=>'<div class="col"><div class="a" style="height:'+b.allowed/10+'%"></div><div class="b" style="height:'+b.blocked*3+'%"></div></div>').join('')+'</div></div><div class="panel"><h3>TOP IPs BLOQUEADOS</h3><table><tr><th>ORIGEM</th><th>PORTA</th><th>AÇÃO</th></tr>'+sm.topBlocked.map(t=>'<tr><td>'+t.ip+'</td><td>'+t.port+'</td><td><span class="pill drop">'+t.action+'</span></td></tr>').join('')+'</table></div>'}
-        if(s==='rules'){const rs=await api('/rules');c.innerHTML='<div class="panel"><h3>REGRAS</h3><button class="act" onclick="api(\\'/rules/apply\\',{method:\\'POST\\'}).then(()=>show(\\'rules\\'))">Aplicar</button> <button class="act" onclick="newRule()">+ Nova</button><table><tr><th>#</th><th>CHAIN</th><th>PROTO</th><th>PORTA</th><th>ORIGEM</th><th>AÇÃO</th><th>STATUS</th><th></th></tr>'+rs.sort((a,b)=>a.priority-b.priority).map(r=>'<tr><td>'+r.priority+'</td><td>'+r.chain+'</td><td>'+r.protocol+'</td><td>'+r.port+'</td><td>'+(r.srcCidr||'any')+'</td><td><span class="pill '+(r.action==='ACCEPT'?'accept':'drop')+'">'+r.action+'</span></td><td>'+(r.appliedAt?'aplicada':'pendente')+'</td><td><button class="act" onclick="api(\\'/rules/'+r.id+'\\',{method:\\'DELETE\\'}).then(()=>show(\\'rules\\'))">x</button></td></tr>').join('')+'</table></div>'}
-        if(s==='nat'){const[fs,ms]=await Promise.all([api('/forwards'),api('/masquerade')]);c.innerHTML='<div class="panel"><h3>PORT FORWARDING</h3><table><tr><th>IFACE</th><th>EXT</th><th>INTERNO</th><th></th></tr>'+fs.map(f=>'<tr><td>'+f.iface+'</td><td>'+f.externalPort+'</td><td>'+f.internalIp+':'+f.internalPort+'</td><td><button class="act" onclick="api(\\'/forwards/'+f.id+'\\',{method:\\'DELETE\\'}).then(()=>show(\\'nat\\'))">x</button></td></tr>').join('')+'</table><input id="fi" placeholder="iface"><input id="fe" placeholder="porta ext"><input id="fip" placeholder="ip int"><input id="fpo" placeholder="porta int"><button class="act" onclick="api(\\'/forwards\\',{method:\\'POST\\',body:JSON.stringify({iface:fi.value,externalPort:fe.value,protocol:\\'TCP\\',internalIp:fip.value,internalPort:fpo.value,enabled:true})}).then(()=>show(\\'nat\\'))">+ Forward</button></div><div class="panel"><h3>MASQUERADE</h3>'+ms.map(m=>'<div>'+m.iface+' <button class="act" onclick="api(\\'/masquerade/'+m.id+'\\',{method:\\'DELETE\\'}).then(()=>show(\\'nat\\'))">x</button></div>').join('')+'<input id="mi" placeholder="iface"><button class="act" onclick="api(\\'/masquerade\\',{method:\\'POST\\',body:JSON.stringify({iface:mi.value,enabled:true})}).then(()=>show(\\'nat\\'))">+ Masquerade</button></div>'}
-        if(s==='zones'){const z=await api('/zones');c.innerHTML='<div class="panel"><h3>ZONAS</h3>'+z.map(x=>'<div>'+x.name+' ('+x.trustLevel+'/'+x.defaultPolicy+')</div>').join('')+'<input id="zn" placeholder="nome"><select id="zt"><option>WAN</option><option>LAN</option><option>DMZ</option></select><button class="act" onclick="api(\\'/zones\\',{method:\\'POST\\',body:JSON.stringify({name:zn.value,trustLevel:zt.value,defaultPolicy:zt.value===\\'LAN\\'?\\'ACCEPT\\':\\'DROP\\'})}).then(()=>show(\\'zones\\'))">+ Zona</button></div>'}
-        if(s==='groups'){const[h,p]=await Promise.all([api('/hostgroups'),api('/portgroups')]);c.innerHTML='<div class="panel"><h3>GRUPOS DE HOSTS</h3>'+h.map(g=>'<div>'+g.name+': '+g.cidrs.join(', ')+'</div>').join('')+'<input id="hn" placeholder="nome"><input id="hc" placeholder="cidrs"><button class="act" onclick="api(\\'/hostgroups\\',{method:\\'POST\\',body:JSON.stringify({name:hn.value,cidrs:hc.value.split(\\',\\')})}).then(()=>show(\\'groups\\'))">+</button></div><div class="panel"><h3>GRUPOS DE PORTAS</h3>'+p.map(g=>'<div>'+g.name+': '+g.ports.join(', ')+'</div>').join('')+'<input id="pn" placeholder="nome"><input id="pc" placeholder="portas"><button class="act" onclick="api(\\'/portgroups\\',{method:\\'POST\\',body:JSON.stringify({name:pn.value,ports:pc.value.split(\\',\\')})}).then(()=>show(\\'groups\\'))">+</button></div>'}
-        if(s==='protections'){const[r,a,t]=await Promise.all([api('/ratelimits'),api('/autoban'),api('/threatlists')]);c.innerHTML='<div class="panel"><h3>RATE LIMIT</h3>'+r.map(x=>'<div>porta '+x.port+': '+x.ratePerSecond+'/s</div>').join('')+'<input id="rp" placeholder="porta"><input id="rr" value="20"><button class="act" onclick="api(\\'/ratelimits\\',{method:\\'POST\\',body:JSON.stringify({port:rp.value,ratePerSecond:+rr.value,enabled:true})}).then(()=>show(\\'protections\\'))">+</button></div><div class="panel"><h3>AUTO-BAN</h3>'+a.map(x=>'<div>'+x.maxAttempts+' tentativas / '+x.windowMinutes+'min</div>').join('')+'<button class="act" onclick="api(\\'/autoban\\',{method:\\'POST\\',body:JSON.stringify({maxAttempts:5,windowMinutes:5,banMinutes:30,targetPort:\\'22\\',enabled:true})}).then(()=>show(\\'protections\\'))">+ SSH</button></div><div class="panel"><h3>BLOCKLISTS</h3>'+t.map(x=>'<div>'+x.name+' ('+x.ipCount+') <button class="act" onclick="api(\\'/threatlists/'+x.id+'/refresh\\',{method:\\'POST\\'}).then(()=>show(\\'protections\\'))">atualizar</button></div>').join('')+'<input id="tn" placeholder="nome"><input id="tu" placeholder="url"><button class="act" onclick="api(\\'/threatlists\\',{method:\\'POST\\',body:JSON.stringify({name:tn.value,sourceUrl:tu.value,enabled:true})}).then(()=>show(\\'protections\\'))">+</button></div>'}
-        if(s==='logs'){c.innerHTML='<div class="panel"><h3>LOGS (tempo real)</h3><div id="live"></div><button class="act" onclick="location.href=\\'/firewall/api/logs/export?format=csv\\'">Exportar CSV</button></div>';const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/firewall-logs');ws.onmessage=e=>{live.textContent+=e.data;live.scrollTop=live.scrollHeight}}
-        if(s==='backup'){c.innerHTML='<div class="panel"><h3>BACKUP & RESTORE (BANCO)</h3><button class="act" onclick="location.href=\\'/firewall/api/backup\\'">Exportar dump SQL</button> <input type="file" id="bkf"><button class="act" onclick="restoreBk()">Restaurar</button><h3>SNAPSHOTS</h3><div id="snaps"></div><button class="act" onclick="api(\\'/audit\\').then(a=>alert(a.map(x=>x.action+\\' \\'+x.entityType).join(String.fromCharCode(10))))">Auditoria</button></div>';api('/snapshots').then(l=>snaps.innerHTML=l.map(x=>'<div>'+x.createdAt+' — '+x.label+' <button class="act" onclick="api(\\'/snapshots/revert/'+x.id+'\\',{method:\\'POST\\'}).then(()=>show(\\'backup\\'))">reverter</button></div>').join(''))}
+        c.innerHTML='<div class="cards"><div class="card"><div class="k">BLOQUEADOS (24H)</div><div class="v amber">'+sm.blocked24+'</div><div class="s">+'+sm.rejected24+' rejeitados</div></div><div class="card"><div class="k">PERMITIDOS (24H)</div><div class="v green">'+sm.accepted24+'</div><div class="s">tráfego normal</div></div><div class="card"><div class="k">REGRAS ATIVAS</div><div class="v white">'+st.rulesActive+'</div><div class="s">'+st.pending+' pendentes</div></div><div class="card"><div class="k">TENTATIVAS SSH</div><div class="v amber">'+sm.sshAttempts+'</div><div class="s">bloqueadas</div></div></div><div class="panel"><h3>TRÁFEGO — BLOQUEADO x PERMITIDO</h3><div class="bars">'+sm.series.map(b=>'<div class="col"><div class="a" style="height:'+Math.min(b.allowed/10,100)+'%"></div><div class="b" style="height:'+Math.min(b.blocked*3,100)+'%"></div></div>').join('')+'</div></div><div class="panel"><h3>TOP IPs BLOQUEADOS</h3><table><tr><th>ORIGEM</th><th>PORTA</th><th>AÇÃO</th></tr>'+sm.topBlocked.map(t=>'<tr><td>'+t.ip+'</td><td>'+t.port+'</td><td><span class="pill drop">'+t.action+'</span></td></tr>').join('')+'</table></div>'}
+        if(s==='rules'){const rs=await api('/rules');c.innerHTML='<div class="panel"><h3>REGRAS</h3><button class="act" onclick="api(&#39;/rules/apply&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;rules&#39;))">Aplicar</button> <button class="act" onclick="newRule()">+ Nova</button><table><tr><th>#</th><th>CHAIN</th><th>PROTO</th><th>PORTA</th><th>ORIGEM</th><th>AÇÃO</th><th>STATUS</th><th></th></tr>'+rs.sort((a,b)=>a.priority-b.priority).map(r=>'<tr><td>'+r.priority+'</td><td>'+r.chain+'</td><td>'+r.protocol+'</td><td>'+r.port+'</td><td>'+(r.srcCidr||'any')+'</td><td><span class="pill '+(r.action==='ACCEPT'?'accept':'drop')+'">'+r.action+'</span></td><td>'+(r.appliedAt?'aplicada':'pendente')+'</td><td><button class="act" onclick="api(&#39;/rules/'+r.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;rules&#39;))">x</button></td></tr>').join('')+'</table></div>'}
+        if(s==='nat'){const[fs,ms]=await Promise.all([api('/forwards'),api('/masquerade')]);c.innerHTML='<div class="panel"><h3>PORT FORWARDING</h3><table><tr><th>IFACE</th><th>EXT</th><th>INTERNO</th><th></th></tr>'+fs.map(f=>'<tr><td>'+f.iface+'</td><td>'+f.externalPort+'</td><td>'+f.internalIp+':'+f.internalPort+'</td><td><button class="act" onclick="api(&#39;/forwards/'+f.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;nat&#39;))">x</button></td></tr>').join('')+'</table><input id="fi" placeholder="iface"><input id="fe" placeholder="porta ext"><input id="fip" placeholder="ip int"><input id="fpo" placeholder="porta int"><button class="act" onclick="api(&#39;/forwards&#39;,{method:&#39;POST&#39;,body:JSON.stringify({iface:fi.value,externalPort:fe.value,protocol:&#39;TCP&#39;,internalIp:fip.value,internalPort:fpo.value,enabled:true})}).then(()=>show(&#39;nat&#39;))">+ Forward</button></div><div class="panel"><h3>MASQUERADE</h3>'+ms.map(m=>'<div>'+m.iface+' <button class="act" onclick="api(&#39;/masquerade/'+m.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;nat&#39;))">x</button></div>').join('')+'<input id="mi" placeholder="iface"><button class="act" onclick="api(&#39;/masquerade&#39;,{method:&#39;POST&#39;,body:JSON.stringify({iface:mi.value,enabled:true})}).then(()=>show(&#39;nat&#39;))">+ Masquerade</button></div>'}
+        if(s==='zones'){const z=await api('/zones');c.innerHTML='<div class="panel"><h3>ZONAS</h3>'+z.map(x=>'<div>'+x.name+' ('+x.trustLevel+'/'+x.defaultPolicy+')</div>').join('')+'<input id="zn" placeholder="nome"><select id="zt"><option>WAN</option><option>LAN</option><option>DMZ</option></select><button class="act" onclick="api(&#39;/zones&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:zn.value,trustLevel:zt.value,defaultPolicy:zt.value===&#39;LAN&#39;?&#39;ACCEPT&#39;:&#39;DROP&#39;})}).then(()=>show(&#39;zones&#39;))">+ Zona</button></div>'}
+        if(s==='groups'){const[h,p]=await Promise.all([api('/hostgroups'),api('/portgroups')]);c.innerHTML='<div class="panel"><h3>GRUPOS DE HOSTS</h3>'+h.map(g=>'<div>'+g.name+': '+g.cidrs.join(', ')+'</div>').join('')+'<input id="hn" placeholder="nome"><input id="hc" placeholder="cidrs separados por vírgula"><button class="act" onclick="api(&#39;/hostgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:hn.value,cidrs:hn.value?hc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))">+</button></div><div class="panel"><h3>GRUPOS DE PORTAS</h3>'+p.map(g=>'<div>'+g.name+': '+g.ports.join(', ')+'</div>').join('')+'<input id="pn" placeholder="nome"><input id="pc" placeholder="portas"><button class="act" onclick="api(&#39;/portgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:pn.value,ports:pn.value?pc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))">+</button></div>'}
+        if(s==='protections'){const[r,a,t]=await Promise.all([api('/ratelimits'),api('/autoban'),api('/threatlists')]);c.innerHTML='<div class="panel"><h3>RATE LIMIT</h3>'+r.map(x=>'<div>porta '+x.port+': '+x.ratePerSecond+'/s</div>').join('')+'<input id="rp" placeholder="porta"><input id="rr" value="20"><button class="act" onclick="api(&#39;/ratelimits&#39;,{method:&#39;POST&#39;,body:JSON.stringify({port:rp.value,ratePerSecond:+rr.value,enabled:true})}).then(()=>show(&#39;protections&#39;))">+</button></div><div class="panel"><h3>AUTO-BAN</h3>'+a.map(x=>'<div>'+x.maxAttempts+' tentativas / '+x.windowMinutes+'min</div>').join('')+'<button class="act" onclick="api(&#39;/autoban&#39;,{method:&#39;POST&#39;,body:JSON.stringify({maxAttempts:5,windowMinutes:5,banMinutes:30,targetPort:&#39;22&#39;,enabled:true})}).then(()=>show(&#39;protections&#39;))">+ SSH</button></div><div class="panel"><h3>BLOCKLISTS</h3>'+t.map(x=>'<div>'+x.name+' ('+x.ipCount+') <button class="act" onclick="api(&#39;/threatlists/'+x.id+'/refresh&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;protections&#39;))">atualizar</button></div>').join('')+'<input id="tn" placeholder="nome"><input id="tu" placeholder="url"><button class="act" onclick="api(&#39;/threatlists&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:tn.value,sourceUrl:tu.value,enabled:true})}).then(()=>show(&#39;protections&#39;))">+</button></div>'}
+        if(s==='logs'){c.innerHTML='<div class="panel"><h3>LOGS (tempo real)</h3><div id="live"></div><button class="act" onclick="location.href=&#39;/firewall/api/logs/export?format=csv&#39;">Exportar CSV</button></div>';const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/firewall-logs');ws.onmessage=e=>{live.textContent+=e.data;live.scrollTop=live.scrollHeight}}
+        if(s==='backup'){c.innerHTML='<div class="panel"><h3>BACKUP & RESTORE (BANCO)</h3><button class="act" onclick="location.href=&#39;/firewall/api/backup&#39;">Exportar dump SQL</button> <input type="file" id="bkf"><button class="act" onclick="restoreBk()">Restaurar</button><h3>SNAPSHOTS</h3><div id="snaps"></div><button class="act" onclick="api(&#39;/audit&#39;).then(a=>alert(a.map(x=>x.action+&#39; &#39;+x.entityType).join(String.fromCharCode(10))))">Auditoria</button></div>';api('/snapshots').then(l=>snaps.innerHTML=l.map(x=>'<div>'+x.createdAt+' — '+x.label+' <button class="act" onclick="api(&#39;/snapshots/revert/'+x.id+'&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;backup&#39;))">reverter</button></div>').join(''))}
         }
         async function restoreBk(){const f=bkf.files[0];if(!f)return;const txt=await f.text();await api('/backup/restore',{method:'POST',headers:{'Content-Type':'text/plain'},body:txt});show('backup')}
         function newRule(){const r={chain:prompt('Chain','INPUT'),protocol:prompt('Protocolo','TCP'),port:prompt('Porta',''),srcCidr:prompt('Origem CIDR',''),action:prompt('Ação','ACCEPT'),enabled:true,comment:''};api('/rules',{method:'POST',body:JSON.stringify(r)}).then(()=>show('rules'))}
