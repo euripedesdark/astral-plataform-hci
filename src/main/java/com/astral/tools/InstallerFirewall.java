@@ -16,6 +16,7 @@ public class InstallerFirewall {
     private static volatile boolean done = false;
     private static volatile boolean needSetup = true;
     private static volatile String dbUser = "", dbPass = "";
+    private static final String ASTRAL_GROUP = "astral"; // MESMO GRUPO do instalador principal
 
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: use sudo"); System.exit(1); }
@@ -24,7 +25,7 @@ public class InstallerFirewall {
         s.createContext("/install.html", InstallerFirewall::ui);
         s.createContext("/api/stream", InstallerFirewall::stream);
         s.createContext("/api/setup-db", InstallerFirewall::setupDb);
-        s.setExecutor(Executors.newCachedThreadPool()); // CORRIGIDO: não esgota com abas abertas
+        s.setExecutor(Executors.newCachedThreadPool());
         s.start();
         System.out.println("=".repeat(60));
         System.out.println("[ASTRAL FIREWALL] Instalador em http://" + getLocalIP() + ":" + PORT);
@@ -38,10 +39,11 @@ public class InstallerFirewall {
             up(5, "Detectando distribuição...");
             String distro = detectDistro();
 
-            up(10, "Garantindo iptables/ipset persistentes...");
+            up(10, "Garantindo iptables/ipset persistentes + porta da UI liberada...");
             if (distro.equals("debian")) run("DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent ipset", true);
             else if (distro.equals("arch")) run("pacman -S --noconfirm iptables-nft ipset", true);
             else run("dnf install -y iptables-services ipset", true);
+            run("iptables -I INPUT 1 -p tcp --dport " + PORT + " -j ACCEPT", false);
 
             up(20, "Preencha usuário e senha do banco no navegador...");
             while (needSetup) sleep(500);
@@ -54,25 +56,52 @@ public class InstallerFirewall {
 
             up(50, "Escrevendo projeto do módulo (sources + pom + template)...");
             writeProject();
+            fixOwnership();
 
             up(70, "Compilando módulo (mvn package)...");
-            run("cd " + app() + "/fabric/firewall && mvn -B -DskipTests clean package", true);
+            String mvnOut = run("cd " + app() + "/fabric/firewall && mvn -B -DskipTests clean package", true);
+            fixOwnership();
+
+            // VERIFICAÇÃO: o jar foi realmente gerado?
+            Path jarPath = Paths.get(app(), "fabric", "firewall", "target", "astral-firewall-1.0.0.jar");
+            if (!Files.exists(jarPath)) {
+                up(100, "ERRO CRÍTICO: mvn package não gerou o JAR. Verifique a saída acima.");
+                System.err.println("[FALHA] JAR esperado em " + jarPath + " não existe.");
+                System.err.println("[FALHA] Últimas 30 linhas do mvn:");
+                if (mvnOut != null) {
+                    String[] lines = mvnOut.split("\n");
+                    for (int i = Math.max(0, lines.length - 30); i < lines.length; i++) System.err.println("  " + lines[i]);
+                }
+                done = true; return;
+            }
+            System.out.println("[OK] JAR gerado: " + jarPath + " (" + Files.size(jarPath) + " bytes)");
 
             up(80, "Deploy em /opt/astral-firewall + systemd service...");
-            deploy();
+            deploy(jarPath);
 
             up(90, "Aguardando 127.0.0.1:8040 e conferindo tabelas...");
             boolean ok = false;
             for (int i = 0; i < 30; i++) { try (var sk = new java.net.Socket()) { sk.connect(new InetSocketAddress("127.0.0.1", 8040), 500); ok = true; break; } catch (IOException e) { sleep(1000); } }
             String n = run("PGPASSWORD='" + dbPass + "' psql -h 127.0.0.1 -U " + dbUser + " -d astral -t -c \"select count(*) from information_schema.tables where table_schema='public' and (table_name like 'firewall%' or table_name like 'port_forward' or table_name like 'masquerade%' or table_name like 'audit_log')\"", false);
-            System.out.println("[OK] Tabelas do firewall no banco: " + n.trim());
+            System.out.println("[OK] Tabelas do firewall no banco: " + (n == null ? "?" : n.trim()));
 
-            up(100, ok ? "Módulo Firewall instalado! Acesse http://" + getLocalIP() + "/firewall" : "AVISO: 8040 não respondeu. journalctl -u astral-firewall");
+            up(100, ok ? "Módulo Firewall instalado! Acesse http://" + getLocalIP() + "/firewall" : "AVISO: 8040 não respondeu. journalctl -u astral-firewall.service");
             done = true;
         } catch (Exception e) { e.printStackTrace(); up(100, "ERRO: " + e.getMessage()); done = true; }
     }
 
     private static String app() { return System.getProperty("user.dir"); }
+
+    // Mesma lógica do instalador principal: dono + grupo astral, setgid em diretórios
+    private static void fixOwnership() {
+        try {
+            String owner = Files.getOwner(Paths.get(app())).getName();
+            run("chown -R " + owner + ":" + ASTRAL_GROUP + " " + app() + "/fabric/firewall 2>/dev/null || true", false);
+            run("find " + app() + "/fabric/firewall -type d -exec chmod 2775 {} \\; 2>/dev/null || true", false);
+            run("find " + app() + "/fabric/firewall -type f -exec chmod 0664 {} \\; 2>/dev/null || true", false);
+            System.out.println("[OK] Ownership: " + owner + ":" + ASTRAL_GROUP);
+        } catch (IOException ignored) {}
+    }
 
     private static void createRoleDb() {
         run("runuser -u postgres -- psql -c \"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='" + dbUser + "') THEN CREATE ROLE " + dbUser + " LOGIN SUPERUSER PASSWORD '" + dbPass + "'; ELSE ALTER ROLE " + dbUser + " WITH LOGIN SUPERUSER PASSWORD '" + dbPass + "'; END IF; END $$;\"", true);
@@ -86,24 +115,43 @@ public class InstallerFirewall {
         run("runuser -u postgres -- psql -d astral -f " + f, true);
     }
 
-    private static void deploy() {
-        run("mkdir -p /opt/astral-firewall && cp " + app() + "/fabric/firewall/target/astral-firewall-1.0.0.jar /opt/astral-firewall/", true);
+    // Deploy: /opt com 2770 root:astral, /etc com properties 0640 root:astral,
+    // service roda com Group=astral (só grupo lê a senha — root também por ser dono).
+    private static void deploy(Path jarPath) {
+        run("mkdir -p /opt/astral-firewall", true);
+        run("cp " + jarPath.toAbsolutePath() + " /opt/astral-firewall/", true);
+        // Permissões estilo /opt/astral-platform: root:astral 2770, jar 0660
+        run("chown -R root:" + ASTRAL_GROUP + " /opt/astral-firewall", true);
+        run("chmod 2770 /opt/astral-firewall", true);
+        run("chmod 0660 /opt/astral-firewall/*.jar 2>/dev/null || true", false);
+
         try {
             Files.createDirectories(Paths.get("/etc/astral"));
-            Files.writeString(Paths.get("/etc/astral/firewall.properties"),
+            Path props = Paths.get("/etc/astral/firewall.properties");
+            Files.writeString(props,
                 "server.port=8040\nserver.address=127.0.0.1\n"
               + "spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral\n"
               + "spring.datasource.username=" + dbUser + "\n"
               + "spring.datasource.password=" + dbPass + "\n"
               + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
               + "spring.jpa.hibernate.ddl-auto=update\nspring.thymeleaf.cache=false\n");
+            // SEGURANÇA: só root e grupo astral leem a senha
+            run("chown root:" + ASTRAL_GROUP + " " + props, false);
+            run("chmod 0640 " + props, false);
+            System.out.println("[OK] " + props + " com 0640 root:" + ASTRAL_GROUP);
         } catch (IOException ignored) {}
-        String javaBin = run("readlink -f $(which java)", false).trim();
+
+        String javaBin = run("readlink -f $(which java)", false);
+        if (javaBin != null) javaBin = javaBin.trim(); else javaBin = "/usr/bin/java";
+
         try {
             Files.writeString(Paths.get("/etc/systemd/system/astral-firewall.service"),
-                "[Unit]\nDescription=Astral Firewall Module\nAfter=network.target postgresql.service\n\n"
-              + "[Service]\nType=simple\nUser=root\nExecStart=" + javaBin + " -jar /opt/astral-firewall/astral-firewall-1.0.0.jar --spring.config.location=file:/etc/astral/firewall.properties\n"
-              + "Restart=always\nRestartSec=10\n\n[Install]\nWantedBy=multi-user.target\n");
+                "[Unit]\nDescription=Astral Firewall Module\nAfter=network.target postgresql.service astral-platform.service\n\n"
+              + "[Service]\nType=simple\nUser=root\nGroup=" + ASTRAL_GROUP + "\n"
+              + "WorkingDirectory=/opt/astral-firewall\n"
+              + "ExecStart=" + javaBin + " -jar /opt/astral-firewall/astral-firewall-1.0.0.jar --spring.config.location=file:/etc/astral/firewall.properties\n"
+              + "Restart=always\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\nUMask=0007\n\n"
+              + "[Install]\nWantedBy=multi-user.target\n");
         } catch (IOException ignored) {}
         run("systemctl daemon-reload && systemctl enable astral-firewall && systemctl restart astral-firewall", false);
     }
@@ -141,7 +189,6 @@ public class InstallerFirewall {
             </script></body></html>""", "text/html");
     }
 
-    // CORRIGIDO: libera a thread quando a aba fecha (IOException no write)
     private static void stream(HttpExchange ex) throws IOException {
         ex.getResponseHeaders().set("Content-Type", "text/event-stream");
         ex.getResponseHeaders().set("Cache-Control", "no-cache");
@@ -154,7 +201,6 @@ public class InstallerFirewall {
                 Thread.sleep(500);
             }
         } catch (IOException clientGone) {
-            // aba fechou; thread liberada
         } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
     }
 
@@ -233,22 +279,24 @@ public class InstallerFirewall {
         CREATE TABLE IF NOT EXISTS firewall_state (key VARCHAR(40) PRIMARY KEY, value VARCHAR(80));
         """;
 
-    private static final String FW_POM = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-        <modelVersion>4.0.0</modelVersion>
-        <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.2.0</version><relativePath/></parent>
-        <groupId>com.astral</groupId><artifactId>astral-firewall</artifactId><version>1.0.0</version>
-        <properties><java.version>21</java.version></properties>
-        <dependencies>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-thymeleaf</artifactId></dependency>
-        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
-        <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>
-        </dependencies>
-        <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
-        </project>
-        """;
+    // POM com tags XML completas (era o bug que fazia o mvn falhar)
+    private static final String FW_POM =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
+        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n" +
+        " xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n" +
+        "<modelVersion>4.0.0</modelVersion>\n" +
+        "<parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.2.0</version><relativePath/></parent>\n" +
+        "<groupId>com.astral</groupId><artifactId>astral-firewall</artifactId><version>1.0.0</version>\n" +
+        "<properties><java.version>21</java.version></properties>\n" +
+        "<dependencies>\n" +
+        "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>\n" +
+        "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-thymeleaf</artifactId></dependency>\n" +
+        "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>\n" +
+        "<dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>\n" +
+        "</dependencies>\n" +
+        "<build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>\n" +
+        "</project>\n";
+
     private static final String FW_PROPS = """
         server.port=8040
         server.address=127.0.0.1
@@ -459,7 +507,7 @@ public class InstallerFirewall {
         m.put("blocked24",blocked); m.put("rejected24",rejected); m.put("accepted24",accepted); m.put("sshAttempts",ssh);
         List<Map<String,Object>> topList=new ArrayList<>();
         top.entrySet().stream().sorted((a,b)->b.getValue()[0]-a.getValue()[0]).limit(6).forEach(e->{
-        String[] p=e.getKey().split("|"); Map<String,Object> row=new HashMap<>(); row.put("ip",p[0]); row.put("port",p.length>1?p[1]:""); row.put("action","DROP"); row.put("count",e.getValue()[0]); topList.add(row);});
+        String[] p=e.getKey().split("\\|"); Map<String,Object> row=new HashMap<>(); row.put("ip",p[0]); row.put("port",p.length>1?p[1]:""); row.put("action","DROP"); row.put("count",e.getValue()[0]); topList.add(row);});
         m.put("topBlocked",topList);
         List<Map<String,Object>> series=new ArrayList<>(); for(int i=23;i>=0;i--){Map<String,Object> b=new HashMap<>();b.put("h",i);b.put("blocked",hourB[i]);b.put("allowed",hourA[i]);series.add(b);}
         m.put("series",series); return m;
@@ -507,7 +555,7 @@ public class InstallerFirewall {
         @GetMapping("/rules") public Mono<List<FirewallRule>> rules(){return call(rules::findAll);}
         @PostMapping("/rules") public Mono<?> saveRule(@RequestBody FirewallRule r){return call(()->{if(r.priority==0)r.priority=(int)rules.count()+1;r.appliedAt=null;audit.log("admin","RULE",String.valueOf(r.id),"SAVE",r.chain+"/"+r.action);return Map.of("saved",rules.save(r),"sync",ipt.applyFromDb("admin"));});}
         @DeleteMapping("/rules/{id}") public Mono<Map<String,Object>> delRule(@PathVariable Long id){return call(()->{rules.deleteById(id);audit.log("admin","RULE",id.toString(),"DELETE","");return ipt.applyFromDb("admin");});}
-        @PostMapping("/rules/reorder") public Mono<Map<String,Object>> reorder(@RequestBody Map<String,Object> body){return call(()->{String chain=(String)body.get("chain");List<Number> ids=(List<Number>)body.get("orderedIds");int p=1;
+        @PostMapping("/rules/reorder") public Mono<Map<String,Object>> reorder(@RequestBody Map<String,Object> body){return call(()->{String chain=(String)body.get("chain");@SuppressWarnings("unchecked") List<Number> ids=(List<Number>)body.get("orderedIds");int p=1;
         for(Number n:ids){rules.findById(n.longValue()).ifPresent(r->{if(r.chain.equals(chain)){r.priority=p++;r.appliedAt=null;rules.save(r);}});}return ipt.applyFromDb("admin");});}
         @PostMapping("/rules/apply") public Mono<Map<String,Object>> apply(){return call(()->ipt.applyFromDb("admin"));}
         @GetMapping("/simulate") public Mono<Map<String,Object>> sim(@RequestParam String proto,@RequestParam String port,@RequestParam(defaultValue="0.0.0.0") String src,@RequestParam(defaultValue="0.0.0.0") String dst){return call(()->{for(FirewallRule r:rules.findByChainOrderByPriority("INPUT"))if(r.enabled&&match(r,proto,port,src,dst))return Map.of("match",true,"rule",r);return Map.<String,Object>of("match",false,"policy","DROP");});}
@@ -643,7 +691,7 @@ public class InstallerFirewall {
         if(s==='rules'){const rs=await api('/rules');c.innerHTML='<div class="panel"><h3>REGRAS</h3><button class="act" onclick="api(&#39;/rules/apply&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;rules&#39;))">Aplicar</button> <button class="act" onclick="newRule()">+ Nova</button><table><tr><th>#</th><th>CHAIN</th><th>PROTO</th><th>PORTA</th><th>ORIGEM</th><th>AÇÃO</th><th>STATUS</th><th></th></tr>'+rs.sort((a,b)=>a.priority-b.priority).map(r=>'<tr><td>'+r.priority+'</td><td>'+r.chain+'</td><td>'+r.protocol+'</td><td>'+r.port+'</td><td>'+(r.srcCidr||'any')+'</td><td><span class="pill '+(r.action==='ACCEPT'?'accept':'drop')+'">'+r.action+'</span></td><td>'+(r.appliedAt?'aplicada':'pendente')+'</td><td><button class="act" onclick="api(&#39;/rules/'+r.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;rules&#39;))">x</button></td></tr>').join('')+'</table></div>'}
         if(s==='nat'){const[fs,ms]=await Promise.all([api('/forwards'),api('/masquerade')]);c.innerHTML='<div class="panel"><h3>PORT FORWARDING</h3><table><tr><th>IFACE</th><th>EXT</th><th>INTERNO</th><th></th></tr>'+fs.map(f=>'<tr><td>'+f.iface+'</td><td>'+f.externalPort+'</td><td>'+f.internalIp+':'+f.internalPort+'</td><td><button class="act" onclick="api(&#39;/forwards/'+f.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;nat&#39;))">x</button></td></tr>').join('')+'</table><input id="fi" placeholder="iface"><input id="fe" placeholder="porta ext"><input id="fip" placeholder="ip int"><input id="fpo" placeholder="porta int"><button class="act" onclick="api(&#39;/forwards&#39;,{method:&#39;POST&#39;,body:JSON.stringify({iface:fi.value,externalPort:fe.value,protocol:&#39;TCP&#39;,internalIp:fip.value,internalPort:fpo.value,enabled:true})}).then(()=>show(&#39;nat&#39;))">+ Forward</button></div><div class="panel"><h3>MASQUERADE</h3>'+ms.map(m=>'<div>'+m.iface+' <button class="act" onclick="api(&#39;/masquerade/'+m.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;nat&#39;))">x</button></div>').join('')+'<input id="mi" placeholder="iface"><button class="act" onclick="api(&#39;/masquerade&#39;,{method:&#39;POST&#39;,body:JSON.stringify({iface:mi.value,enabled:true})}).then(()=>show(&#39;nat&#39;))">+ Masquerade</button></div>'}
         if(s==='zones'){const z=await api('/zones');c.innerHTML='<div class="panel"><h3>ZONAS</h3>'+z.map(x=>'<div>'+x.name+' ('+x.trustLevel+'/'+x.defaultPolicy+')</div>').join('')+'<input id="zn" placeholder="nome"><select id="zt"><option>WAN</option><option>LAN</option><option>DMZ</option></select><button class="act" onclick="api(&#39;/zones&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:zn.value,trustLevel:zt.value,defaultPolicy:zt.value===&#39;LAN&#39;?&#39;ACCEPT&#39;:&#39;DROP&#39;})}).then(()=>show(&#39;zones&#39;))">+ Zona</button></div>'}
-        if(s==='groups'){const[h,p]=await Promise.all([api('/hostgroups'),api('/portgroups')]);c.innerHTML='<div class="panel"><h3>GRUPOS DE HOSTS</h3>'+h.map(g=>'<div>'+g.name+': '+g.cidrs.join(', ')+'</div>').join('')+'<input id="hn" placeholder="nome"><input id="hc" placeholder="cidrs separados por vírgula"><button class="act" onclick="api(&#39;/hostgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:hn.value,cidrs:hn.value?hc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))">+</button></div><div class="panel"><h3>GRUPOS DE PORTAS</h3>'+p.map(g=>'<div>'+g.name+': '+g.ports.join(', ')+'</div>').join('')+'<input id="pn" placeholder="nome"><input id="pc" placeholder="portas"><button class="act" onclick="api(&#39;/portgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:pn.value,ports:pn.value?pc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))">+</button></div>'}
+        if(s==='groups'){const[h,p]=await Promise.all([api('/hostgroups'),api('/portgroups')]);c.innerHTML='<div class="panel"><h3>GRUPOS DE HOSTS</h3>'+h.map(g=>'<div>'+g.name+': '+g.cidrs.join(', ')+'</div>').join('')+'<input id="hn" placeholder="nome"><input id="hc" placeholder="cidrs separados por vírgula"><button class="act" onclick="api(&#39;/hostgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:hn.value,cidrs:hc.value?hc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))">+</button></div><div class="panel"><h3>GRUPOS DE PORTAS</h3>'+p.map(g=>'<div>'+g.name+': '+g.ports.join(', ')+'</div>').join('')+'<input id="pn" placeholder="nome"><input id="pc" placeholder="portas"><button class="act" onclick="api(&#39;/portgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:pn.value,ports:pc.value?pc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))">+</button></div>'}
         if(s==='protections'){const[r,a,t]=await Promise.all([api('/ratelimits'),api('/autoban'),api('/threatlists')]);c.innerHTML='<div class="panel"><h3>RATE LIMIT</h3>'+r.map(x=>'<div>porta '+x.port+': '+x.ratePerSecond+'/s</div>').join('')+'<input id="rp" placeholder="porta"><input id="rr" value="20"><button class="act" onclick="api(&#39;/ratelimits&#39;,{method:&#39;POST&#39;,body:JSON.stringify({port:rp.value,ratePerSecond:+rr.value,enabled:true})}).then(()=>show(&#39;protections&#39;))">+</button></div><div class="panel"><h3>AUTO-BAN</h3>'+a.map(x=>'<div>'+x.maxAttempts+' tentativas / '+x.windowMinutes+'min</div>').join('')+'<button class="act" onclick="api(&#39;/autoban&#39;,{method:&#39;POST&#39;,body:JSON.stringify({maxAttempts:5,windowMinutes:5,banMinutes:30,targetPort:&#39;22&#39;,enabled:true})}).then(()=>show(&#39;protections&#39;))">+ SSH</button></div><div class="panel"><h3>BLOCKLISTS</h3>'+t.map(x=>'<div>'+x.name+' ('+x.ipCount+') <button class="act" onclick="api(&#39;/threatlists/'+x.id+'/refresh&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;protections&#39;))">atualizar</button></div>').join('')+'<input id="tn" placeholder="nome"><input id="tu" placeholder="url"><button class="act" onclick="api(&#39;/threatlists&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:tn.value,sourceUrl:tu.value,enabled:true})}).then(()=>show(&#39;protections&#39;))">+</button></div>'}
         if(s==='logs'){c.innerHTML='<div class="panel"><h3>LOGS (tempo real)</h3><div id="live"></div><button class="act" onclick="location.href=&#39;/firewall/api/logs/export?format=csv&#39;">Exportar CSV</button></div>';const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/firewall-logs');ws.onmessage=e=>{live.textContent+=e.data;live.scrollTop=live.scrollHeight}}
         if(s==='backup'){c.innerHTML='<div class="panel"><h3>BACKUP & RESTORE (BANCO)</h3><button class="act" onclick="location.href=&#39;/firewall/api/backup&#39;">Exportar dump SQL</button> <input type="file" id="bkf"><button class="act" onclick="restoreBk()">Restaurar</button><h3>SNAPSHOTS</h3><div id="snaps"></div><button class="act" onclick="api(&#39;/audit&#39;).then(a=>alert(a.map(x=>x.action+&#39; &#39;+x.entityType).join(String.fromCharCode(10))))">Auditoria</button></div>';api('/snapshots').then(l=>snaps.innerHTML=l.map(x=>'<div>'+x.createdAt+' — '+x.label+' <button class="act" onclick="api(&#39;/snapshots/revert/'+x.id+'&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;backup&#39;))">reverter</button></div>').join(''))}
