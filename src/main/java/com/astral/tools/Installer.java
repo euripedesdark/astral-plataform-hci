@@ -119,12 +119,10 @@ public class Installer {
     }
 
     private static void writeIfMissing(Path p, String content) throws IOException {
-        if (!Files.exists(p)) {
-            Files.writeString(p, content);
-            System.out.println("[OK] " + p.getFileName() + " escrito.");
-        } else {
-            System.out.println("[OK] " + p.getFileName() + " já existe (mantido).");
-        }
+        // SEMPRE sobrescreve: o instalador é a fonte da verdade dos arquivos gerados
+        Files.createDirectories(p.getParent());
+        Files.writeString(p, content);
+        System.out.println("[OK] " + p.getFileName() + " escrito/atualizado.");
     }
 
     private static void copyStaticFrontend() {
