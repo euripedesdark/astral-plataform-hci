@@ -904,8 +904,8 @@ public class Installer {
         }
         """;
 
-    // home.html CORRIGIDO: modal escondido no load (.modal.hidden) + terminal
-    // conectando só no clique do card, fechando no X e no Destacar
+    // home.html: SEM label duplicado — o PNG já traz o título desenhado;
+    // a imagem preenche o card inteiro (object-fit:cover). Modal corrigido.
     private static final String DEFAULT_HOME_HTML = """
         <!DOCTYPE html>
         <html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
@@ -930,11 +930,9 @@ public class Installer {
         flex:0 0 calc((100% - (var(--cols) - 1)*var(--gap))/var(--cols) - .5px);
         aspect-ratio:3/1;border:2px solid var(--c);border-radius:14px;background:rgba(4,10,22,.66);
         box-shadow:0 0 10px var(--c),inset 0 0 22px rgba(0,0,0,.55);
-        color:#fff;text-decoration:none;padding:10px 16px;
-        display:flex;flex-direction:column;gap:6px;min-height:0;transition:transform .15s}
+        padding:0;overflow:hidden;transition:transform .15s}
         .card:hover{transform:translateY(-3px)}
-        .card .label{font-weight:600;font-size:clamp(13px,1.3vw,21px);text-align:left}
-        .card img{flex:1;min-height:0;width:100%;object-fit:contain}
+        .card img{width:100%;height:100%;object-fit:cover;display:block}
         .card[data-id="dns"]{--c:#57e389}.card[data-id="firewall"]{--c:#ff5c5c}
         .card[data-id="proxy"]{--c:#ffb347}.card[data-id="domain"]{--c:#ff7b7b}
         .card[data-id="postgres"]{--c:#4fa3ff}.card[data-id="web"]{--c:#c77bff}
@@ -954,7 +952,6 @@ public class Installer {
         <h1 th:text="${pageTitle}">ASTRAL PLATFORM</h1>
         <div class="grid" id="grid">
         <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}" th:data-id="${btn.id}" th:title="${btn.label}">
-        <div class="label" th:text="${btn.label}">Card</div>
         <img th:src="@{'/images/' + ${btn.image}}" alt="" onerror="this.style.display='none'">
         </a>
         </div>
