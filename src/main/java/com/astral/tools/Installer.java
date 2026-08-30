@@ -13,6 +13,7 @@ public class Installer {
     private static final int PORT = 5000;
     private static final AtomicInteger progress = new AtomicInteger(0);
     private static String status = "Aguardando conexão...";
+    private static volatile boolean installationComplete = false;
 
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: Execute com sudo"); System.exit(1); }
@@ -27,6 +28,7 @@ public class Installer {
         server.createContext("/", Installer::handleIndex);
         server.createContext("/install.html", Installer::handleInstallHTML);
         server.createContext("/api/stream", Installer::handleStream);
+        server.createContext("/api/setup-db", Installer::handleSetupDB);
         server.setExecutor(Executors.newFixedThreadPool(8));
         server.start();
 
@@ -84,13 +86,189 @@ public class Installer {
             updateProgress(95, "Deploy em /opt + systemd service (porta 80)...");
             deploy();
 
-            updateProgress(100, "Instalação concluída!");
-            Thread.sleep(10000);
-            System.exit(0);
+            updateProgress(100, "Instalação concluída! Configure o banco de dados.");
+            installationComplete = true;
+
+            // Mantém o servidor rodando para o formulário de setup-db
+            while (true) {
+                Thread.sleep(1000);
+            }
         } catch (Exception e) {
             e.printStackTrace();
             updateProgress(100, "ERRO: " + e.getMessage());
         }
+    }
+
+    // ============================================================
+    // HANDLER DO FORMULÁRIO DE SETUP-DB
+    // ============================================================
+    private static void handleSetupDB(HttpExchange ex) throws IOException {
+        if (!"POST".equals(ex.getRequestMethod())) {
+            sendResponse(ex, 405, "{\"error\":\"Method not allowed\"}", "application/json");
+            return;
+        }
+
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(ex.getRequestBody()))) {
+            StringBuilder body = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) body.append(line);
+
+            String json = body.toString();
+            String username = extractJsonValue(json, "username");
+            String password = extractJsonValue(json, "password");
+
+            if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
+                sendResponse(ex, 400, "{\"error\":\"Dados inválidos\"}", "application/json");
+                return;
+            }
+
+            // Cria usuário e banco
+            runCmd("sudo -i -u postgres psql -c \"CREATE USER " + username + " WITH PASSWORD '" + password + "' SUPERUSER;\"", true);
+            runCmd("sudo -i -u postgres psql -c \"CREATE DATABASE astral OWNER " + username + ";\"", true);
+
+            // Injeta application.properties
+            Path props = Paths.get("/etc/astral/application.properties");
+            Files.createDirectories(props.getParent());
+            String propsContent = String.format("""
+                server.port=80
+                server.address=0.0.0.0
+                spring.datasource.url=jdbc:postgresql://localhost:5432/astral
+                spring.datasource.username=%s
+                spring.datasource.password=%s
+                spring.datasource.driver-class-name=org.postgresql.Driver
+                spring.jpa.hibernate.ddl-auto=update
+                spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+                spring.jackson.serialization.fail-on-empty-beans=false
+                spring.web.resources.static-locations=classpath:/static/
+                spring.thymeleaf.cache=false
+                """, username, password);
+            Files.writeString(props, propsContent);
+
+            // Reinicia o serviço
+            runCmd("systemctl restart astral-platform.service", false);
+
+            String localIP = getLocalIP();
+            String response = String.format("{\"success\":true,\"message\":\"Banco 'astral' criado!\",\"redirect_url\":\"http://%s/\"}", localIP);
+            sendResponse(ex, 200, response, "application/json");
+
+            // Agenda encerramento em 60s
+            new Thread(() -> {
+                try {
+                    Thread.sleep(60000);
+                    System.exit(0);
+                } catch (InterruptedException ignored) {}
+            }).start();
+
+        } catch (Exception e) {
+            sendResponse(ex, 500, "{\"error\":\"" + e.getMessage() + "\"}", "application/json");
+        }
+    }
+
+    private static String extractJsonValue(String json, String key) {
+        String pattern = "\"" + key + "\"\\s*:\\s*\"([^\"]*)\"";
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(pattern).matcher(json);
+        return m.find() ? m.group(1) : null;
+    }
+
+    // ============================================================
+    // HANDLERS HTTP (UI do instalador)
+    // ============================================================
+    private static void handleIndex(HttpExchange ex) throws IOException {
+        sendResponse(ex, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html");
+    }
+
+    private static void handleInstallHTML(HttpExchange ex) throws IOException {
+        String html = """
+            <!DOCTYPE html><html lang="pt-br"><head><meta charset="UTF-8"><title>Instalando Astral</title>
+            <style>
+            body{background:#05070d;color:#fff;font-family:'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+            .box{width:500px;background:rgba(4,10,22,.8);border:2px solid #3fa9ff;border-radius:14px;padding:30px;text-align:center}
+            h1{color:#9fd8ff;margin-top:0}
+            .bar{width:100%;background:#111;height:20px;border-radius:10px;overflow:hidden;margin:20px 0;border:1px solid #333}
+            .fill{width:0%;height:100%;background:linear-gradient(90deg,#3fa9ff,#1668ff);transition:width .4s}
+            #status{color:#aaa;font-size:14px;margin-bottom:20px}
+            #setupForm{display:none;margin-top:20px}
+            #setupForm input{width:80%;padding:10px;margin:8px 0;border:1px solid #3fa9ff;border-radius:6px;background:#0b0f14;color:#fff;font-size:14px}
+            #setupForm button{padding:12px 30px;background:#3fa9ff;color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-top:10px}
+            #setupForm button:hover{background:#5fc3ff}
+            #redirectBtn{display:none;padding:12px 30px;background:#57e389;color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-top:20px}
+            #redirectBtn:hover{background:#7fffaa}
+            </style></head>
+            <body>
+            <div class="box">
+            <h1>🚀 Instalando Astral Platform</h1>
+            <div class="bar"><div class="fill" id="fill"></div></div>
+            <div id="status">Iniciando...</div>
+
+            <div id="setupForm">
+                <h2 style="color:#9fd8ff;margin-top:0">Configurar Banco de Dados</h2>
+                <input type="text" id="dbUser" placeholder="Usuário do banco (ex: astral)">
+                <input type="password" id="dbPass" placeholder="Senha do banco">
+                <button onclick="setupDB()">Criar Banco e Configurar</button>
+            </div>
+
+            <button id="redirectBtn" onclick="redirectToLogin()">Acessar Sistema</button>
+            </div>
+
+            <script>
+            var evt = new EventSource('/api/stream');
+            evt.onmessage = function(e) {
+                var d = JSON.parse(e.data);
+                document.getElementById('fill').style.width = d.progress + '%';
+                document.getElementById('status').textContent = d.status;
+                if (d.progress >= 100) {
+                    evt.close();
+                    document.getElementById('setupForm').style.display = 'block';
+                }
+            };
+
+            function setupDB() {
+                var user = document.getElementById('dbUser').value;
+                var pass = document.getElementById('dbPass').value;
+                if (!user || !pass) {
+                    alert('Preencha usuário e senha!');
+                    return;
+                }
+
+                fetch('/api/setup-db', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username: user, password: pass})
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(data.message);
+                        document.getElementById('setupForm').style.display = 'none';
+                        document.getElementById('redirectBtn').style.display = 'inline-block';
+                        window.redirectUrl = data.redirect_url;
+                    } else {
+                        alert('Erro: ' + data.error);
+                    }
+                })
+                .catch(e => alert('Erro: ' + e));
+            }
+
+            function redirectToLogin() {
+                window.location.href = window.redirectUrl || '/';
+            }
+            </script>
+            </body></html>""";
+        sendResponse(ex, 200, html, "text/html");
+    }
+
+    private static void handleStream(HttpExchange ex) throws IOException {
+        ex.getResponseHeaders().set("Content-Type", "text/event-stream");
+        ex.getResponseHeaders().set("Cache-Control", "no-cache");
+        ex.getResponseHeaders().set("Connection", "keep-alive");
+        ex.sendResponseHeaders(200, 0);
+        try (OutputStream os = ex.getResponseBody()) {
+            while (true) {
+                os.write(("data: {\"progress\": " + progress.get() + ", \"status\": \"" + status + "\"}\n\n").getBytes());
+                os.flush();
+                Thread.sleep(500);
+            }
+        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
     // ============================================================
@@ -218,7 +396,7 @@ public class Installer {
         try { Files.writeString(Paths.get("/etc/systemd/system/astral-platform.service"), svc); } catch (IOException ignored) {}
         runCmd("systemctl daemon-reload", false);
         runCmd("systemctl enable astral-platform.service", false);
-        runCmd("systemctl restart astral-platform.service", false);
+        runCmd("systemctl start astral-platform.service", false);
 
         for (int i = 0; i < 30; i++) {
             try (var s = new java.net.Socket()) {
@@ -299,43 +477,6 @@ public class Installer {
     }
 
     // ============================================================
-    // HANDLERS HTTP (UI do instalador)
-    // ============================================================
-    private static void handleIndex(HttpExchange ex) throws IOException {
-        sendResponse(ex, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html");
-    }
-
-    private static void handleInstallHTML(HttpExchange ex) throws IOException {
-        String html = """
-            <!DOCTYPE html><html lang="pt-br"><head><meta charset="UTF-8"><title>Instalando Astral</title>
-            <style>body{background:#05070d;color:#fff;font-family:'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-            .box{width:500px;background:rgba(4,10,22,.8);border:2px solid #3fa9ff;border-radius:14px;padding:30px;text-align:center}
-            h1{color:#9fd8ff}.bar{width:100%;background:#111;height:20px;border-radius:10px;overflow:hidden;margin:20px 0}
-            .fill{width:0%;height:100%;background:linear-gradient(90deg,#3fa9ff,#1668ff);transition:width .4s}#status{color:#aaa;font-size:14px}</style></head>
-            <body><div class="box"><h1>🚀 Instalando Astral Platform</h1><div class="bar"><div class="fill" id="fill"></div></div>
-            <div id="status">Iniciando...</div></div>
-            <script>var evt=new EventSource('/api/stream');evt.onmessage=function(e){var d=JSON.parse(e.data);
-            document.getElementById('fill').style.width=d.progress+'%';document.getElementById('status').textContent=d.status;
-            if(d.progress>=100){evt.close();setTimeout(function(){alert('Concluído! Acesse http://'+location.hostname);},1000);}};</script>
-            </body></html>""";
-        sendResponse(ex, 200, html, "text/html");
-    }
-
-    private static void handleStream(HttpExchange ex) throws IOException {
-        ex.getResponseHeaders().set("Content-Type", "text/event-stream");
-        ex.getResponseHeaders().set("Cache-Control", "no-cache");
-        ex.sendResponseHeaders(200, 0);
-        try (OutputStream os = ex.getResponseBody()) {
-            while (true) {
-                os.write(("data: {\"progress\": " + progress.get() + ", \"status\": \"" + status + "\"}\n\n").getBytes());
-                os.flush();
-                if (progress.get() >= 100) break;
-                Thread.sleep(500);
-            }
-        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-    }
-
-    // ============================================================
     // UTILITÁRIOS
     // ============================================================
     private static void sendResponse(HttpExchange ex, int code, String body, String type) throws IOException {
@@ -399,7 +540,7 @@ public class Installer {
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
 
     // ============================================================
-    // ARQUIVOS EMBUTIDOS
+    // ARQUIVOS EMBUTIDOS (mesmos da versão anterior)
     // ============================================================
     private static final String POM_XML = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -583,7 +724,6 @@ public class Installer {
         }
         """;
 
-    // CORRIGIDO: statusCode() (sem get) + tipos fechados
     private static final String PROXY_CONTROLLER_JAVA = """
         package com.astral.main.controller;
         import org.springframework.http.ResponseEntity;
@@ -743,11 +883,11 @@ public class Installer {
         return{c:c||3}}
         (function(){var g=document.getElementById('grid');
         g.style.setProperty('--cols',layout(g.querySelectorAll('.card').length).c)})();
-        function clean(s){return s.replace(/\\x1b\\[[0-9;?]*[a-zA-Z]/g,'').replace(/\\r/g,'')}
+        function clean(s){return s.replace(/\\\\x1b\\\\[[0-9;?]*[a-zA-Z]/g,'').replace(/\\\\r/g,'')}
         function attach(out,inp){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
         ws.onmessage=function(e){out.textContent+=clean(e.data);out.scrollTop=out.scrollHeight};
-        ws.onclose=function(){out.textContent+='\\n[conexao encerrada]\\n'};
-        inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws.readyState===1){ws.send(inp.value+'\\n');inp.value=''}});
+        ws.onclose=function(){out.textContent+='\\\\n[conexao encerrada]\\\\n'};
+        inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws.readyState===1){ws.send(inp.value+'\\\\n');inp.value=''}});
         return ws}
         var ws=null;
         var modal=document.getElementById('termModal'),out=document.getElementById('termOut'),inp=document.getElementById('termIn');
