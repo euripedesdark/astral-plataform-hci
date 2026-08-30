@@ -44,7 +44,6 @@ public class Installer {
     // ============================================================
     private static void runInstallation() {
         try {
-            // Pré-configurações (antes do loop de progresso, igual ao Python)
             configureFirewall();
             ensureProjectLayout();
             ensureFonts();
@@ -70,33 +69,27 @@ public class Installer {
             preDownloadMavenDeps();
             updateProgress(54, "Maven configurado.");
 
-            // ★ PostgreSQL INSTALL (só o pacote, sem initdb) — igual ao Python (55%)
             updateProgress(55, "Instalando o motor de banco de dados (PostgreSQL)...");
             installPostgreSQL(distro);
             updateProgress(65, "PostgreSQL instalado.");
 
-            // Nginx removido — WebFlux/Reactor Netty assume porta 80 direta
             updateProgress(70, "Removendo Nginx (Reactor Netty assume porta 80)...");
             removeNginx();
             updateProgress(80, "Nginx removido.");
 
-            // ★ PostgreSQL CONFIG (initdb + pg_hba + listen_addresses) + SELinux — igual ao Python (85%)
             updateProgress(85, "Ativando serviços de dados e ajustando SELinux...");
             relaxSelinux();
             configurePostgreSQL(distro);
             ensureDatabaseBase();
 
-            // ★ Grupo astral (melhoria sobre o Python original)
             createAstralGroup();
 
             updateProgress(88, "Organizando projeto e aplicando chown...");
             fixOwnership();
 
-            // ★ build + systemd + deploy — igual ao Python (90%)
             updateProgress(90, "Compilando Spring Boot e criando systemd service...");
             buildAndDeploySpringBoot();
 
-            // ★ aguarda 5432 — igual ao Python (95%)
             updateProgress(95, "Aguardando o serviço de banco de dados iniciar...");
             boolean dbReady = waitForPort(5432, 30);
 
@@ -129,7 +122,6 @@ public class Installer {
         System.out.println("[OK] SELinux em permissive (persistente).");
     }
 
-    // Cria base 'astral' + role padrão via arquivo SQL (idempotente)
     private static void ensureDatabaseBase() {
         try {
             String sql = "SELECT 'CREATE DATABASE astral'\n"
@@ -172,7 +164,7 @@ public class Installer {
     }
 
     // ============================================================
-    // SETUP-DB (formulário da UI) — SQL via arquivo (sem escaping de shell)
+    // SETUP-DB (formulário da UI) — SQL via arquivo
     // ============================================================
     private static void handleSetupDB(HttpExchange ex) throws IOException {
         if (!"POST".equals(ex.getRequestMethod())) {
@@ -211,7 +203,6 @@ public class Installer {
                 return;
             }
 
-            // application.properties em /etc/astral (sobrevive rebuilds)
             Path props = Paths.get("/etc/astral/application.properties");
             Files.createDirectories(props.getParent());
             Files.writeString(props, "server.port=80\n"
@@ -403,7 +394,7 @@ public class Installer {
     }
 
     // ============================================================
-    // BUILD + DEPLOY — igual ao Python (90%)
+    // BUILD + DEPLOY
     // ============================================================
     private static void buildAndDeploySpringBoot() {
         String app = System.getProperty("user.dir");
@@ -419,7 +410,6 @@ public class Installer {
         System.out.println("[OK] Binário Java detectado: " + javaBin);
         runCmd("ln -sf " + javaBin + " /usr/bin/java", false);
 
-        // Deploy em /opt/astral-platform (fora do /home, igual ao Python)
         runCmd("mkdir -p /opt/astral-platform", true);
         runCmd("cp " + jar + " /opt/astral-platform/", true);
         runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform", true);
@@ -526,7 +516,6 @@ public class Installer {
         }
     }
 
-    // ★ PostgreSQL INSTALL (só pacote, sem initdb) — igual ao Python step 55%
     private static void installPostgreSQL(String distro) {
         String pkg = distro.equals("rhel") ? "postgresql postgresql-server postgresql-contrib" : "postgresql postgresql-contrib";
         switch (distro) {
@@ -536,7 +525,6 @@ public class Installer {
         }
     }
 
-    // ★ PostgreSQL CONFIG (initdb + pg_hba + listen_addresses) — igual ao Python step 85%
     private static void configurePostgreSQL(String distro) {
         String svc = "postgresql";
         if (distro.equals("rhel")) {
@@ -916,6 +904,8 @@ public class Installer {
         }
         """;
 
+    // home.html CORRIGIDO: modal escondido no load (.modal.hidden) + terminal
+    // conectando só no clique do card, fechando no X e no Destacar
     private static final String DEFAULT_HOME_HTML = """
         <!DOCTYPE html>
         <html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
@@ -950,8 +940,8 @@ public class Installer {
         .card[data-id="postgres"]{--c:#4fa3ff}.card[data-id="web"]{--c:#c77bff}
         .card[data-id="vm"]{--c:#59d9e8}.card[data-id="storage"]{--c:#ffc16b}
         .card[data-id="network"]{--c:#63e6a4}.card[data-id="terminal"]{--c:#dfe6ee}
-        .hidden{display:none}
         .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50}
+        .modal.hidden{display:none}
         .termbox{width:min(880px,92vw);height:min(560px,82vh);background:#0b0f14;border:1px solid #3fa9ff;border-radius:10px;display:flex;flex-direction:column;box-shadow:0 0 24px #1668ff}
         .termhead{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#101820;border-bottom:1px solid #234}
         .termhead span:first-child{font-family:'Orbitron',sans-serif;letter-spacing:.2em;color:#9fd8ff}
@@ -984,17 +974,20 @@ public class Installer {
         (function(){var g=document.getElementById('grid');
         g.style.setProperty('--cols',layout(g.querySelectorAll('.card').length).c)})();
         function clean(s){return s.replace(/\\x1b\\[[0-9;?]*[a-zA-Z]/g,'').replace(/\\r/g,'')}
-        function attach(out,inp){var ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
-        ws.onmessage=function(e){out.textContent+=clean(e.data);out.scrollTop=out.scrollHeight};
-        ws.onclose=function(){out.textContent+='\\n[conexao encerrada]\\n'};
-        inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws.readyState===1){ws.send(inp.value+'\\n');inp.value=''}});
-        return ws}
         var ws=null;
         var modal=document.getElementById('termModal'),out=document.getElementById('termOut'),inp=document.getElementById('termIn');
+        function attach(){
+        if(ws){try{ws.close()}catch(e){}}
+        out.textContent='';
+        ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
+        ws.onmessage=function(e){out.textContent+=clean(e.data);out.scrollTop=out.scrollHeight};
+        ws.onclose=function(){out.textContent+='\\n[conexao encerrada]\\n'};
+        ws.onopen=function(){inp.focus()}}
+        inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws&&ws.readyState===1){ws.send(inp.value+'\\n');inp.value=''}});
         document.querySelectorAll('.card').forEach(function(a){a.addEventListener('click',function(e){
-        if(a.dataset.id==='terminal'){e.preventDefault();modal.classList.remove('hidden');out.textContent='';ws=attach(out,inp);inp.focus()}})});
-        document.getElementById('closeBtn').onclick=function(){if(ws)ws.close();modal.classList.add('hidden')};
-        document.getElementById('detachBtn').onclick=function(){if(ws)ws.close();modal.classList.add('hidden');
+        if(a.dataset.id==='terminal'){e.preventDefault();modal.classList.remove('hidden');attach();inp.focus()}})});
+        document.getElementById('closeBtn').onclick=function(){modal.classList.add('hidden');if(ws){ws.close();ws=null}};
+        document.getElementById('detachBtn').onclick=function(){modal.classList.add('hidden');if(ws){ws.close();ws=null}
         window.open('/terminal-popup.html','astralTerm','width=960,height=600')};
         </script>
         </body>
