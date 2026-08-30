@@ -17,9 +17,10 @@ public class Installer {
 
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: Execute com sudo"); System.exit(1); }
+
         String localIP = getLocalIP();
         System.out.println("=".repeat(60));
-        System.out.println("[ASTRAL PLATFORM] INSTALADOR JAVA (100% Java / Reactor Netty)");
+        System.out.println("[ASTRAL PLATFORM] INSTALADOR JAVA (100% WebFlux / Reactor Netty)");
         System.out.println("=".repeat(60));
         System.out.println("Acesse: http://" + localIP + ":" + PORT);
         System.out.println("=".repeat(60));
@@ -34,9 +35,6 @@ public class Installer {
         Thread.currentThread().join();
     }
 
-    // ============================================================
-    // FLUXO DE INSTALAÇÃO
-    // ============================================================
     private static void runInstallation() {
         try {
             updateProgress(5, "Detectando distribuição...");
@@ -74,7 +72,7 @@ public class Installer {
             updateProgress(75, "Configurando PostgreSQL...");
             configurePostgreSQL(distro);
 
-            updateProgress(80, "Escrevendo pom.xml + sources + templates (tudo embutido)...");
+            updateProgress(80, "Escrevendo pom.xml + sources + templates (TUDO embutido)...");
             ensureProjectLayout();
             copyStaticFrontend();
             ensureFonts();
@@ -95,16 +93,16 @@ public class Installer {
     }
 
     // ============================================================
-    // LAYOUT DO PROJETO — TUDO EMBUTIDO (inclusive pom.xml)
+    // LAYOUT DO PROJETO
     // ============================================================
     private static void ensureProjectLayout() throws IOException {
         String app = System.getProperty("user.dir");
-        Path base = Paths.get(app, "src", "main", "java", "com", "astral", "main");
-        Path ctrl = base.resolve("controller");
+        Path base  = Paths.get(app, "src", "main", "java", "com", "astral", "main");
+        Path ctrl  = base.resolve("controller");
         Path model = base.resolve("model");
-        Path cfg = base.resolve("config");
-        Path tpl = Paths.get(app, "src", "main", "resources", "templates");
-        Path imgs = Paths.get(app, "src", "main", "resources", "static", "images");
+        Path cfg   = base.resolve("config");
+        Path tpl   = Paths.get(app, "src", "main", "resources", "templates");
+        Path imgs  = Paths.get(app, "src", "main", "resources", "static", "images");
         Path fonts = Paths.get(app, "src", "main", "resources", "static", "fonts");
         for (Path d : new Path[]{base, ctrl, model, cfg, tpl, imgs, fonts}) Files.createDirectories(d);
 
@@ -195,6 +193,8 @@ public class Installer {
                     spring.jpa.hibernate.ddl-auto=update
                     spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
                     spring.jackson.serialization.fail-on-empty-beans=false
+                    spring.web.resources.static-locations=classpath:/static/
+                    spring.thymeleaf.cache=false
                     """);
             } catch (IOException ignored) {}
         }
@@ -281,16 +281,23 @@ public class Installer {
     }
 
     private static void configurePostgreSQL(String distro) {
-        String svc = distro.equals("rhel") ? "postgresql" : "postgresql";
+        String svc = "postgresql";
         if (distro.equals("rhel")) {
             String pg = runCmd("ls -A /var/lib/pgsql/data 2>/dev/null", false);
             if (pg == null || pg.trim().isEmpty()) {
                 runCmd("chown -R postgres:postgres /var/lib/pgsql && /usr/bin/postgresql-setup --initdb", true);
             }
+            svc = "postgresql";
+        } else if (distro.equals("arch")) {
+            if (!Files.exists(Paths.get("/var/lib/postgres/data/PG_VERSION"))) {
+                runCmd("sudo -u postgres initdb -D /var/lib/postgres/data", true);
+            }
         }
         runCmd("systemctl enable " + svc, false);
         runCmd("systemctl start " + svc, false);
-        String hba = distro.equals("rhel") ? "/var/lib/pgsql/data/pg_hba.conf" : "/etc/postgresql/*/main/pg_hba.conf";
+        String hba = distro.equals("rhel") ? "/var/lib/pgsql/data/pg_hba.conf" :
+                     distro.equals("arch") ? "/var/lib/postgres/data/pg_hba.conf" :
+                     "/etc/postgresql/*/main/pg_hba.conf";
         runCmd("grep -q '0.0.0.0/0' " + hba + " || echo 'host all all 0.0.0.0/0 md5' >> " + hba, false);
         runCmd("grep -q '^host.*127.0.0.1/32.*md5' " + hba + " || sed -i '1i host all all 127.0.0.1/32 md5' " + hba, false);
         runCmd("systemctl restart " + svc, false);
@@ -374,67 +381,35 @@ public class Installer {
     }
 
     private static String getLocalIP() {
-    System.out.println("[DEBUG] Tentando detectar IP local...");
-
-    // Estratégia 1: ip route get + awk (mais confiável que grep -oP)
-    try {
-        ProcessBuilder pb = new ProcessBuilder("bash", "-c",
-            "ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i==\"src\") print $(i+1)}'");
-        pb.redirectErrorStream(true);
-        Process p = pb.start();
-        StringBuilder out = new StringBuilder();
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                out.append(line).append("\n");
+        try {
+            ProcessBuilder pb = new ProcessBuilder("bash", "-c",
+                "ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i==\"src\") print $(i+1)}'");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            StringBuilder out = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                String l; while ((l = br.readLine()) != null) out.append(l);
             }
-        }
-        int code = p.waitFor();
-        String result = out.toString().trim();
-        System.out.println("[DEBUG] ip route + awk retornou: '" + result + "' (exit code: " + code + ")");
-
-        if (code == 0 && !result.isEmpty() && result.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
-            System.out.println("[DEBUG] ✓ IP detectado via ip route: " + result);
-            return result;
-        }
-    } catch (Exception e) {
-        System.err.println("[DEBUG] ✗ Falha no método ip route: " + e.getMessage());
-    }
-
-    // Estratégia 2: Enumerar todas as interfaces de rede
-    try {
-        System.out.println("[DEBUG] Tentando enumeração de interfaces...");
-        java.util.Enumeration<java.net.NetworkInterface> interfaces = java.net.NetworkInterface.getNetworkInterfaces();
-        while (interfaces.hasMoreElements()) {
-            java.net.NetworkInterface iface = interfaces.nextElement();
-            if (iface.isLoopback() || !iface.isUp()) continue;
-
-            System.out.println("[DEBUG] Verificando interface: " + iface.getName());
-            java.util.Enumeration<java.net.InetAddress> addrs = iface.getInetAddresses();
-            while (addrs.hasMoreElements()) {
-                java.net.InetAddress addr = addrs.nextElement();
-                if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
-                    String ip = addr.getHostAddress();
-                    System.out.println("[DEBUG] ✓ IP encontrado na interface " + iface.getName() + ": " + ip);
-                    return ip;
-                }
+            int code = p.waitFor();
+            String result = out.toString().trim();
+            if (code == 0 && !result.isEmpty() && result.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+                return result;
             }
-        }
-    } catch (Exception e) {
-        System.err.println("[DEBUG] ✗ Falha na enumeração de interfaces: " + e.getMessage());
+        } catch (Exception ignored) {}
+        try (var s = new java.net.Socket()) {
+            s.connect(new InetSocketAddress("8.8.8.8", 80), 3000);
+            return s.getLocalAddress().getHostAddress();
+        } catch (IOException e) { return "127.0.0.1"; }
     }
-
-    // Último recurso
-    System.err.println("[DEBUG] ⚠ Nenhum IP detectado, usando fallback 127.0.0.1");
-    return "127.0.0.1";
-}
 
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
 
     // ============================================================
-    // ARQUIVOS EMBUTIDOS
+    // ARQUIVOS EMBUTIDOS (TUDO AQUI, ZERO ARQUIVO MANUAL)
     // ============================================================
+
+    // ----- pom.xml com WebFlux (Reactor Netty) + Thymeleaf + JPA + PostgreSQL -----
     private static final String POM_XML = """
         <?xml version="1.0" encoding="UTF-8"?>
         <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -462,6 +437,7 @@ public class Installer {
         </project>
         """;
 
+    // ----- Application principal -----
     private static final String ASTRAL_APP_JAVA = """
         package com.astral.main;
         import org.springframework.boot.SpringApplication;
@@ -472,12 +448,14 @@ public class Installer {
         }
         """;
 
+    // ----- HomeController (Thymeleaf funciona igual no WebFlux) -----
     private static final String HOME_CONTROLLER_JAVA = """
         package com.astral.main.controller;
         import com.astral.main.model.DashboardButton;
         import org.springframework.stereotype.Controller;
         import org.springframework.ui.Model;
         import org.springframework.web.bind.annotation.GetMapping;
+        import org.springframework.web.bind.annotation.ResponseBody;
         import java.util.List;
         @Controller
         public class HomeController {
@@ -486,6 +464,11 @@ public class Installer {
                 model.addAttribute("buttons", buildButtons());
                 model.addAttribute("pageTitle", "ASTRAL PLATFORM");
                 return "home";
+            }
+            @GetMapping("/")
+            @ResponseBody
+            public String index() {
+                return "<meta http-equiv='refresh' content='0; url=/index.html'>";
             }
             private List<DashboardButton> buildButtons() {
                 return List.of(
@@ -504,11 +487,13 @@ public class Installer {
         }
         """;
 
+    // ----- LoginController reativo (retorna Mono<ResponseEntity>) -----
     private static final String LOGIN_CONTROLLER_JAVA = """
         package com.astral.main.controller;
         import org.springframework.http.HttpStatus;
         import org.springframework.http.ResponseEntity;
         import org.springframework.web.bind.annotation.*;
+        import reactor.core.publisher.Mono;
         import java.sql.Connection;
         import java.sql.DriverManager;
         import java.sql.SQLException;
@@ -520,29 +505,33 @@ public class Installer {
         public class LoginController {
             @CrossOrigin(origins = "*")
             @PostMapping("/login")
-            public ResponseEntity<Map<String, Object>> login(@RequestBody Map<String, String> credentials) {
-                String username = credentials.get("username");
-                String password = credentials.get("password");
-                Map<String, Object> response = new HashMap<>();
-                try (Connection c = DriverManager.getConnection("jdbc:postgresql://localhost:5432/astral", username, password)) {
-                    response.put("success", true);
-                    response.put("token", UUID.randomUUID().toString());
-                    response.put("message", "Autenticado com sucesso");
-                    return ResponseEntity.ok(response);
-                } catch (SQLException e) {
-                    response.put("success", false);
-                    response.put("message", "Usuário ou senha inválidos.");
-                    return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
-                }
+            public Mono<ResponseEntity<Map<String, Object>>> login(@RequestBody Map<String, String> credentials) {
+                return Mono.fromCallable(() -> {
+                    String username = credentials.get("username");
+                    String password = credentials.get("password");
+                    Map<String, Object> response = new HashMap<>();
+                    try (Connection c = DriverManager.getConnection("jdbc:postgresql://localhost:5432/astral", username, password)) {
+                        response.put("success", true);
+                        response.put("token", UUID.randomUUID().toString());
+                        response.put("message", "Autenticado com sucesso");
+                        return ResponseEntity.ok(response);
+                    } catch (SQLException e) {
+                        response.put("success", false);
+                        response.put("message", "Usuário ou senha inválidos.");
+                        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
+                    }
+                });
             }
         }
         """;
 
+    // ----- DashboardButton record -----
     private static final String DASHBOARD_BUTTON_JAVA = """
         package com.astral.main.model;
         public record DashboardButton(String id, String label, String image, String route) {}
         """;
 
+    // ----- WebSocketConfig reativo -----
     private static final String WS_CONFIG_JAVA = """
         package com.astral.main.config;
         import org.springframework.context.annotation.Bean;
@@ -568,6 +557,7 @@ public class Installer {
         }
         """;
 
+    // ----- TerminalWebSocketHandler reativo -----
     private static final String WS_HANDLER_JAVA = """
         package com.astral.main.config;
         import org.springframework.stereotype.Component;
@@ -614,6 +604,7 @@ public class Installer {
         }
         """;
 
+    // ----- ProxyController reativo (usa Map.ofEntries p/ >10 pares + WebClient + Mono) -----
     private static final String PROXY_CONTROLLER_JAVA = """
         package com.astral.main.controller;
         import org.springframework.http.ResponseEntity;
@@ -626,10 +617,19 @@ public class Installer {
         import java.util.Map;
         @RestController
         public class ProxyController {
-            private static final Map<String, Integer> ROUTES = Map.of(
-                "dns", 8053, "firewall", 8040, "proxy", 8085, "domain", 8090,
-                "postgres", 5433, "web", 8080, "vm", 8070, "storage", 8060,
-                "network", 8024, "alerts", 8010, "telemetry", 8015);
+            private static final Map<String, Integer> ROUTES = Map.ofEntries(
+                Map.entry("dns", 8053),
+                Map.entry("firewall", 8040),
+                Map.entry("proxy", 8085),
+                Map.entry("domain", 8090),
+                Map.entry("postgres", 5433),
+                Map.entry("web", 8080),
+                Map.entry("vm", 8070),
+                Map.entry("storage", 8060),
+                Map.entry("network", 8024),
+                Map.entry("alerts", 8010),
+                Map.entry("telemetry", 8015)
+            );
             private final WebClient client = WebClient.create();
             @RequestMapping({"/dns", "/dns/**", "/firewall", "/firewall/**", "/proxy", "/proxy/**",
                 "/domain", "/domain/**", "/postgres", "/postgres/**", "/web", "/web/**",
@@ -652,6 +652,7 @@ public class Installer {
         }
         """;
 
+    // ----- DatabaseBootstrap (auto-provisiona usuário/banco via sudo -u postgres) -----
     private static final String DB_BOOTSTRAP_JAVA = """
         package com.astral.main.config;
         import org.springframework.beans.factory.annotation.Value;
@@ -697,6 +698,7 @@ public class Installer {
         }
         """;
 
+    // ----- home.html (Thymeleaf) -----
     private static final String DEFAULT_HOME_HTML = """
         <!DOCTYPE html>
         <html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
