@@ -7,7 +7,7 @@ def run_command(cmd):
 
 def main():
     # Caminho base fixo para evitar problemas com sudo
-    base_dir = "/home/euripedes/astral-plataform-hci"
+    base_dir = os.path.expanduser("~/astral-plataform-hci")
     os.chdir(base_dir)
 
     javac = "/usr/lib/jvm/jdk-21.0.12.1-oracle-x64/bin/javac"
