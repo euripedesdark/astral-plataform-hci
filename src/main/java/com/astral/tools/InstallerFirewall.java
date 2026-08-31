@@ -17,18 +17,15 @@ public class InstallerFirewall {
 
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: use sudo"); System.exit(1); }
-
         HttpServer s = HttpServer.create(new InetSocketAddress(PORT), 0);
         s.createContext("/", e -> send(e, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html"));
         s.createContext("/install.html", InstallerFirewall::ui);
         s.createContext("/api/stream", InstallerFirewall::stream);
         s.setExecutor(Executors.newCachedThreadPool());
         s.start();
-
         System.out.println("=".repeat(60));
         System.out.println("[ASTRAL FIREWALL] Instalador em http://" + getLocalIP() + ":" + PORT);
         System.out.println("=".repeat(60));
-
         Thread t = new Thread(InstallerFirewall::run);
         t.setDaemon(true);
         t.start();
@@ -39,37 +36,30 @@ public class InstallerFirewall {
         try {
             up(5, "Detectando distribuição...");
             String distro = detectDistro();
-
-            up(8, "Liberando porta da UI no iptables...");
+            up(8, "Liberando porta da UI no iptables (sem apagar regras existentes)...");
             run("iptables -C INPUT -p tcp --dport " + PORT + " -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport " + PORT + " -j ACCEPT", false);
             run("iptables -C INPUT -p tcp --dport 8040 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 8040 -j ACCEPT", false);
-
             up(10, "Garantindo iptables/ipset persistentes...");
             if (distro.equals("debian")) run("DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent ipset", true);
             else if (distro.equals("arch")) run("pacman -S --noconfirm iptables-nft ipset", true);
             else run("dnf install -y iptables-services ipset", true);
-
             up(20, "Validando conexão com banco via mTLS...");
             if (!validateMTLSConnection()) {
                 up(100, "ERRO: Falha ao conectar no banco via mTLS. Execute o instalador principal primeiro.");
                 done = true;
                 return;
             }
-
             up(30, "Criando tabelas do firewall no banco...");
             createTables();
-
             up(50, "Escrevendo projeto do módulo...");
             writeProject();
             fixOwnership();
-
             up(70, "Compilando módulo (mvn package)...");
-            // CORREÇÃO: mvn roda como o dono do projeto, não como root
-            String owner = Files.getOwner(Paths.get(app())).getName();
+            String owner;
+            try { owner = Files.getOwner(Paths.get(app())).getName(); } catch (IOException e) { owner = "root"; }
             String mvnCmd = "cd " + app() + "/fabric/firewall && runuser -u " + owner + " -- mvn -B -DskipTests clean package";
             String mvnOut = run(mvnCmd, true);
             fixOwnership();
-
             Path jarPath = Paths.get(app(), "fabric", "firewall", "target", "astral-firewall-1.0.0.jar");
             if (!Files.exists(jarPath)) {
                 up(100, "ERRO CRÍTICO: mvn não gerou o JAR. Verifique saída acima.");
@@ -83,10 +73,8 @@ public class InstallerFirewall {
                 return;
             }
             System.out.println("[OK] JAR gerado: " + jarPath + " (" + Files.size(jarPath) + " bytes)");
-
             up(80, "Deploy em /opt/astral-firewall + systemd service...");
             deploy(jarPath);
-
             up(90, "Aguardando 127.0.0.1:8040...");
             boolean ok = false;
             for (int i = 0; i < 30; i++) {
@@ -94,11 +82,8 @@ public class InstallerFirewall {
                     sk.connect(new InetSocketAddress("127.0.0.1", 8040), 500);
                     ok = true;
                     break;
-                } catch (IOException e) {
-                    sleep(1000);
-                }
+                } catch (IOException e) { sleep(1000); }
             }
-
             up(100, ok ? "Módulo Firewall instalado! Acesse http://" + getLocalIP() + "/firewall"
                     : "AVISO: 8040 não respondeu. journalctl -u astral-firewall");
             done = true;
@@ -147,7 +132,6 @@ public class InstallerFirewall {
             run("chown -R " + owner + ":" + ASTRAL_GROUP + " " + fw + " 2>/dev/null || true", false);
             run("find " + fw + " -type d -exec chmod 2775 {} \\; 2>/dev/null || true", false);
             run("find " + fw + " -type f -exec chmod 0664 {} \\; 2>/dev/null || true", false);
-            // Garante que target/ exista com permissões corretas
             Path target = fw.resolve("target");
             if (!Files.exists(target)) Files.createDirectories(target);
             run("chown -R " + owner + ":" + ASTRAL_GROUP + " " + target + " 2>/dev/null || true", false);
@@ -169,7 +153,6 @@ public class InstallerFirewall {
         run("chown -R root:" + ASTRAL_GROUP + " /opt/astral-firewall", true);
         run("chmod 2770 /opt/astral-firewall", true);
         run("chmod 0660 /opt/astral-firewall/*.jar 2>/dev/null || true", false);
-
         try {
             Files.createDirectories(Paths.get("/etc/astral"));
             Path props = Paths.get("/etc/astral/firewall.properties");
@@ -184,10 +167,8 @@ public class InstallerFirewall {
             run("chmod 0640 " + props, false);
             System.out.println("[OK] " + props + " com 0640 root:" + ASTRAL_GROUP);
         } catch (IOException ignored) {}
-
         String javaBin = run("readlink -f $(which java)", false);
         if (javaBin != null) javaBin = javaBin.trim(); else javaBin = "/usr/bin/java";
-
         try {
             Files.writeString(Paths.get("/etc/systemd/system/astral-firewall.service"),
                     "[Unit]\nDescription=Astral Firewall Module\nAfter=network.target postgresql.service astral-platform.service\n\n"
@@ -286,7 +267,6 @@ public class InstallerFirewall {
                 jbase + "/api", jbase + "/ws", jbase + "/web",
                 base + "/src/main/resources/templates"})
             Files.createDirectories(Paths.get(d));
-
         write(base + "/pom.xml", FW_POM);
         write(base + "/src/main/resources/application.properties", FW_PROPS);
         write(base + "/src/main/resources/templates/firewall.html", FW_HTML);
@@ -615,14 +595,14 @@ public class InstallerFirewall {
                     "return c==0;}catch(Exception e){return false;}}\n" +
                     "}\n";
 
-    // FW_API CORRIGIDO: variável n agora é int[] para ser effectively final
+    // CORRIGIDO: aceita /api E /firewall/api (o gateway corta o prefixo /firewall)
     private static final String FW_API =
             "package com.astral.firewall.api;\n" +
                     "import com.astral.firewall.model.*; import com.astral.firewall.repo.*; import com.astral.firewall.service.*;\n" +
                     "import org.springframework.http.MediaType; import org.springframework.web.bind.annotation.*;\n" +
                     "import reactor.core.publisher.Mono; import reactor.core.scheduler.Schedulers;\n" +
                     "import java.net.InetAddress; import java.util.*;\n" +
-                    "@RestController @RequestMapping(\"/firewall/api\")\n" +
+                    "@RestController @RequestMapping({\"/api\", \"/firewall/api\"})\n" +
                     "public class FirewallApiController {\n" +
                     "private static final String NL=String.valueOf((char)10);\n" +
                     "private final IptablesService ipt; private final StatsService stats; private final AuditService audit; private final BackupService backup;\n" +
@@ -711,11 +691,13 @@ public class InstallerFirewall {
                     "@Bean public WebSocketHandlerAdapter wsAdapter(){ return new WebSocketHandlerAdapter(); }\n" +
                     "}\n";
 
+    // CORRIGIDO: aceita "/", "/firewall" e "/firewall/" (o gateway manda "/")
     private static final String FW_PAGES =
             "package com.astral.firewall.web;\n" +
                     "import org.springframework.stereotype.Controller; import org.springframework.web.bind.annotation.GetMapping;\n" +
-                    "@Controller public class PagesController { @GetMapping({\"/firewall\",\"/firewall/\"}) public String page(){ return \"firewall\"; } }\n";
+                    "@Controller public class PagesController { @GetMapping({\"/\", \"/firewall\", \"/firewall/\"}) public String page(){ return \"firewall\"; } }\n";
 
+    // CORRIGIDO: logs via polling (gateway não proxya WebSocket pro módulo)
     private static final String FW_HTML =
             "<!DOCTYPE html>\n" +
                     "<html lang=\"pt-br\">\n" +
@@ -769,7 +751,7 @@ public class InstallerFirewall {
                     "function nav(){document.getElementById('nav').innerHTML=SECS.map((s,i)=>'<button class=\"'+(s[0]===cur?'on':'')+'\" data-s=\"'+s[0]+'\" onclick=\"show(this.dataset.s)\"><span class=\"n\">0'+(i+1)+'</span>'+s[1]+'</button>').join('')}\n" +
                     "async function api(p,o){const r=await fetch('/firewall/api'+p,Object.assign({headers:{'Content-Type':'application/json'}},o));return r.json()}\n" +
                     "function panic(){if(!confirm('Ativar MODO PÂNICO?'))return;api('/panic',{method:'POST'}).then(()=>show('dashboard'))}\n" +
-                    "async function show(s){cur=s;nav();document.getElementById('secTitle').textContent=SECS.find(x=>x[0]===s)[1].toUpperCase();const c=document.getElementById('content');c.innerHTML='';\n" +
+                    "async function show(s){cur=s;if(window.liveTimer){clearInterval(window.liveTimer);window.liveTimer=null}nav();document.getElementById('secTitle').textContent=SECS.find(x=>x[0]===s)[1].toUpperCase();const c=document.getElementById('content');c.innerHTML='';\n" +
                     "if(s==='dashboard'){const[st,sm]=await Promise.all([api('/status'),api('/stats')]);\n" +
                     "c.innerHTML='<div class=\"cards\"><div class=\"card\"><div class=\"k\">BLOQUEADOS (24H)</div><div class=\"v amber\">'+sm.blocked24+'</div><div class=\"s\">+'+sm.rejected24+' rejeitados</div></div><div class=\"card\"><div class=\"k\">PERMITIDOS (24H)</div><div class=\"v green\">'+sm.accepted24+'</div><div class=\"s\">tráfego normal</div></div><div class=\"card\"><div class=\"k\">REGRAS ATIVAS</div><div class=\"v white\">'+st.rulesActive+'</div><div class=\"s\">'+st.pending+' pendentes</div></div><div class=\"card\"><div class=\"k\">TENTATIVAS SSH</div><div class=\"v amber\">'+sm.sshAttempts+'</div><div class=\"s\">bloqueadas</div></div></div><div class=\"panel\"><h3>TRÁFEGO — BLOQUEADO x PERMITIDO</h3><div class=\"bars\">'+sm.series.map(b=>'<div class=\"col\"><div class=\"a\" style=\"height:'+Math.min(b.allowed/10,100)+'%\"></div><div class=\"b\" style=\"height:'+Math.min(b.blocked*3,100)+'%\"></div></div>').join('')+'</div></div><div class=\"panel\"><h3>TOP IPs BLOQUEADOS</h3><table><tr><th>ORIGEM</th><th>PORTA</th><th>AÇÃO</th></tr>'+sm.topBlocked.map(t=>'<tr><td>'+t.ip+'</td><td>'+t.port+'</td><td><span class=\"pill drop\">'+t.action+'</span></td></tr>').join('')+'</table></div>'}\n" +
                     "if(s==='rules'){const rs=await api('/rules');c.innerHTML='<div class=\"panel\"><h3>REGRAS</h3><button class=\"act\" onclick=\"api(&#39;/rules/apply&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;rules&#39;))\">Aplicar</button> <button class=\"act\" onclick=\"newRule()\">+ Nova</button><table><tr><th>#</th><th>CHAIN</th><th>PROTO</th><th>PORTA</th><th>ORIGEM</th><th>AÇÃO</th><th>STATUS</th><th></th></tr>'+rs.sort((a,b)=>a.priority-b.priority).map(r=>'<tr><td>'+r.priority+'</td><td>'+r.chain+'</td><td>'+r.protocol+'</td><td>'+r.port+'</td><td>'+(r.srcCidr||'any')+'</td><td><span class=\"pill '+(r.action==='ACCEPT'?'accept':'drop')+'\">'+r.action+'</span></td><td>'+(r.appliedAt?'aplicada':'pendente')+'</td><td><button class=\"act\" onclick=\"api(&#39;/rules/'+r.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;rules&#39;))\">x</button></td></tr>').join('')+'</table></div>'}\n" +
@@ -777,7 +759,7 @@ public class InstallerFirewall {
                     "if(s==='zones'){const z=await api('/zones');c.innerHTML='<div class=\"panel\"><h3>ZONAS</h3>'+z.map(x=>'<div>'+x.name+' ('+x.trustLevel+'/'+x.defaultPolicy+')</div>').join('')+'<input id=\"zn\" placeholder=\"nome\"><select id=\"zt\"><option>WAN</option><option>LAN</option><option>DMZ</option></select><button class=\"act\" onclick=\"api(&#39;/zones&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:zn.value,trustLevel:zt.value,defaultPolicy:zt.value===&#39;LAN&#39;?&#39;ACCEPT&#39;:&#39;DROP&#39;})}).then(()=>show(&#39;zones&#39;))\">+ Zona</button></div>'}\n" +
                     "if(s==='groups'){const[h,p]=await Promise.all([api('/hostgroups'),api('/portgroups')]);c.innerHTML='<div class=\"panel\"><h3>GRUPOS DE HOSTS</h3>'+h.map(g=>'<div>'+g.name+': '+g.cidrs.join(', ')+'</div>').join('')+'<input id=\"hn\" placeholder=\"nome\"><input id=\"hc\" placeholder=\"cidrs separados por vírgula\"><button class=\"act\" onclick=\"api(&#39;/hostgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:hn.value,cidrs:hc.value?hc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))\">+</button></div><div class=\"panel\"><h3>GRUPOS DE PORTAS</h3>'+p.map(g=>'<div>'+g.name+': '+g.ports.join(', ')+'</div>').join('')+'<input id=\"pn\" placeholder=\"nome\"><input id=\"pc\" placeholder=\"portas\"><button class=\"act\" onclick=\"api(&#39;/portgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:pn.value,ports:pc.value?pc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))\">+</button></div>'}\n" +
                     "if(s==='protections'){const[r,a,t]=await Promise.all([api('/ratelimits'),api('/autoban'),api('/threatlists')]);c.innerHTML='<div class=\"panel\"><h3>RATE LIMIT</h3>'+r.map(x=>'<div>porta '+x.port+': '+x.ratePerSecond+'/s</div>').join('')+'<input id=\"rp\" placeholder=\"porta\"><input id=\"rr\" value=\"20\"><button class=\"act\" onclick=\"api(&#39;/ratelimits&#39;,{method:&#39;POST&#39;,body:JSON.stringify({port:rp.value,ratePerSecond:+rr.value,enabled:true})}).then(()=>show(&#39;protections&#39;))\">+</button></div><div class=\"panel\"><h3>AUTO-BAN</h3>'+a.map(x=>'<div>'+x.maxAttempts+' tentativas / '+x.windowMinutes+'min</div>').join('')+'<button class=\"act\" onclick=\"api(&#39;/autoban&#39;,{method:&#39;POST&#39;,body:JSON.stringify({maxAttempts:5,windowMinutes:5,banMinutes:30,targetPort:&#39;22&#39;,enabled:true})}).then(()=>show(&#39;protections&#39;))\">+ SSH</button></div><div class=\"panel\"><h3>BLOCKLISTS</h3>'+t.map(x=>'<div>'+x.name+' ('+x.ipCount+') <button class=\"act\" onclick=\"api(&#39;/threatlists/'+x.id+'/refresh&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;protections&#39;))\">atualizar</button></div>').join('')+'<input id=\"tn\" placeholder=\"nome\"><input id=\"tu\" placeholder=\"url\"><button class=\"act\" onclick=\"api(&#39;/threatlists&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:tn.value,sourceUrl:tu.value,enabled:true})}).then(()=>show(&#39;protections&#39;))\">+</button></div>'}\n" +
-                    "if(s==='logs'){c.innerHTML='<div class=\"panel\"><h3>LOGS (tempo real)</h3><div id=\"live\"></div></div>';const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/firewall-logs');ws.onmessage=e=>{live.textContent+=e.data;live.scrollTop=live.scrollHeight}}\n" +
+                    "if(s==='logs'){c.innerHTML='<div class=\"panel\"><h3>LOGS (tempo real)</h3><div id=\"live\"></div><button class=\"act\" onclick=\"location.href=&#39;/firewall/api/logs/export?format=csv&#39;\">Exportar CSV</button></div>';window.liveTimer=setInterval(function(){api('/logs').then(function(l){var el=document.getElementById('live');if(el){el.textContent=l.map(function(x){return x.raw}).join('\\n');el.scrollTop=el.scrollHeight}}).catch(function(){})},2000)}\n" +
                     "if(s==='backup'){c.innerHTML='<div class=\"panel\"><h3>BACKUP & RESTORE (BANCO)</h3><button class=\"act\" onclick=\"location.href=&#39;/firewall/api/backup&#39;\">Exportar dump SQL</button> <input type=\"file\" id=\"bkf\"><button class=\"act\" onclick=\"restoreBk()\">Restaurar</button><h3>SNAPSHOTS</h3><div id=\"snaps\"></div></div>';api('/snapshots').then(l=>snaps.innerHTML=l.map(x=>'<div>'+x.createdAt+' — '+x.label+' <button class=\"act\" onclick=\"api(&#39;/snapshots/revert/'+x.id+'&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;backup&#39;))\">reverter</button></div>').join(''))}\n" +
                     "}\n" +
                     "async function restoreBk(){const f=bkf.files[0];if(!f)return;const txt=await f.text();await api('/backup/restore',{method:'POST',headers:{'Content-Type':'text/plain'},body:txt});show('backup')}\n" +
