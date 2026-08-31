@@ -548,7 +548,6 @@ public class InstallerFirewall {
                     "AuditLog a=new AuditLog(); a.username=user==null?\"admin\":user; a.entityType=type; a.entityId=id; a.action=action; a.diffJson=diff; repo.save(a); }\n" +
                     "}\n";
 
-    // Módulo IPT atualizado: Sincronizador de Zonas, Ignorar Lixo do Kernel e Atualizar Bytes NAT.
     private static final String FW_IPT =
             "package com.astral.firewall.service;\n" +
                     "import com.astral.firewall.model.*; import com.astral.firewall.repo.*;\n" +
@@ -625,7 +624,7 @@ public class InstallerFirewall {
                     "sh(\"sudo iptables -I FORWARD 1 -s \"+z.name.trim()+\" -m comment --comment \\\"zone-rule-\"+z.id+\"\\\" -j \"+action);\n" +
                     "sh(\"sudo iptables -I INPUT 1 -s \"+z.name.trim()+\" -m comment --comment \\\"zone-rule-\"+z.id+\"\\\" -j \"+action);\n" +
                     "}\n" +
-                    "persist(); }\n" +
+                    "persist(); syncFromRuntime(); }\n" +
                     "private String extract(String s,String p,int g,String d){java.util.regex.Matcher m=java.util.regex.Pattern.compile(p).matcher(s); return m.find()?m.group(g):d;}\n" +
                     "public String executeAndSync(String cmd){ String out=sh(\"sudo iptables \"+cmd); persist(); syncFromRuntime(); return out; }\n" +
                     "public FirewallSnapshot saveSnapshot(String label){return snaps.save(new FirewallSnapshot(label,sh(\"sudo iptables-save\")));}\n" +
@@ -700,7 +699,6 @@ public class InstallerFirewall {
                     "return c==0;}catch(Exception e){return false;}}\n" +
                     "}\n";
 
-    // Modificado para suportar buscar interfaces automáticas em /api/ifaces
     private static final String FW_API =
             "package com.astral.firewall.api;\n" +
                     "import com.astral.firewall.model.*; import com.astral.firewall.repo.*; import com.astral.firewall.service.*;\n" +
@@ -829,7 +827,6 @@ public class InstallerFirewall {
                     "import org.springframework.stereotype.Controller; import org.springframework.web.bind.annotation.GetMapping;\n" +
                     "@Controller public class PagesController { @GetMapping({\"/\", \"/firewall\", \"/firewall/\"}) public String page(){ return \"firewall\"; } }\n";
 
-    // NOVO HTML com Forms limpos, Dropdowns dinâmicos e Botões de Deleção
     private static final String FW_HTML =
             "<!DOCTYPE html>\n" +
                     "<html lang=\"pt-br\">\n" +
@@ -839,7 +836,8 @@ public class InstallerFirewall {
                     "@font-face{font-family:'Orbitron';src:url('/fonts/orbitron-bold.woff2') format('woff2');font-weight:700}\n" +
                     "*{box-sizing:border-box}html,body{height:100%;margin:0}\n" +
                     "body{background:#05070d url('/images/Fundo.png') no-repeat center/cover fixed;color:#fff;font-family:'Segoe UI',sans-serif}\n" +
-                    "header{padding:28px 60px}header h1{margin:0;font-family:'Orbitron';font-weight:900;letter-spacing:.25em;font-size:26px;color:#eef5ff;text-shadow:0 0 8px #9fd8ff,0 0 24px #1668ff}\n" +
+                    "header{padding:20px 60px; display:flex; justify-content:space-between; align-items:center;}\n" +
+                    "header h1{margin:0;font-family:'Orbitron';font-weight:900;letter-spacing:.25em;font-size:26px;color:#eef5ff;text-shadow:0 0 8px #9fd8ff,0 0 24px #1668ff}\n" +
                     "header .sub{font-family:'Orbitron';letter-spacing:.4em;color:#ff5c5c;font-size:12px;margin-top:6px}\n" +
                     ".wrap{display:flex;gap:28px;padding:20px 60px;height:calc(100% - 130px)}\n" +
                     ".side{width:270px;border:1px solid #ff5c5c;border-radius:14px;background:rgba(10,4,6,.8);display:flex;flex-direction:column;padding:18px}\n" +
@@ -873,7 +871,10 @@ public class InstallerFirewall {
                     ".form-row input, .form-row select{flex:1}\n" +
                     "</style></head>\n" +
                     "<body>\n" +
-                    "<header><h1>ASTRAL PLATFORM</h1><div class=\"sub\">FIREWALL</div></header>\n" +
+                    "<header>\n" +
+                    "  <div><h1>ASTRAL PLATFORM</h1><div class=\"sub\">FIREWALL</div></div>\n" +
+                    "  <button class=\"act\" style=\"padding:10px 20px;font-family:'Orbitron';letter-spacing:0.1em;\" onclick=\"goHome()\">🏠 VOLTAR AO INÍCIO</button>\n" +
+                    "</header>\n" +
                     "<div class=\"wrap\">\n" +
                     "<aside class=\"side\"><div class=\"t\">MÓDULOS · FIREWALL</div><div class=\"nav\" id=\"nav\"></div>\n" +
                     "<button class=\"panic\" onclick=\"panic()\">MODO PÂNICO<small>bloquear tudo, exceto admin</small></button></aside>\n" +
@@ -882,6 +883,7 @@ public class InstallerFirewall {
                     "<script th:inline=\"none\">\n" +
                     "const SECS=[['dashboard','Dashboard'],['rules','Regras'],['nat','Port Forwarding'],['zones','Zonas'],['groups','Grupos'],['protections','Proteções'],['logs','Logs'],['backup','Backup & Auditoria']];\n" +
                     "let cur='dashboard'; let ifaces=['any']; nav(); show('dashboard');\n" +
+                    "function goHome() { window.location.href = '/inicio'; }\n" +
                     "function formatBytes(b){let bytes=parseInt(b,10);if(isNaN(bytes)||bytes===0)return '0 B';const k=1024,sizes=['B','KB','MB','GB','TB'],i=Math.floor(Math.log(bytes)/Math.log(k));return parseFloat((bytes/Math.pow(k,i)).toFixed(2))+' '+sizes[i]}\n" +
                     "function selIf(id){return '<select id=\"'+id+'\">'+ifaces.map(x=>'<option value=\"'+(x==='any'?'':x)+'\">'+x+'</option>').join('')+'</select>'}\n" +
                     "function nav(){document.getElementById('nav').innerHTML=SECS.map((s,i)=>'<button class=\"'+(s[0]===cur?'on':'')+'\" data-s=\"'+s[0]+'\" onclick=\"show(this.dataset.s)\"><span class=\"n\">0'+(i+1)+'</span>'+s[1]+'</button>').join('')}\n" +
