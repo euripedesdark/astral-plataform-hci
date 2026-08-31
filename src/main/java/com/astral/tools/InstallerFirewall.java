@@ -615,10 +615,13 @@ public class InstallerFirewall {
                     "@GetMapping(\"/rules\") public Mono<List<FirewallRule>> rules(){return call(() -> { ipt.syncFromRuntime(); return rules.findAll(); });}\n" +
                     "@PostMapping(\"/rules\") public Mono<?> saveRule(@RequestBody FirewallRule r){return call(()->{\n" +
                     "String cmd = \"-I \" + r.chain + \" 1 \";\n" +
-                    "if(r.protocol!=null&&!r.protocol.equals(\"ALL\")) cmd += \"-p \" + r.protocol.toLowerCase() + \" -m \" + r.protocol.toLowerCase() + \" \";\n" +
+                    "String pt = r.protocol!=null ? r.protocol.toLowerCase() : \"tcp\";\n" +
+                    "if(pt.equals(\"any\")||pt.equals(\"all\")) pt=\"all\";\n" +
+                    "if(r.port!=null && !r.port.isBlank() && pt.equals(\"all\")) pt=\"tcp\";\n" +
+                    "if(!pt.equals(\"all\")) { cmd += \"-p \" + pt + \" \"; if(pt.equals(\"tcp\")||pt.equals(\"udp\")) cmd += \"-m \" + pt + \" \"; }\n" +
                     "if(r.port!=null&&!r.port.isBlank()) cmd += \"--dport \" + r.port + \" \";\n" +
-                    "if(r.srcCidr!=null&&!r.srcCidr.isBlank()) cmd += \"-s \" + r.srcCidr + \" \";\n" +
-                    "if(r.comment!=null&&!r.comment.isBlank()) cmd += \"-m comment --comment \\\"\" + r.comment + \"\\\" \";\n" +
+                    "if(r.srcCidr!=null&&!r.srcCidr.isBlank()&&!r.srcCidr.equalsIgnoreCase(\"any\")&&!r.srcCidr.equals(\"0.0.0.0/0\")&&!r.srcCidr.equals(\"0.0.0.0\")) cmd += \"-s \" + r.srcCidr + \" \";\n" +
+                    "if(r.dstCidr!=null&&!r.dstCidr.isBlank()&&!r.dstCidr.equalsIgnoreCase(\"any\")&&!r.dstCidr.equals(\"0.0.0.0/0\")&&!r.dstCidr.equals(\"0.0.0.0\")) cmd += \"-d \" + r.dstCidr + \" \";\n" +
                     "cmd += \"-j \" + (r.action!=null&&!r.action.isBlank()?r.action:\"ACCEPT\");\n" +
                     "ipt.executeAndSync(cmd); audit.log(\"admin\",\"RULE\",\"*\",\"SAVE\",cmd); return Map.of(\"saved\",r,\"sync\",Map.of(\"success\",true));\n" +
                     "});}\n" +
