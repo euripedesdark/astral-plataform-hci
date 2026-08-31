@@ -745,7 +745,7 @@ public class InstallerFirewall {
                     "<button class=\"panic\" onclick=\"panic()\">MODO PÂNICO<small>bloquear tudo, exceto admin</small></button></aside>\n" +
                     "<main class=\"main\"><span class=\"badge\">● MOTOR ATIVO · iptables</span><h2 id=\"secTitle\"></h2><div id=\"content\"></div></main>\n" +
                     "</div>\n" +
-                    "<script>\n" +
+                    "<script th:inline=\"none\">\n" +
                     "const SECS=[['dashboard','Dashboard'],['rules','Regras'],['nat','Port Forwarding'],['zones','Zonas'],['groups','Grupos'],['protections','Proteções'],['logs','Logs'],['backup','Backup & Auditoria']];\n" +
                     "let cur='dashboard';nav();show('dashboard');\n" +
                     "function nav(){document.getElementById('nav').innerHTML=SECS.map((s,i)=>'<button class=\"'+(s[0]===cur?'on':'')+'\" data-s=\"'+s[0]+'\" onclick=\"show(this.dataset.s)\"><span class=\"n\">0'+(i+1)+'</span>'+s[1]+'</button>').join('')}\n" +
@@ -765,4 +765,3 @@ public class InstallerFirewall {
                     "async function restoreBk(){const f=bkf.files[0];if(!f)return;const txt=await f.text();await api('/backup/restore',{method:'POST',headers:{'Content-Type':'text/plain'},body:txt});show('backup')}\n" +
                     "function newRule(){const r={chain:prompt('Chain','INPUT'),protocol:prompt('Protocolo','TCP'),port:prompt('Porta',''),srcCidr:prompt('Origem CIDR',''),action:prompt('Ação','ACCEPT'),enabled:true,comment:''};api('/rules',{method:'POST',body:JSON.stringify(r)}).then(()=>show('rules'))}\n" +
                     "</script></body></html>\n";
-}
