@@ -28,8 +28,7 @@ public class Installer {
         server.createContext("/", Installer::handleIndex);
         server.createContext("/install.html", Installer::handleInstallHTML);
         server.createContext("/api/stream", Installer::handleStream);
-        server.createContext("/api/setup-db", Installer::handleSetupDB);
-        server.setExecutor(Executors.newFixedThreadPool(8));
+        server.setExecutor(Executors.newCachedThreadPool());
         server.start();
 
         Thread installThread = new Thread(Installer::runInstallation, "installer");
@@ -39,9 +38,6 @@ public class Installer {
         Thread.currentThread().join();
     }
 
-    // ============================================================
-    // ORDEM FIEL AO install.py ORIGINAL (adaptada p/ WebFlux sem Nginx)
-    // ============================================================
     private static void runInstallation() {
         try {
             configureFirewall();
@@ -80,21 +76,25 @@ public class Installer {
             updateProgress(85, "Ativando serviços de dados e ajustando SELinux...");
             relaxSelinux();
             configurePostgreSQL(distro);
-            ensureDatabaseBase();
 
+            updateProgress(87, "Gerando certificados SSL para mTLS...");
+            generateCertificates();
+
+            updateProgress(88, "Configurando banco com mTLS (usuário astral)...");
+            ensureDatabaseBaseMTLS();
             createAstralGroup();
 
-            updateProgress(88, "Organizando projeto e aplicando chown...");
+            updateProgress(90, "Organizando projeto e aplicando chown...");
             fixOwnership();
 
-            updateProgress(90, "Compilando Spring Boot e criando systemd service...");
+            updateProgress(92, "Compilando Spring Boot e criando systemd service...");
             buildAndDeploySpringBoot();
 
             updateProgress(95, "Aguardando o serviço de banco de dados iniciar...");
             boolean dbReady = waitForPort(5432, 30);
 
             if (dbReady) {
-                updateProgress(100, "Instalação concluída! Configure o banco na próxima tela.");
+                updateProgress(100, "Instalação concluída! Acesse http://" + getLocalIP() + "/");
             } else {
                 updateProgress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.");
             }
@@ -104,6 +104,71 @@ public class Installer {
             e.printStackTrace();
             updateProgress(100, "ERRO: " + e.getMessage());
         }
+    }
+
+    private static void generateCertificates() throws IOException {
+        Path certDir = Paths.get("/etc/astral/certs");
+        Files.createDirectories(certDir);
+
+        // CA Root
+        runCmd("openssl req -new -x509 -days 3650 -nodes -out " + certDir + "/root.crt -keyout " + certDir + "/root.key -subj \"/CN=Astral-Root-CA\"", true);
+
+        // Server cert
+        runCmd("openssl req -new -nodes -out " + certDir + "/server.csr -keyout " + certDir + "/server.key -subj \"/CN=127.0.0.1\"", true);
+        runCmd("openssl x509 -req -in " + certDir + "/server.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/server.crt", true);
+
+        // Client cert (para usuário astral)
+        runCmd("openssl req -new -nodes -out " + certDir + "/client-astral.csr -keyout " + certDir + "/client-astral.key -subj \"/CN=astral\"", true);
+        runCmd("openssl x509 -req -in " + certDir + "/client-astral.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/client-astral.crt", true);
+        runCmd("openssl pkcs8 -topk8 -inform PEM -outform DER -in " + certDir + "/client-astral.key -out " + certDir + "/client-astral.pk8 -nocrypt", true);
+
+        // Copia certs do server para o PostgreSQL
+        runCmd("cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/pgsql/data/", true);
+        runCmd("chown postgres:postgres /var/lib/pgsql/data/root.crt /var/lib/pgsql/data/server.crt /var/lib/pgsql/data/server.key", true);
+        runCmd("chmod 0600 /var/lib/pgsql/data/server.key", true);
+
+        // Configura PostgreSQL para SSL
+        runCmd("grep -q '^ssl = on' /var/lib/pgsql/data/postgresql.conf || echo 'ssl = on' >> /var/lib/pgsql/data/postgresql.conf", false);
+        runCmd("grep -q '^ssl_ca_file' /var/lib/pgsql/data/postgresql.conf || echo \"ssl_ca_file = 'root.crt'\" >> /var/lib/pgsql/data/postgresql.conf", false);
+        runCmd("grep -q '^ssl_cert_file' /var/lib/pgsql/data/postgresql.conf || echo \"ssl_cert_file = 'server.crt'\" >> /var/lib/pgsql/data/postgresql.conf", false);
+        runCmd("grep -q '^ssl_key_file' /var/lib/pgsql/data/postgresql.conf || echo \"ssl_key_file = 'server.key'\" >> /var/lib/pgsql/data/postgresql.conf", false);
+
+        // Configura pg_hba.conf para aceitar astral via certificado
+        runCmd("sed -i '/hostssl astral astral/d' /var/lib/pgsql/data/pg_hba.conf", false);
+        runCmd("sed -i '1i hostssl astral astral 127.0.0.1/32 cert' /var/lib/pgsql/data/pg_hba.conf", false);
+
+        // Reinicia PostgreSQL
+        runCmd("systemctl restart postgresql", true);
+
+        // Permissões dos certs do cliente
+        runCmd("chown -R root:" + ASTRAL_GROUP + " " + certDir, true);
+        runCmd("chmod 0640 " + certDir + "/*", true);
+
+        System.out.println("[OK] Certificados SSL gerados e configurados.");
+    }
+
+    private static void ensureDatabaseBaseMTLS() {
+        try {
+            // Cria role astral (sem senha, só certificado)
+            String sql = "DO $$ BEGIN\n"
+                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\n"
+                + "CREATE ROLE astral LOGIN SUPERUSER;\n"
+                + "ELSE\n"
+                + "ALTER ROLE astral WITH LOGIN SUPERUSER;\n"
+                + "END IF; END $$;\n\n"
+                + "SELECT 'CREATE DATABASE astral OWNER astral'\n"
+                + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
+
+            Path f = Paths.get("/tmp/astral-init.sql");
+            Files.writeString(f, sql);
+            runCmd("chmod 0644 /tmp/astral-init.sql", false);
+            runCmd("runuser -u postgres -- psql -f /tmp/astral-init.sql", true);
+
+            // Cria também o usuário euripedes (ou outro admin) para acesso via navegador se necessário
+            runCmd("runuser -u postgres -- psql -c \"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'euripedes') THEN CREATE ROLE euripedes LOGIN SUPERUSER PASSWORD 'changeme'; ELSE ALTER ROLE euripedes WITH LOGIN SUPERUSER; END IF; END $$;\"", true);
+
+            System.out.println("[OK] Base 'astral' garantida com mTLS.");
+        } catch (IOException ignored) {}
     }
 
     private static boolean waitForPort(int port, int seconds) {
@@ -120,22 +185,6 @@ public class Installer {
         runCmd("setenforce 0 2>/dev/null || true", false);
         runCmd("sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true", false);
         System.out.println("[OK] SELinux em permissive (persistente).");
-    }
-
-    private static void ensureDatabaseBase() {
-        try {
-            String sql = "SELECT 'CREATE DATABASE astral'\n"
-                + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n"
-                + "DO $$ BEGIN\n"
-                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\n"
-                + "CREATE ROLE astral LOGIN SUPERUSER PASSWORD 'astral';\n"
-                + "END IF; END $$;\n";
-            Path f = Paths.get("/tmp/astral-init.sql");
-            Files.writeString(f, sql);
-            runCmd("chmod 0644 /tmp/astral-init.sql", false);
-            runCmd("runuser -u postgres -- psql -f /tmp/astral-init.sql", true);
-            System.out.println("[OK] Base 'astral' garantida.");
-        } catch (IOException ignored) {}
     }
 
     private static void createAstralGroup() {
@@ -163,82 +212,6 @@ public class Installer {
         runCmd("rm -f /etc/nginx/conf.d/astral.conf /etc/nginx/sites-enabled/astral.conf /etc/nginx/sites-available/astral.conf", false);
     }
 
-    // ============================================================
-    // SETUP-DB (formulário da UI) — SQL via arquivo
-    // ============================================================
-    private static void handleSetupDB(HttpExchange ex) throws IOException {
-        if (!"POST".equals(ex.getRequestMethod())) {
-            sendResponse(ex, 405, "{\"error\":\"Method not allowed\"}", "application/json");
-            return;
-        }
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(ex.getRequestBody()))) {
-            StringBuilder body = new StringBuilder();
-            String line;
-            while ((line = br.readLine()) != null) body.append(line);
-
-            String json = body.toString();
-            String username = extractJsonValue(json, "username");
-            String password = extractJsonValue(json, "password");
-
-            if (username == null || password == null || username.isEmpty() || password.isEmpty()) {
-                sendResponse(ex, 400, "{\"error\":\"Dados inválidos\"}", "application/json");
-                return;
-            }
-
-            Path sqlFile = Paths.get("/tmp/astral-setup.sql");
-            String sql = "DO $$ BEGIN\n"
-                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + username + "') THEN\n"
-                + "CREATE ROLE " + username + " LOGIN SUPERUSER PASSWORD '" + password + "';\n"
-                + "ELSE\n"
-                + "ALTER ROLE " + username + " WITH LOGIN SUPERUSER PASSWORD '" + password + "';\n"
-                + "END IF; END $$;\n\n"
-                + "SELECT 'CREATE DATABASE astral OWNER " + username + "'\n"
-                + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
-
-            Files.writeString(sqlFile, sql);
-            runCmd("chmod 0644 " + sqlFile, false);
-            String result = runCmd("runuser -u postgres -- psql -f " + sqlFile, true);
-            if (result == null) {
-                sendResponse(ex, 500, "{\"error\":\"Falha ao executar SQL no PostgreSQL\"}", "application/json");
-                return;
-            }
-
-            Path props = Paths.get("/etc/astral/application.properties");
-            Files.createDirectories(props.getParent());
-            Files.writeString(props, "server.port=80\n"
-                + "server.address=0.0.0.0\n"
-                + "spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral\n"
-                + "spring.datasource.username=" + username + "\n"
-                + "spring.datasource.password=" + password + "\n"
-                + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
-                + "spring.jpa.hibernate.ddl-auto=update\n"
-                + "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect\n"
-                + "spring.jackson.serialization.fail-on-empty-beans=false\n"
-                + "spring.web.resources.static-locations=classpath:/static/\n"
-                + "spring.thymeleaf.cache=false\n");
-
-            runCmd("chown root:" + ASTRAL_GROUP + " /etc/astral/application.properties", false);
-            runCmd("chmod 0640 /etc/astral/application.properties", false);
-
-            runCmd("systemctl restart astral-platform.service", false);
-
-            String localIP = getLocalIP();
-            sendResponse(ex, 200, "{\"success\":true,\"message\":\"Banco 'astral' criado e service reiniciado!\",\"redirect_url\":\"http://" + localIP + "/\"}", "application/json");
-
-            new Thread(() -> { try { Thread.sleep(60000); System.exit(0); } catch (InterruptedException ignored) {} }).start();
-        } catch (Exception e) {
-            sendResponse(ex, 500, "{\"error\":\"" + e.getMessage() + "\"}", "application/json");
-        }
-    }
-
-    private static String extractJsonValue(String json, String key) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
-        return m.find() ? m.group(1) : null;
-    }
-
-    // ============================================================
-    // UI DO INSTALADOR
-    // ============================================================
     private static void handleIndex(HttpExchange ex) throws IOException {
         sendResponse(ex, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html");
     }
@@ -253,9 +226,6 @@ public class Installer {
             .bar{width:100%;background:#111;height:20px;border-radius:10px;overflow:hidden;margin:20px 0;border:1px solid #333}
             .fill{width:0%;height:100%;background:linear-gradient(90deg,#3fa9ff,#1668ff);transition:width .4s}
             #status{color:#aaa;font-size:14px;margin-bottom:20px}
-            #setupForm{display:none;margin-top:20px}
-            #setupForm input{width:80%;padding:10px;margin:8px 0;border:1px solid #3fa9ff;border-radius:6px;background:#0b0f14;color:#fff;font-size:14px}
-            #setupForm button{padding:12px 30px;background:#3fa9ff;color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-top:10px}
             #redirectBtn{display:none;padding:12px 30px;background:#57e389;color:#000;border:none;border-radius:6px;cursor:pointer;font-weight:bold;margin-top:20px}
             </style></head>
             <body>
@@ -263,12 +233,6 @@ public class Installer {
             <h1>🚀 Instalando Astral Platform</h1>
             <div class="bar"><div class="fill" id="fill"></div></div>
             <div id="status">Iniciando...</div>
-            <div id="setupForm">
-                <h2 style="color:#9fd8ff;margin-top:0">Configurar Banco de Dados</h2>
-                <input type="text" id="dbUser" placeholder="Usuário do banco (ex: astral)">
-                <input type="password" id="dbPass" placeholder="Senha do banco">
-                <button onclick="setupDB()">Criar Banco e Configurar</button>
-            </div>
             <button id="redirectBtn" onclick="redirectToLogin()">Acessar Sistema</button>
             </div>
             <script>
@@ -277,25 +241,12 @@ public class Installer {
                 var d = JSON.parse(e.data);
                 document.getElementById('fill').style.width = d.progress + '%';
                 document.getElementById('status').textContent = d.status;
-                if (d.progress >= 100) { evt.close(); document.getElementById('setupForm').style.display = 'block'; }
+                if (d.progress >= 100) {
+                    evt.close();
+                    document.getElementById('redirectBtn').style.display = 'inline-block';
+                    window.redirectUrl = 'http://' + location.hostname + '/';
+                }
             };
-            function setupDB() {
-                var user = document.getElementById('dbUser').value;
-                var pass = document.getElementById('dbPass').value;
-                if (!user || !pass) { alert('Preencha usuário e senha!'); return; }
-                fetch('/api/setup-db', {method:'POST', headers:{'Content-Type':'application/json'},
-                    body: JSON.stringify({username:user, password:pass})})
-                .then(r => r.json())
-                .then(data => {
-                    if (data.success) {
-                        alert(data.message);
-                        document.getElementById('setupForm').style.display = 'none';
-                        document.getElementById('redirectBtn').style.display = 'inline-block';
-                        window.redirectUrl = data.redirect_url;
-                    } else { alert('Erro: ' + data.error); }
-                })
-                .catch(e => alert('Erro: ' + e));
-            }
             function redirectToLogin() { window.location.href = window.redirectUrl || '/'; }
             </script>
             </body></html>""";
@@ -316,9 +267,6 @@ public class Installer {
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
-    // ============================================================
-    // LAYOUT DO PROJETO — SEMPRE SOBRESCREVE
-    // ============================================================
     private static void ensureProjectLayout() throws IOException {
         String app = System.getProperty("user.dir");
         Path base  = Paths.get(app, "src", "main", "java", "com", "astral", "main");
@@ -348,25 +296,6 @@ public class Installer {
         System.out.println("[OK] " + p.getFileName() + " escrito/atualizado.");
     }
 
-    private static void copyStaticFrontend() {
-        try {
-            Path src = Paths.get(System.getProperty("user.dir"), "fabric", "frontend", "login");
-            Path dst = Paths.get(System.getProperty("user.dir"), "src", "main", "resources", "static");
-            if (!Files.isDirectory(src)) return;
-            try (var walk = Files.walk(src)) {
-                for (Path p : (Iterable<Path>) walk::iterator) {
-                    Path target = dst.resolve(src.relativize(p).toString());
-                    if (Files.isDirectory(p)) Files.createDirectories(target);
-                    else { Files.createDirectories(target.getParent());
-                           Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING); }
-                }
-            }
-            System.out.println("[OK] Frontend (login/css/js/images) copiado para static/ do JAR.");
-        } catch (IOException e) {
-            System.err.println("[AVISO] Falha ao copiar frontend estático: " + e.getMessage());
-        }
-    }
-
     private static void ensureFonts() {
         try {
             Path fonts = Paths.get(System.getProperty("user.dir"), "src", "main", "resources", "static", "fonts");
@@ -393,9 +322,6 @@ public class Installer {
         } catch (IOException ignored) {}
     }
 
-    // ============================================================
-    // BUILD + DEPLOY
-    // ============================================================
     private static void buildAndDeploySpringBoot() {
         String app = System.getProperty("user.dir");
         runCmd("cd " + app + " && mvn -B -DskipTests clean package", true);
@@ -424,10 +350,12 @@ public class Installer {
         if (!Files.exists(props)) {
             try {
                 Files.writeString(props, "server.port=80\nserver.address=0.0.0.0\n"
-                    + "spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral\n"
-                    + "spring.datasource.username=astral\nspring.datasource.password=astral\n"
+                    + "spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral?ssl=true&sslmode=verify-ca&sslcert=/etc/astral/certs/client-astral.crt&sslkey=/etc/astral/certs/client-astral.pk8&sslrootcert=/etc/astral/certs/root.crt\n"
+                    + "spring.datasource.username=astral\n"
                     + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
                     + "spring.jpa.hibernate.ddl-auto=update\n"
+                    + "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect\n"
+                    + "spring.jackson.serialization.fail-on-empty-beans=false\n"
                     + "spring.web.resources.static-locations=classpath:/static/\n"
                     + "spring.thymeleaf.cache=false\n");
                 runCmd("chown root:" + ASTRAL_GROUP + " /etc/astral/application.properties", false);
@@ -468,9 +396,6 @@ public class Installer {
         return "/usr/bin/java";
     }
 
-    // ============================================================
-    // ETAPAS DE SISTEMA (ordem fiel ao install.py)
-    // ============================================================
     private static void syncRepos(String distro) {
         switch (distro) {
             case "debian": runCmd("apt-get update", true); break;
@@ -564,9 +489,6 @@ public class Installer {
         runCmd("iptables-save > /etc/sysconfig/iptables 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true", false);
     }
 
-    // ============================================================
-    // UTILITÁRIOS
-    // ============================================================
     private static void sendResponse(HttpExchange ex, int code, String body, String type) throws IOException {
         byte[] b = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", type + "; charset=UTF-8");
@@ -622,9 +544,6 @@ public class Installer {
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
 
-    // ============================================================
-    // ARQUIVOS EMBUTIDOS
-    // ============================================================
     private static final String POM_XML = """
         <?xml version="1.0" encoding="UTF-8"?>
         <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -866,46 +785,31 @@ public class Installer {
         import java.nio.file.attribute.PosixFilePermission;
         import java.nio.file.attribute.PosixFilePermissions;
         import java.sql.DriverManager;
+        import java.util.Properties;
         import java.util.Set;
         @Component
         public class DatabaseBootstrap {
             @Value("${spring.datasource.username}") private String username;
-            @Value("${spring.datasource.password}") private String password;
             @Value("${spring.datasource.url}") private String url;
             @EventListener(ApplicationReadyEvent.class)
             public void ensureUserAndDatabase() {
-                try (var conn = DriverManager.getConnection(url, username, password)) {
-                    System.out.println("[BOOTSTRAP] Conexão com o banco 'astral' OK.");
+                Properties props = new Properties();
+                props.setProperty("user", username);
+                props.setProperty("ssl", "true");
+                props.setProperty("sslmode", "verify-ca");
+                props.setProperty("sslcert", "/etc/astral/certs/client-astral.crt");
+                props.setProperty("sslkey", "/etc/astral/certs/client-astral.pk8");
+                props.setProperty("sslrootcert", "/etc/astral/certs/root.crt");
+                try (var conn = DriverManager.getConnection(url, props)) {
+                    System.out.println("[BOOTSTRAP] Conexão JDBC (mTLS) com o banco 'astral' OK.");
                     return;
                 } catch (Exception e) {
-                    System.out.println("[BOOTSTRAP] Credenciais ausentes; auto-criando via psql... (" + e.getMessage() + ")");
-                }
-                try {
-                    String sql = "DO $$ BEGIN\\n"
-                        + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + username + "') THEN\\n"
-                        + "CREATE ROLE " + username + " LOGIN SUPERUSER PASSWORD '" + password + "';\\n"
-                        + "ELSE\\n"
-                        + "ALTER ROLE " + username + " WITH LOGIN SUPERUSER PASSWORD '" + password + "';\\n"
-                        + "END IF; END $$;\\n\\n"
-                        + "SELECT 'CREATE DATABASE astral OWNER " + username + "'\\n"
-                        + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\\\gexec\\n";
-                    Path tmp = Path.of("/tmp/astral-bootstrap.sql");
-                    Files.writeString(tmp, sql);
-                    Set<PosixFilePermission> perms = PosixFilePermissions.fromString("rw-r--r--");
-                    Files.setPosixFilePermissions(tmp, perms);
-                    Process p = new ProcessBuilder("runuser", "-u", "postgres", "--", "psql", "-f", "/tmp/astral-bootstrap.sql")
-                            .redirectErrorStream(true).start();
-                    int code = p.waitFor();
-                    System.out.println("[BOOTSTRAP] Auto-provisionamento executado (exit=" + code + ").");
-                } catch (Exception e) {
-                    System.out.println("[BOOTSTRAP] Falha no auto-provisionamento: " + e.getMessage());
+                    System.out.println("[BOOTSTRAP] Falha JDBC (mTLS): " + e.getMessage());
                 }
             }
         }
         """;
 
-    // home.html: SEM label duplicado — o PNG já traz o título desenhado;
-    // a imagem preenche o card inteiro (object-fit:cover). Modal corrigido.
     private static final String DEFAULT_HOME_HTML = """
         <!DOCTYPE html>
         <html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
