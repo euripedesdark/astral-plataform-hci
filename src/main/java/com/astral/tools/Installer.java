@@ -9,7 +9,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class Installer {
-
     private static final int PORT = 5000;
     private static final AtomicInteger progress = new AtomicInteger(0);
     private static String status = "Aguardando configuração inicial...";
@@ -44,10 +43,12 @@ public class Installer {
 
     private static void runInstallation() {
         try {
+            // LIBERA PORTAS ANTES DE ESPERAR O FORMULÁRIO (evita deadlock com iptables DROP)
+            configureFirewall();
+
             while (needAdmin) sleep(300);
             updateProgress(3, "Credenciais do admin recebidas. Iniciando instalação...");
 
-            configureFirewall();
             ensureProjectLayout();
             ensureFonts();
 
@@ -139,17 +140,24 @@ public class Installer {
         Path certDir = Paths.get("/etc/astral/certs");
         try { Files.createDirectories(certDir); } catch (IOException ignored) {}
 
+        // CA Root
         runCmd("openssl req -new -x509 -days 3650 -nodes -out " + certDir + "/root.crt -keyout " + certDir + "/root.key -subj \"/CN=Astral-Root-CA\"", true);
+
+        // Server cert
         runCmd("openssl req -new -nodes -out " + certDir + "/server.csr -keyout " + certDir + "/server.key -subj \"/CN=127.0.0.1\"", true);
         runCmd("openssl x509 -req -in " + certDir + "/server.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/server.crt", true);
+
+        // Client cert (para usuário astral via mTLS)
         runCmd("openssl req -new -nodes -out " + certDir + "/client-astral.csr -keyout " + certDir + "/client-astral.key -subj \"/CN=astral\"", true);
         runCmd("openssl x509 -req -in " + certDir + "/client-astral.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/client-astral.crt", true);
         runCmd("openssl pkcs8 -topk8 -inform PEM -outform DER -in " + certDir + "/client-astral.key -out " + certDir + "/client-astral.pk8 -nocrypt", true);
 
+        // Copia certs do server para PostgreSQL
         runCmd("cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/pgsql/data/ 2>/dev/null || cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/postgres/data/ 2>/dev/null || true", false);
         runCmd("chown postgres:postgres /var/lib/pgsql/data/root.crt /var/lib/pgsql/data/server.crt /var/lib/pgsql/data/server.key 2>/dev/null || chown postgres:postgres /var/lib/postgres/data/root.crt /var/lib/postgres/data/server.crt /var/lib/postgres/data/server.key 2>/dev/null || true", false);
         runCmd("chmod 0600 /var/lib/pgsql/data/server.key 2>/dev/null || chmod 0600 /var/lib/postgres/data/server.key 2>/dev/null || true", false);
 
+        // Permissões dos certs: root:astral 0640
         runCmd("chown -R root:" + ASTRAL_GROUP + " " + certDir, false);
         runCmd("chmod 0640 " + certDir + "/*", false);
 
@@ -176,16 +184,16 @@ public class Installer {
         try {
             String hba = Files.readString(hbaFile);
             String newHba = hba.lines()
-                .filter(l -> !l.contains("hostssl astral") && !l.contains("host astral")
-                          && !l.matches("^host\\s+astral\\s+" + adminUser + ".*"))
-                .collect(java.util.stream.Collectors.joining("\n"));
+                    .filter(l -> !l.contains("hostssl astral") && !l.contains("host astral")
+                            && !l.matches("^host\\s+astral\\s+" + adminUser + ".*"))
+                    .collect(java.util.stream.Collectors.joining("\n"));
 
             String rules =
-                "# Astral Platform - mTLS para aplicações\n" +
-                "hostssl astral astral 127.0.0.1/32 cert\n" +
-                "# Astral Platform - admin via senha\n" +
-                "host astral " + adminUser + " 127.0.0.1/32 md5\n" +
-                "host astral " + adminUser + " ::1/128 md5\n\n";
+                    "# Astral Platform - mTLS para aplicações\n" +
+                            "hostssl astral astral 127.0.0.1/32 cert\n" +
+                            "# Astral Platform - admin via senha\n" +
+                            "host astral " + adminUser + " 127.0.0.1/32 md5\n" +
+                            "host astral " + adminUser + " ::1/128 md5\n\n";
 
             Files.writeString(hbaFile, rules + newHba);
             System.out.println("[OK] pg_hba.conf configurado para mTLS + admin");
@@ -200,22 +208,24 @@ public class Installer {
     private static void ensureDatabaseBaseMTLS() {
         configurePostgresSSL();
 
+        // Cria role astral SEM senha (só mTLS)
         String sqlAstral = "DO $$ BEGIN\n"
-            + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\n"
-            + "CREATE ROLE astral LOGIN SUPERUSER;\n"
-            + "ELSE\n"
-            + "ALTER ROLE astral WITH LOGIN SUPERUSER;\n"
-            + "END IF; END $$;\n\n"
-            + "SELECT 'CREATE DATABASE astral OWNER astral'\n"
-            + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
+                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\n"
+                + "CREATE ROLE astral LOGIN SUPERUSER;\n"
+                + "ELSE\n"
+                + "ALTER ROLE astral WITH LOGIN SUPERUSER;\n"
+                + "END IF; END $$;\n\n"
+                + "SELECT 'CREATE DATABASE astral OWNER astral'\n"
+                + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
 
+        // Cria role admin COM senha
         String sqlAdmin = "DO $$ BEGIN\n"
-            + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + adminUser + "') THEN\n"
-            + "CREATE ROLE " + adminUser + " LOGIN SUPERUSER PASSWORD '" + adminPass + "';\n"
-            + "ELSE\n"
-            + "ALTER ROLE " + adminUser + " WITH LOGIN SUPERUSER PASSWORD '" + adminPass + "';\n"
-            + "END IF; END $$;\n"
-            + "GRANT ALL PRIVILEGES ON DATABASE astral TO " + adminUser + ";\n";
+                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + adminUser + "') THEN\n"
+                + "CREATE ROLE " + adminUser + " LOGIN SUPERUSER PASSWORD '" + adminPass + "';\n"
+                + "ELSE\n"
+                + "ALTER ROLE " + adminUser + " WITH LOGIN SUPERUSER PASSWORD '" + adminPass + "';\n"
+                + "END IF; END $$;\n"
+                + "GRANT ALL PRIVILEGES ON DATABASE astral TO " + adminUser + ";\n";
 
         try {
             Path f1 = Paths.get("/tmp/astral-init-mtls.sql");
@@ -314,12 +324,12 @@ public class Installer {
             function setupAdmin() {
                 var user = document.getElementById('adminUser').value.trim();
                 var pass = document.getElementById('adminPass').value;
-                if (!user || !pass) {
-                    document.getElementById('formError').textContent = 'Preencha usuário e senha!';
-                    return;
+                if (!user || !pass) { 
+                    document.getElementById('formError').textContent = 'Preencha usuário e senha!'; 
+                    return; 
                 }
                 fetch('/api/setup-admin', {
-                    method:'POST',
+                    method:'POST', 
                     headers:{'Content-Type':'application/json'},
                     body: JSON.stringify({username:user, password:pass})
                 })
@@ -341,9 +351,9 @@ public class Installer {
                     var d = JSON.parse(e.data);
                     document.getElementById('fill').style.width = d.progress + '%';
                     document.getElementById('status').textContent = d.status;
-                    if (d.progress >= 100) {
-                        evt.close();
-                        document.getElementById('redirectBtn').style.display = 'inline-block';
+                    if (d.progress >= 100) { 
+                        evt.close(); 
+                        document.getElementById('redirectBtn').style.display = 'inline-block'; 
                     }
                 };
             }
@@ -402,8 +412,8 @@ public class Installer {
             Path fonts = Paths.get(System.getProperty("user.dir"), "src", "main", "resources", "static", "fonts");
             Files.createDirectories(fonts);
             String[][] fs = {
-                {"orbitron-bold.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-700-normal.woff2"},
-                {"orbitron-black.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-900-normal.woff2"}
+                    {"orbitron-bold.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-700-normal.woff2"},
+                    {"orbitron-black.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-900-normal.woff2"}
             };
             for (String[] f : fs) {
                 Path dst = fonts.resolve(f[0]);
@@ -450,43 +460,43 @@ public class Installer {
         Path props = Paths.get("/etc/astral/application.properties");
         try {
             String sslUrl = "jdbc:postgresql://127.0.0.1:5432/astral?ssl=true&sslmode=verify-ca"
-                + "&sslcert=/etc/astral/certs/client-astral.crt"
-                + "&sslkey=/etc/astral/certs/client-astral.pk8"
-                + "&sslrootcert=/etc/astral/certs/root.crt";
+                    + "&sslcert=/etc/astral/certs/client-astral.crt"
+                    + "&sslkey=/etc/astral/certs/client-astral.pk8"
+                    + "&sslrootcert=/etc/astral/certs/root.crt";
 
             Files.writeString(props,
-                "server.port=80\n"
-              + "server.address=0.0.0.0\n"
-              + "spring.datasource.url=" + sslUrl + "\n"
-              + "spring.datasource.username=astral\n"
-              + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
-              + "spring.jpa.hibernate.ddl-auto=update\n"
-              + "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect\n"
-              + "spring.jackson.serialization.fail-on-empty-beans=false\n"
-              + "spring.web.resources.static-locations=classpath:/static/\n"
-              + "spring.thymeleaf.cache=false\n");
+                    "server.port=80\n"
+                            + "server.address=0.0.0.0\n"
+                            + "spring.datasource.url=" + sslUrl + "\n"
+                            + "spring.datasource.username=astral\n"
+                            + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
+                            + "spring.jpa.hibernate.ddl-auto=update\n"
+                            + "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect\n"
+                            + "spring.jackson.serialization.fail-on-empty-beans=false\n"
+                            + "spring.web.resources.static-locations=classpath:/static/\n"
+                            + "spring.thymeleaf.cache=false\n");
             runCmd("chown root:" + ASTRAL_GROUP + " " + props, false);
             runCmd("chmod 0640 " + props, false);
             System.out.println("[OK] application.properties gerado com mTLS automático");
         } catch (IOException ignored) {}
 
         String svc = "[Unit]\n"
-            + "Description=Astral Platform (Reactor Netty)\n"
-            + "After=network.target postgresql.service\n"
-            + "Requires=postgresql.service\n\n"
-            + "[Service]\n"
-            + "Type=simple\n"
-            + "User=root\n"
-            + "Group=" + ASTRAL_GROUP + "\n"
-            + "WorkingDirectory=/opt/astral-platform\n"
-            + "ExecStart=" + javaBin + " -jar /opt/astral-platform/astral-platform-1.0.0.jar --spring.config.location=file:/etc/astral/application.properties\n"
-            + "Restart=always\n"
-            + "RestartSec=10\n"
-            + "StandardOutput=journal\n"
-            + "StandardError=journal\n"
-            + "UMask=0007\n\n"
-            + "[Install]\n"
-            + "WantedBy=multi-user.target\n";
+                + "Description=Astral Platform (Reactor Netty)\n"
+                + "After=network.target postgresql.service\n"
+                + "Requires=postgresql.service\n\n"
+                + "[Service]\n"
+                + "Type=simple\n"
+                + "User=root\n"
+                + "Group=" + ASTRAL_GROUP + "\n"
+                + "WorkingDirectory=/opt/astral-platform\n"
+                + "ExecStart=" + javaBin + " -jar /opt/astral-platform/astral-platform-1.0.0.jar --spring.config.location=file:/etc/astral/application.properties\n"
+                + "Restart=always\n"
+                + "RestartSec=10\n"
+                + "StandardOutput=journal\n"
+                + "StandardError=journal\n"
+                + "UMask=0007\n\n"
+                + "[Install]\n"
+                + "WantedBy=multi-user.target\n";
         try { Files.writeString(Paths.get("/etc/systemd/system/astral-platform.service"), svc); } catch (IOException ignored) {}
         runCmd("systemctl daemon-reload", false);
         runCmd("systemctl enable astral-platform.service", false);
@@ -589,7 +599,7 @@ public class Installer {
     }
 
     private static void configureFirewall() {
-        int[] ports = {22, 80, 443, 3000, 5000, 5173, 5432, 8081, 9090};
+        int[] ports = {22, 80, 443, 3000, 5000, 5173, 5432, 8081, 9090, 8040};
         runCmd("systemctl stop firewalld ufw 2>/dev/null || true", false);
         runCmd("systemctl disable firewalld ufw 2>/dev/null || true", false);
         for (int p : ports) runCmd("iptables -I INPUT 1 -p tcp --dport " + p + " -j ACCEPT", false);
@@ -631,7 +641,7 @@ public class Installer {
     private static String getLocalIP() {
         try {
             ProcessBuilder pb = new ProcessBuilder("bash", "-c",
-                "ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i==\"src\") print $(i+1)}'");
+                    "ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i==\"src\") print $(i+1)}'");
             pb.redirectErrorStream(true);
             Process p = pb.start();
             StringBuilder out = new StringBuilder();
