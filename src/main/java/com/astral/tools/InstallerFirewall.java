@@ -860,7 +860,7 @@ public class InstallerFirewall {
                     "const SECS=[['dashboard','Dashboard'],['rules','Regras'],['nat','Port Forwarding'],['zones','Zonas'],['groups','Grupos'],['protections','Proteções'],['logs','Logs'],['backup','Backup & Auditoria']];\n" +
                     "let cur='dashboard';nav();show('dashboard');\n" +
                     "function nav(){document.getElementById('nav').innerHTML=SECS.map((s,i)=>'<button class=\"'+(s[0]===cur?'on':'')+'\" data-s=\"'+s[0]+'\" onclick=\"show(this.dataset.s)\"><span class=\"n\">0'+(i+1)+'</span>'+s[1]+'</button>').join('')}\n" +
-                    "async function api(p,o){const r=await fetch('/firewall/api'+p,Object.assign({headers:{'Content-Type':'application/json'}},o));return r.json()}\n" +
+                    "async function api(p,o){try{const r=await fetch('/firewall/api'+p,Object.assign({headers:{'Content-Type':'application/json'}},o));let data=null;try{data=await r.json()}catch(e){}if(!r.ok){const msg=(data&&(data.error||data.message))||('HTTP '+r.status);alert('Erro em '+p+':\\n\\n'+msg);throw new Error(msg)}return data}catch(e){alert('Falha ao chamar '+p+':\\n\\n'+e.message);throw e}}\n" +
                     "function panic(){if(!confirm('Ativar MODO PÂNICO?'))return;api('/panic',{method:'POST'}).then(()=>show('dashboard'))}\n" +
                     "async function show(s){cur=s;if(window.liveTimer){clearInterval(window.liveTimer);window.liveTimer=null}nav();document.getElementById('secTitle').textContent=SECS.find(x=>x[0]===s)[1].toUpperCase();const c=document.getElementById('content');c.innerHTML='';\n" +
                     "if(s==='dashboard'){const[st,sm]=await Promise.all([api('/status'),api('/stats')]);\n" +
