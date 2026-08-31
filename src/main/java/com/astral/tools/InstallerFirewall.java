@@ -40,8 +40,7 @@ public class InstallerFirewall {
             up(5, "Detectando distribuição...");
             String distro = detectDistro();
 
-            // SEGURANÇA: só insere a regra se NÃO existir (não apaga nada, não duplica)
-            up(8, "Verificando porta da UI no iptables (sem mexer no que já existe)...");
+            up(8, "Liberando porta da UI no iptables...");
             run("iptables -C INPUT -p tcp --dport " + PORT + " -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport " + PORT + " -j ACCEPT", false);
             run("iptables -C INPUT -p tcp --dport 8040 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 8040 -j ACCEPT", false);
 
@@ -65,7 +64,10 @@ public class InstallerFirewall {
             fixOwnership();
 
             up(70, "Compilando módulo (mvn package)...");
-            String mvnOut = run("cd " + app() + "/fabric/firewall && mvn -B -DskipTests clean package", true);
+            // CORREÇÃO: mvn roda como o dono do projeto, não como root
+            String owner = Files.getOwner(Paths.get(app())).getName();
+            String mvnCmd = "cd " + app() + "/fabric/firewall && runuser -u " + owner + " -- mvn -B -DskipTests clean package";
+            String mvnOut = run(mvnCmd, true);
             fixOwnership();
 
             Path jarPath = Paths.get(app(), "fabric", "firewall", "target", "astral-firewall-1.0.0.jar");
@@ -145,6 +147,11 @@ public class InstallerFirewall {
             run("chown -R " + owner + ":" + ASTRAL_GROUP + " " + fw + " 2>/dev/null || true", false);
             run("find " + fw + " -type d -exec chmod 2775 {} \\; 2>/dev/null || true", false);
             run("find " + fw + " -type f -exec chmod 0664 {} \\; 2>/dev/null || true", false);
+            // Garante que target/ exista com permissões corretas
+            Path target = fw.resolve("target");
+            if (!Files.exists(target)) Files.createDirectories(target);
+            run("chown -R " + owner + ":" + ASTRAL_GROUP + " " + target + " 2>/dev/null || true", false);
+            run("chmod 2775 " + target + " 2>/dev/null || true", false);
             System.out.println("[OK] Ownership: " + owner + ":" + ASTRAL_GROUP);
         } catch (IOException ignored) {}
     }
@@ -608,7 +615,7 @@ public class InstallerFirewall {
                     "return c==0;}catch(Exception e){return false;}}\n" +
                     "}\n";
 
-    // FW_API COM LAMBDAS EXPLÍCITAS (corrige os 6 erros de method reference)
+    // FW_API CORRIGIDO: variável n agora é int[] para ser effectively final
     private static final String FW_API =
             "package com.astral.firewall.api;\n" +
                     "import com.astral.firewall.model.*; import com.astral.firewall.repo.*; import com.astral.firewall.service.*;\n" +
@@ -625,15 +632,15 @@ public class InstallerFirewall {
                     "private final AuditLogRepo audits; private final FirewallSnapshotRepo snaps;\n" +
                     "public FirewallApiController(IptablesService i,StatsService s,AuditService a,BackupService b,FirewallRuleRepo r,PortForwardRepo f,MasqueradeRuleRepo m,ZoneRepo z,ZoneInterfaceRepo zi,HostGroupRepo hg,PortGroupRepo pg,ScheduleRepo sc,RateLimitPolicyRepo rl,AutoBanRuleRepo ab,ThreatListRepo tl,AuditLogRepo al,FirewallSnapshotRepo sn){ipt=i;stats=s;audit=a;backup=b;rules=r;forwards=f;masq=m;zones=z;zifaces=zi;hgroups=hg;pgroups=pg;schedules=sc;rates=rl;bans=ab;threats=tl;audits=al;snaps=sn;}\n" +
                     "private <T> Mono<T> call(java.util.concurrent.Callable<T> c){return Mono.fromCallable(c).subscribeOn(Schedulers.boundedElastic());}\n" +
-                    "@GetMapping(\"/status\") public Mono<Map<String,Object>> status(){return call(() -> Map.of(\"active\",true,\"motor\",\"iptables\",\"panicActive\",ipt.panicActive(),\"rulesActive\",rules.findAll().stream().filter(r->r.enabled).count(),\"pending\",rules.findAll().stream().filter(r->r.appliedAt==null).count()));}\n" +
+                    "@GetMapping(\"/status\") public Mono<Map<String,Object>> status(){return call(()->{Map<String,Object> m=new HashMap<>();m.put(\"active\",true);m.put(\"motor\",\"iptables\");m.put(\"panicActive\",ipt.panicActive());m.put(\"rulesActive\",rules.findAll().stream().filter(r->r.enabled).count());m.put(\"pending\",rules.findAll().stream().filter(r->r.appliedAt==null).count());return m;});}\n" +
                     "@GetMapping(\"/stats\") public Mono<Map<String,Object>> stats(){return call(() -> stats.stats());}\n" +
                     "@PostMapping(\"/panic\") public Mono<Map<String,Object>> panic(){return call(() -> ipt.panic(\"admin\"));}\n" +
                     "@PostMapping(\"/panic/revert\") public Mono<Map<String,Object>> revert(){return call(() -> ipt.revert(\"admin\"));}\n" +
                     "@GetMapping(\"/rules\") public Mono<List<FirewallRule>> rules(){return call(() -> rules.findAll());}\n" +
                     "@PostMapping(\"/rules\") public Mono<?> saveRule(@RequestBody FirewallRule r){return call(()->{if(r.priority==0)r.priority=(int)rules.count()+1;r.appliedAt=null;audit.log(\"admin\",\"RULE\",String.valueOf(r.id),\"SAVE\",r.chain+\"/\"+r.action);return Map.of(\"saved\",rules.save(r),\"sync\",ipt.applyFromDb(\"admin\"));});}\n" +
                     "@DeleteMapping(\"/rules/{id}\") public Mono<Map<String,Object>> delRule(@PathVariable Long id){return call(()->{rules.deleteById(id);audit.log(\"admin\",\"RULE\",id.toString(),\"DELETE\",\"\");return ipt.applyFromDb(\"admin\");});}\n" +
-                    "@PostMapping(\"/rules/reorder\") public Mono<Map<String,Object>> reorder(@RequestBody Map<String,Object> body){return call(()->{String chain=(String)body.get(\"chain\");@SuppressWarnings(\"unchecked\") List<Number> ids=(List<Number>)body.get(\"orderedIds\");int p=1;\n" +
-                    "for(Number n:ids){rules.findById(n.longValue()).ifPresent(r->{if(r.chain.equals(chain)){r.priority=p++;r.appliedAt=null;rules.save(r);}});}return ipt.applyFromDb(\"admin\");});}\n" +
+                    "@PostMapping(\"/rules/reorder\") public Mono<Map<String,Object>> reorder(@RequestBody Map<String,Object> body){return call(()->{String chain=(String)body.get(\"chain\");@SuppressWarnings(\"unchecked\") List<Number> ids=(List<Number>)body.get(\"orderedIds\");int[] p={1};\n" +
+                    "for(Number n:ids){rules.findById(n.longValue()).ifPresent(r->{if(r.chain.equals(chain)){r.priority=p[0]++;r.appliedAt=null;rules.save(r);}});}return ipt.applyFromDb(\"admin\");});}\n" +
                     "@PostMapping(\"/rules/apply\") public Mono<Map<String,Object>> apply(){return call(() -> ipt.applyFromDb(\"admin\"));}\n" +
                     "@GetMapping(\"/simulate\") public Mono<Map<String,Object>> sim(@RequestParam String proto,@RequestParam String port,@RequestParam(defaultValue=\"0.0.0.0\") String src,@RequestParam(defaultValue=\"0.0.0.0\") String dst){return call(()->{for(FirewallRule r:rules.findByChainOrderByPriority(\"INPUT\"))if(r.enabled&&match(r,proto,port,src,dst))return Map.of(\"match\",true,\"rule\",r);return Map.<String,Object>of(\"match\",false,\"policy\",\"DROP\");});}\n" +
                     "private boolean match(FirewallRule r,String proto,String port,String src,String dst){if(!r.protocol.equals(\"ALL\")&&!r.protocol.equalsIgnoreCase(proto))return false;if(!r.port.isBlank()&&!r.port.equals(port))return false;if(!r.srcCidr.isBlank()&&!inCidr(src,r.srcCidr))return false;if(!r.dstCidr.isBlank()&&!inCidr(dst,r.dstCidr))return false;return true;}\n" +
@@ -664,7 +671,7 @@ public class InstallerFirewall {
                     "@DeleteMapping(\"/autoban/{id}\") public Mono<Map<String,String>> delAb(@PathVariable Long id){return call(()->{bans.deleteById(id);return Map.of(\"success\",\"true\");});}\n" +
                     "@GetMapping(\"/threatlists\") public Mono<List<ThreatList>> tl(){return call(() -> threats.findAll());}\n" +
                     "@PostMapping(\"/threatlists\") public Mono<ThreatList> saveTl(@RequestBody ThreatList t){return call(() -> threats.save(t));}\n" +
-                    "@PostMapping(\"/threatlists/{id}/refresh\") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh(\"ipset create astral-threats hash:net -!\");String raw=ipt.sh(\"curl -fsSL \"+t.sourceUrl);int n=0;for(String line:raw.split(NL)){String ip=line.trim().split(\" \")[0];if(isIpish(ip)){ipt.sh(\"ipset add astral-threats \"+ip+\" -!\");n++;}}t.ipCount=n;t.lastUpdated=java.time.Instant.now();threats.save(t);return Map.of(\"success\",true,\"ipCount\",n);});}\n" +
+                    "@PostMapping(\"/threatlists/{id}/refresh\") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh(\"ipset create astral-threats hash:net -!\");String raw=ipt.sh(\"curl -fsSL \"+t.sourceUrl);int[] n={0};for(String line:raw.split(NL)){String ip=line.trim().split(\" \")[0];if(isIpish(ip)){ipt.sh(\"ipset add astral-threats \"+ip+\" -!\");n[0]++;}}t.ipCount=n[0];t.lastUpdated=java.time.Instant.now();threats.save(t);return Map.of(\"success\",true,\"ipCount\",n[0]);});}\n" +
                     "private boolean isIpish(String s){if(s.isEmpty())return false;int dots=0;for(char c:s.toCharArray()){if(c=='.')dots++;else if(!Character.isDigit(c)&&c!='/'&&c!='-')return false;}return dots>=1;}\n" +
                     "@GetMapping(\"/logs\") public Mono<List<Map<String,String>>> logs(@RequestParam(required=false) String ip,@RequestParam(required=false) String action){return call(()->{List<Map<String,String>> out=new ArrayList<>();for(String line:ipt.sh(\"journalctl -k -o short-unix --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' | tail -200\").split(NL)){if(line.isBlank())continue;if(ip!=null&&!line.contains(\"SRC=\"+ip))continue;if(action!=null&&!line.contains(\"ASTRAL-FW-\"+action))continue;out.add(Map.of(\"raw\",line));}return out;});}\n" +
                     "@GetMapping(\"/logs/export\") public Mono<String> exportLogs(@RequestParam(defaultValue=\"json\") String format){return call(()->{String raw=ipt.sh(\"journalctl -k --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' || true\");if(format.equals(\"csv\")){StringBuilder b=new StringBuilder(\"line\"+NL);for(String l:raw.split(NL))b.append(l.replace(\",\",\";\")).append(NL);return b.toString();}return raw;});}\n" +
@@ -675,7 +682,6 @@ public class InstallerFirewall {
                     "@GetMapping(\"/audit\") public Mono<List<AuditLog>> auditList(){return call(()->audits.findTop200ByOrderByTimestampDesc());}\n" +
                     "}\n";
 
-    // FW_WS com Mono.<Void>never() (corrige o erro de tipo)
     private static final String FW_WS =
             "package com.astral.firewall.ws;\n" +
                     "import org.springframework.stereotype.Component;\n" +
