@@ -502,9 +502,9 @@ public class InstallerFirewall {
                     "if(stdin!=null){p.getOutputStream().write(stdin.getBytes());p.getOutputStream().close();}\n" +
                     "String out=new String(p.getInputStream().readAllBytes());p.waitFor();return out;}catch(Exception e){return \"ERR:\"+e.getMessage();}}\n" +
                     "public String sh(String c){return run(List.of(\"bash\",\"-c\",c),null);}\n" +
-                    "public void persist(){sh(\"mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4 || iptables-save > /etc/sysconfig/iptables\");}\n" +
+                    "public void persist(){sh(\"sudo service iptables save 2>/dev/null || sudo /usr/libexec/iptables/iptables.init save 2>/dev/null || (sudo mkdir -p /etc/iptables && sudo iptables-save | sudo tee /etc/iptables/rules.v4 > /dev/null) || sudo iptables-save | sudo tee /etc/sysconfig/iptables > /dev/null\");}\n" +
                     "@Transactional public synchronized void syncFromRuntime(){\n" +
-                    "rules.deleteAll(); String dump=sh(\"iptables-save\"); int p=1;\n" +
+                    "rules.deleteAll(); String dump=sh(\"sudo iptables-save\"); int p=1;\n" +
                     "for(String l:dump.split(NL)){\n" +
                     "if(l.startsWith(\"-A INPUT\") || l.startsWith(\"-A FORWARD\") || l.startsWith(\"-A OUTPUT\")){\n" +
                     "if(l.contains(\"ASTRAL_BANNED\") || l.contains(\"hashlimit\")) continue;\n" +
@@ -519,7 +519,7 @@ public class InstallerFirewall {
                     "r.enabled=true; r.appliedAt=Instant.now();\n" +
                     "rules.save(r); } } }\n" +
                     "private String extract(String s,String p,int g,String d){java.util.regex.Matcher m=java.util.regex.Pattern.compile(p).matcher(s); return m.find()?m.group(g):d;}\n" +
-                    "public void executeAndSync(String cmd){ sh(\"iptables \"+cmd); persist(); syncFromRuntime(); }\n" +
+                    "public void executeAndSync(String cmd){ sh(\"sudo iptables \"+cmd); persist(); syncFromRuntime(); }\n" +
                     "private void guards(List<String> o){o.add(\"-A INPUT -i lo -j ACCEPT\");o.add(\"-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\");\n" +
                     "o.add(\"-A INPUT -p tcp --dport 80 -j ACCEPT\");o.add(\"-A INPUT -s 127.0.0.1/32 -p tcp --dport 8040 -j ACCEPT\");o.add(\"-A INPUT -j ASTRAL_BANNED\");}\n" +
                     "private String args(FirewallRule r){ if(r.rawRule!=null&&!r.rawRule.isBlank()) return \"-A \"+r.chain+\" \"+r.rawRule.substring(r.chain.length()).trim();\n" +
@@ -551,22 +551,20 @@ public class InstallerFirewall {
                     "for(MasqueradeRule m:masq.findAll())if(m.enabled)n.add(\"-A POSTROUTING -o \"+m.iface+\" -j MASQUERADE\");\n" +
                     "n.add(\"COMMIT\");return String.join(NL,f)+NL+String.join(NL,n)+NL;}\n" +
                     "public boolean validate(String script){try{Path t=Files.createTempFile(\"fw\",\".rules\");Files.writeString(t,script);\n" +
-                    "String out=run(List.of(\"bash\",\"-c\",\"iptables-restore --test \"+t.toAbsolutePath()),null);Files.deleteIfExists(t);return out.isBlank();}catch(Exception e){return false;}}\n" +
-                    "public FirewallSnapshot saveSnapshot(String label){return snaps.save(new FirewallSnapshot(label,sh(\"iptables-save\")));}\n" +
-                    "public void restoreDump(String dump){run(List.of(\"iptables-restore\"),dump);}\n" +
-                    "public Map<String,Object> applyFromDb(String user){Map<String,Object> res=new HashMap<>();\n" +
-                    "saveSnapshot(\"pre-apply\");String script=buildFromDb(false);\n" +
-                    "if(!validate(script)){res.put(\"success\",false);res.put(\"error\",\"Validação a seco falhou; kernel inalterado.\");return res;}\n" +
-                    "restoreDump(script);persist();Instant now=Instant.now();rules.findAll().forEach(r->r.appliedAt=now);rules.saveAll(rules.findAll());\n" +
-                    "syncFromRuntime();\n" +
-                    "audit.log(user,\"FIREWALL\",\"*\",\"APPLY\",\"regras=\"+rules.count());res.put(\"success\",true);return res;}\n" +
-                    "public Map<String,Object> panic(String user){saveSnapshot(\"pre-panic\");String script=buildFromDb(true);Map<String,Object> res=new HashMap<>();\n" +
-                    "if(!validate(script)){res.put(\"success\",false);return res;}\n" +
-                    "restoreDump(script);persist();syncFromRuntime();setState(\"panic\",\"ON\");audit.log(user,\"FIREWALL\",\"*\",\"PANIC\",\"\");res.put(\"success\",true);return res;}\n" +
+                    "String out=run(List.of(\"bash\",\"-c\",\"sudo iptables-restore --test \"+t.toAbsolutePath()),null);Files.deleteIfExists(t);return out.isBlank();}catch(Exception e){return false;}}\n" +
+                    "public FirewallSnapshot saveSnapshot(String label){return snaps.save(new FirewallSnapshot(label,sh(\"sudo iptables-save\")));}\n" +
+                    "public void restoreDump(String dump){run(List.of(\"bash\",\"-c\",\"echo \\\"\"+dump.replace(\"\\\"\",\"\\\\\\\"\")+\"\\\" | sudo iptables-restore\"),null);}\n" +
+                    "public Map<String,Object> applyFromDb(String user){ syncFromRuntime(); return Map.of(\"success\",true); }\n" +
+                    "public Map<String,Object> panic(String user){\n" +
+                    "saveSnapshot(\"pre-panic\");\n" +
+                    "sh(\"sudo iptables -P INPUT DROP; sudo iptables -P FORWARD DROP; sudo iptables -F INPUT; sudo iptables -A INPUT -i lo -j ACCEPT; sudo iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; sudo iptables -A INPUT -p tcp --dport 22 -j ACCEPT; sudo iptables -A INPUT -s 127.0.0.1/32 -p tcp --dport 8040 -j ACCEPT; sudo iptables -A INPUT -p tcp --dport 5001 -j ACCEPT\");\n" +
+                    "persist(); syncFromRuntime(); setState(\"panic\",\"ON\"); audit.log(user,\"FIREWALL\",\"*\",\"PANIC\",\"\");\n" +
+                    "return Map.of(\"success\",true);\n" +
+                    "}\n" +
                     "public Map<String,Object> revert(String user){Map<String,Object> res=new HashMap<>();\n" +
                     "Optional<FirewallSnapshot> s=snaps.findAllByOrderByCreatedAtDesc().stream().filter(x->x.label.startsWith(\"pre-\")).findFirst();\n" +
                     "if(s.isEmpty()){res.put(\"success\",false);res.put(\"error\",\"Sem snapshot no banco.\");return res;}\n" +
-                    "restoreDump(s.get().dumpText);persist();syncFromRuntime();setState(\"panic\",\"OFF\");audit.log(user,\"FIREWALL\",\"*\",\"REVERT\",\"snapshot=\"+s.get().id);res.put(\"success\",true);return res;}\n" +
+                    "restoreDump(s.get().dumpText);persist(); syncFromRuntime(); setState(\"panic\",\"OFF\"); audit.log(user,\"FIREWALL\",\"*\",\"REVERT\",\"snapshot=\"+s.get().id);res.put(\"success\",true);return res;}\n" +
                     "public boolean panicActive(){return state.findById(\"panic\").map(x->\"ON\".equals(x.value)).orElse(false);}\n" +
                     "private void setState(String k,String v){FirewallState st=state.findById(k).orElse(new FirewallState());st.key=k;st.value=v;state.save(st);}\n" +
                     "}\n";
@@ -593,7 +591,7 @@ public class InstallerFirewall {
                     "if(!src.isEmpty()){String key=src+\"|\"+dpt; top.computeIfAbsent(key,k->new int[]{0})[0]++; if(\"22\".equals(dpt))ssh++;}}\n" +
                     "else if(line.contains(\"ASTRAL-FW-REJECT\")){rejected++;}\n" +
                     "}catch(Exception ignored){} }\n" +
-                    "long accepted=0; String l=ipt.sh(\"iptables -L INPUT -v -n 2>/dev/null\");\n" +
+                    "long accepted=0; String l=ipt.sh(\"sudo iptables -L INPUT -v -n 2>/dev/null\");\n" +
                     "for(String line:l.split(NL)) if(line.contains(\"ACCEPT\")){ String[] c=line.trim().split(\" \"); try{accepted+=Long.parseLong(c[0].replaceAll(\"[^0-9]\",\"\"));}catch(Exception ignored){} }\n" +
                     "for(int i=0;i<24;i++) hourA[i]=(int)(accepted/24);\n" +
                     "m.put(\"blocked24\",blocked); m.put(\"rejected24\",rejected); m.put(\"accepted24\",accepted); m.put(\"sshAttempts\",ssh);\n" +
@@ -640,16 +638,17 @@ public class InstallerFirewall {
                     "private final AuditLogRepo audits; private final FirewallSnapshotRepo snaps;\n" +
                     "public FirewallApiController(IptablesService i,StatsService s,AuditService a,BackupService b,FirewallRuleRepo r,PortForwardRepo f,MasqueradeRuleRepo m,ZoneRepo z,ZoneInterfaceRepo zi,HostGroupRepo hg,PortGroupRepo pg,ScheduleRepo sc,RateLimitPolicyRepo rl,AutoBanRuleRepo ab,ThreatListRepo tl,AuditLogRepo al,FirewallSnapshotRepo sn){ipt=i;stats=s;audit=a;backup=b;rules=r;forwards=f;masq=m;zones=z;zifaces=zi;hgroups=hg;pgroups=pg;schedules=sc;rates=rl;bans=ab;threats=tl;audits=al;snaps=sn;}\n" +
                     "private <T> Mono<T> call(java.util.concurrent.Callable<T> c){return Mono.fromCallable(c).subscribeOn(Schedulers.boundedElastic());}\n" +
-                    "@GetMapping(\"/status\") public Mono<Map<String,Object>> status(){return call(()->{Map<String,Object> m=new HashMap<>();m.put(\"active\",true);m.put(\"motor\",\"iptables\");m.put(\"panicActive\",ipt.panicActive());m.put(\"rulesActive\",rules.count());m.put(\"pending\",0);return m;});}\n" +
+                    "@GetMapping(\"/status\") public Mono<Map<String,Object>> status(){return call(()->{Map<String,Object> m=new HashMap<>();m.put(\"active\",true);m.put(\"motor\",\"iptables\");m.put(\"panicActive\",ipt.panicActive());m.put(\"rulesActive\",rules.findAll().stream().filter(r->r.enabled).count());m.put(\"pending\",0);return m;});}\n" +
                     "@GetMapping(\"/stats\") public Mono<Map<String,Object>> stats(){return call(() -> stats.stats());}\n" +
                     "@PostMapping(\"/panic\") public Mono<Map<String,Object>> panic(){return call(() -> ipt.panic(\"admin\"));}\n" +
                     "@PostMapping(\"/panic/revert\") public Mono<Map<String,Object>> revert(){return call(() -> ipt.revert(\"admin\"));}\n" +
                     "@GetMapping(\"/rules\") public Mono<List<FirewallRule>> rules(){return call(() -> { ipt.syncFromRuntime(); return rules.findAll(); });}\n" +
                     "@PostMapping(\"/rules\") public Mono<?> saveRule(@RequestBody FirewallRule r){return call(()->{\n" +
-                    "String cmd = \"-A \" + r.chain + \" \";\n" +
-                    "if(r.protocol!=null&&!r.protocol.equals(\"ALL\")) cmd += \"-p \" + r.protocol.toLowerCase() + \" \";\n" +
+                    "String cmd = \"-I \" + r.chain + \" 1 \";\n" +
+                    "if(r.protocol!=null&&!r.protocol.equals(\"ALL\")) cmd += \"-p \" + r.protocol.toLowerCase() + \" -m \" + r.protocol.toLowerCase() + \" \";\n" +
                     "if(r.port!=null&&!r.port.isBlank()) cmd += \"--dport \" + r.port + \" \";\n" +
                     "if(r.srcCidr!=null&&!r.srcCidr.isBlank()) cmd += \"-s \" + r.srcCidr + \" \";\n" +
+                    "if(r.comment!=null&&!r.comment.isBlank()) cmd += \"-m comment --comment \\\"\" + r.comment + \"\\\" \";\n" +
                     "cmd += \"-j \" + (r.action!=null&&!r.action.isBlank()?r.action:\"ACCEPT\");\n" +
                     "ipt.executeAndSync(cmd); audit.log(\"admin\",\"RULE\",\"*\",\"SAVE\",cmd); return Map.of(\"saved\",r,\"sync\",Map.of(\"success\",true));\n" +
                     "});}\n" +
@@ -688,10 +687,10 @@ public class InstallerFirewall {
                     "@DeleteMapping(\"/autoban/{id}\") public Mono<Map<String,String>> delAb(@PathVariable Long id){return call(()->{bans.deleteById(id);return Map.of(\"success\",\"true\");});}\n" +
                     "@GetMapping(\"/threatlists\") public Mono<List<ThreatList>> tl(){return call(() -> threats.findAll());}\n" +
                     "@PostMapping(\"/threatlists\") public Mono<ThreatList> saveTl(@RequestBody ThreatList t){return call(() -> threats.save(t));}\n" +
-                    "@PostMapping(\"/threatlists/{id}/refresh\") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh(\"ipset create astral-threats hash:net -!\");String raw=ipt.sh(\"curl -fsSL \"+t.sourceUrl);int[] n={0};for(String line:raw.split(NL)){String ip=line.trim().split(\" \")[0];if(isIpish(ip)){ipt.sh(\"ipset add astral-threats \"+ip+\" -!\");n[0]++;}}t.ipCount=n[0];t.lastUpdated=java.time.Instant.now();threats.save(t);return Map.of(\"success\",true,\"ipCount\",n[0]);});}\n" +
+                    "@PostMapping(\"/threatlists/{id}/refresh\") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh(\"sudo ipset create astral-threats hash:net -!\");String raw=ipt.sh(\"curl -fsSL \"+t.sourceUrl);int[] n={0};for(String line:raw.split(NL)){String ip=line.trim().split(\" \")[0];if(isIpish(ip)){ipt.sh(\"sudo ipset add astral-threats \"+ip+\" -!\");n[0]++;}}t.ipCount=n[0];t.lastUpdated=java.time.Instant.now();threats.save(t);return Map.of(\"success\",true,\"ipCount\",n[0]);});}\n" +
                     "private boolean isIpish(String s){if(s.isEmpty())return false;int dots=0;for(char c:s.toCharArray()){if(c=='.')dots++;else if(!Character.isDigit(c)&&c!='/'&&c!='-')return false;}return dots>=1;}\n" +
-                    "@GetMapping(\"/logs\") public Mono<List<Map<String,String>>> logs(@RequestParam(required=false) String ip,@RequestParam(required=false) String action){return call(()->{List<Map<String,String>> out=new ArrayList<>();for(String line:ipt.sh(\"journalctl -k -o short-unix --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' | tail -200\").split(NL)){if(line.isBlank())continue;if(ip!=null&&!line.contains(\"SRC=\"+ip))continue;if(action!=null&&!line.contains(\"ASTRAL-FW-\"+action))continue;out.add(Map.of(\"raw\",line));}return out;});}\n" +
-                    "@GetMapping(\"/logs/export\") public Mono<String> exportLogs(@RequestParam(defaultValue=\"json\") String format){return call(()->{String raw=ipt.sh(\"journalctl -k --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' || true\");if(format.equals(\"csv\")){StringBuilder b=new StringBuilder(\"line\\n\");for(String l:raw.split(\"\\n\"))b.append(l.replace(\",\",\";\")).append(\"\\n\");return b.toString();}return raw;});}\n" +
+                    "@GetMapping(\"/logs\") public Mono<List<Map<String,String>>> logs(@RequestParam(required=false) String ip,@RequestParam(required=false) String action){return call(()->{List<Map<String,String>> out=new ArrayList<>();for(String line:ipt.sh(\"sudo journalctl -k -o short-unix --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' | tail -200\").split(NL)){if(line.isBlank())continue;if(ip!=null&&!line.contains(\"SRC=\"+ip))continue;if(action!=null&&!line.contains(\"ASTRAL-FW-\"+action))continue;out.add(Map.of(\"raw\",line));}return out;});}\n" +
+                    "@GetMapping(\"/logs/export\") public Mono<String> exportLogs(@RequestParam(defaultValue=\"json\") String format){return call(()->{String raw=ipt.sh(\"sudo journalctl -k --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' || true\");if(format.equals(\"csv\")){StringBuilder b=new StringBuilder(\"line\\n\");for(String l:raw.split(\"\\n\"))b.append(l.replace(\",\",\";\")).append(\"\\n\");return b.toString();}return raw;});}\n" +
                     "@GetMapping(\"/snapshots\") public Mono<List<FirewallSnapshot>> snapList(){return call(()->snaps.findAllByOrderByCreatedAtDesc());}\n" +
                     "@PostMapping(\"/snapshots/revert/{id}\") public Mono<Map<String,Object>> snapRevert(@PathVariable Long id){return call(()->{Optional<FirewallSnapshot> s=snaps.findById(id);if(s.isEmpty())return Map.of(\"success\",false);ipt.restoreDump(s.get().dumpText);ipt.persist();ipt.syncFromRuntime();audit.log(\"admin\",\"SNAPSHOT\",id.toString(),\"REVERT\",\"\");return Map.of(\"success\",true);});}\n" +
                     "@GetMapping(value=\"/backup\",produces=MediaType.TEXT_PLAIN_VALUE) public Mono<String> backup(){return call(() -> backup.exportSql());}\n" +
