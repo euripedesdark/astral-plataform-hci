@@ -10,27 +10,29 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class InstallerFirewall {
 
-    private static final int PORT = 5000;
+    private static final int PORT = 5001;
     private static final AtomicInteger progress = new AtomicInteger(0);
     private static String status = "Aguardando...";
     private static volatile boolean done = false;
-    private static volatile boolean needSetup = true;
-    private static volatile String dbUser = "", dbPass = "";
-    private static final String ASTRAL_GROUP = "astral"; // MESMO GRUPO do instalador principal
+    private static final String ASTRAL_GROUP = "astral";
 
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: use sudo"); System.exit(1); }
+
         HttpServer s = HttpServer.create(new InetSocketAddress(PORT), 0);
         s.createContext("/", e -> send(e, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html"));
         s.createContext("/install.html", InstallerFirewall::ui);
         s.createContext("/api/stream", InstallerFirewall::stream);
-        s.createContext("/api/setup-db", InstallerFirewall::setupDb);
         s.setExecutor(Executors.newCachedThreadPool());
         s.start();
+
         System.out.println("=".repeat(60));
         System.out.println("[ASTRAL FIREWALL] Instalador em http://" + getLocalIP() + ":" + PORT);
         System.out.println("=".repeat(60));
-        Thread t = new Thread(InstallerFirewall::run); t.setDaemon(true); t.start();
+
+        Thread t = new Thread(InstallerFirewall::run);
+        t.setDaemon(true);
+        t.start();
         Thread.currentThread().join();
     }
 
@@ -39,74 +41,92 @@ public class InstallerFirewall {
             up(5, "Detectando distribuição...");
             String distro = detectDistro();
 
-            up(10, "Garantindo iptables/ipset persistentes + porta da UI liberada...");
+            up(10, "Garantindo iptables/ipset persistentes...");
             if (distro.equals("debian")) run("DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent ipset", true);
             else if (distro.equals("arch")) run("pacman -S --noconfirm iptables-nft ipset", true);
             else run("dnf install -y iptables-services ipset", true);
-            run("iptables -I INPUT 1 -p tcp --dport " + PORT + " -j ACCEPT", false);
 
-            up(20, "Preencha usuário e senha do banco no navegador...");
-            while (needSetup) sleep(500);
+            up(20, "Validando conexão com banco via mTLS...");
+            if (!validateMTLSConnection()) {
+                up(100, "ERRO: Falha ao conectar no banco via mTLS. Execute o instalador principal primeiro.");
+                done = true;
+                return;
+            }
 
-            up(30, "Criando role/banco 'astral' com as credenciais informadas...");
-            createRoleDb();
-
-            up(40, "Criando tabelas do firewall no banco (campos inclusos)...");
+            up(30, "Criando tabelas do firewall no banco (campos inclusos)...");
             createTables();
 
             up(50, "Escrevendo projeto do módulo (sources + pom + template)...");
             writeProject();
-            fixOwnership();
 
             up(70, "Compilando módulo (mvn package)...");
-            String mvnOut = run("cd " + app() + "/fabric/firewall && mvn -B -DskipTests clean package", true);
-            fixOwnership();
-
-            // VERIFICAÇÃO: o jar foi realmente gerado?
-            Path jarPath = Paths.get(app(), "fabric", "firewall", "target", "astral-firewall-1.0.0.jar");
-            if (!Files.exists(jarPath)) {
-                up(100, "ERRO CRÍTICO: mvn package não gerou o JAR. Verifique a saída acima.");
-                System.err.println("[FALHA] JAR esperado em " + jarPath + " não existe.");
-                System.err.println("[FALHA] Últimas 30 linhas do mvn:");
-                if (mvnOut != null) {
-                    String[] lines = mvnOut.split("\n");
-                    for (int i = Math.max(0, lines.length - 30); i < lines.length; i++) System.err.println("  " + lines[i]);
-                }
-                done = true; return;
-            }
-            System.out.println("[OK] JAR gerado: " + jarPath + " (" + Files.size(jarPath) + " bytes)");
+            run("cd " + app() + "/fabric/firewall && mvn -B -DskipTests clean package", true);
 
             up(80, "Deploy em /opt/astral-firewall + systemd service...");
-            deploy(jarPath);
+            deploy();
 
             up(90, "Aguardando 127.0.0.1:8040 e conferindo tabelas...");
             boolean ok = false;
-            for (int i = 0; i < 30; i++) { try (var sk = new java.net.Socket()) { sk.connect(new InetSocketAddress("127.0.0.1", 8040), 500); ok = true; break; } catch (IOException e) { sleep(1000); } }
-            String n = run("PGPASSWORD='" + dbPass + "' psql -h 127.0.0.1 -U " + dbUser + " -d astral -t -c \"select count(*) from information_schema.tables where table_schema='public' and (table_name like 'firewall%' or table_name like 'port_forward' or table_name like 'masquerade%' or table_name like 'audit_log')\"", false);
+            for (int i = 0; i < 30; i++) {
+                try (var sk = new java.net.Socket()) {
+                    sk.connect(new InetSocketAddress("127.0.0.1", 8040), 500);
+                    ok = true;
+                    break;
+                } catch (IOException e) {
+                    sleep(1000);
+                }
+            }
+
+            String n = run("PGPASSWORD='astral' psql -h 127.0.0.1 -U astral -d astral -t -c \"select count(*) from information_schema.tables where table_schema='public' and (table_name like 'firewall%' or table_name like 'port_forward' or table_name like 'masquerade%' or table_name like 'audit_log')\"", false);
             System.out.println("[OK] Tabelas do firewall no banco: " + (n == null ? "?" : n.trim()));
 
-            up(100, ok ? "Módulo Firewall instalado! Acesse http://" + getLocalIP() + "/firewall" : "AVISO: 8040 não respondeu. journalctl -u astral-firewall.service");
+            up(100, ok ? "Módulo Firewall instalado! Acesse http://" + getLocalIP() + "/firewall" : "AVISO: 8040 não respondeu. journalctl -u astral-firewall");
             done = true;
-        } catch (Exception e) { e.printStackTrace(); up(100, "ERRO: " + e.getMessage()); done = true; }
+        } catch (Exception e) {
+            e.printStackTrace();
+            up(100, "ERRO: " + e.getMessage());
+            done = true;
+        }
+    }
+
+    private static boolean validateMTLSConnection() {
+        try {
+            Path propsPath = Paths.get("/etc/astral/application.properties");
+            if (!Files.exists(propsPath)) {
+                System.err.println("[ERRO] /etc/astral/application.properties não encontrado.");
+                return false;
+            }
+
+            String props = Files.readString(propsPath);
+            if (!props.contains("spring.datasource.username=astral")) {
+                System.err.println("[ERRO] application.properties não configurado para usuário astral.");
+                return false;
+            }
+
+            // Tenta conexão JDBC com mTLS
+            String cmd = "PGSSLCERT=/etc/astral/certs/client-astral.crt " +
+                        "PGSSLKEY=/etc/astral/certs/client-astral.pk8 " +
+                        "PGSSLROOTCERT=/etc/astral/certs/root.crt " +
+                        "PGSSLMODE=verify-ca " +
+                        "psql -h 127.0.0.1 -U astral -d astral -c 'SELECT 1'";
+
+            String result = run(cmd, false);
+            boolean success = result != null && result.contains("1 row");
+
+            if (success) {
+                System.out.println("[OK] Conexão mTLS validada com sucesso.");
+            } else {
+                System.err.println("[ERRO] Falha na conexão mTLS.");
+            }
+
+            return success;
+        } catch (Exception e) {
+            System.err.println("[ERRO] " + e.getMessage());
+            return false;
+        }
     }
 
     private static String app() { return System.getProperty("user.dir"); }
-
-    // Mesma lógica do instalador principal: dono + grupo astral, setgid em diretórios
-    private static void fixOwnership() {
-        try {
-            String owner = Files.getOwner(Paths.get(app())).getName();
-            run("chown -R " + owner + ":" + ASTRAL_GROUP + " " + app() + "/fabric/firewall 2>/dev/null || true", false);
-            run("find " + app() + "/fabric/firewall -type d -exec chmod 2775 {} \\; 2>/dev/null || true", false);
-            run("find " + app() + "/fabric/firewall -type f -exec chmod 0664 {} \\; 2>/dev/null || true", false);
-            System.out.println("[OK] Ownership: " + owner + ":" + ASTRAL_GROUP);
-        } catch (IOException ignored) {}
-    }
-
-    private static void createRoleDb() {
-        run("runuser -u postgres -- psql -c \"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='" + dbUser + "') THEN CREATE ROLE " + dbUser + " LOGIN SUPERUSER PASSWORD '" + dbPass + "'; ELSE ALTER ROLE " + dbUser + " WITH LOGIN SUPERUSER PASSWORD '" + dbPass + "'; END IF; END $$;\"", true);
-        run("runuser -u postgres -- psql -c \"SELECT 'CREATE DATABASE astral OWNER " + dbUser + "' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='astral')\\gexec\"", true);
-    }
 
     private static void createTables() throws IOException {
         Path f = Paths.get("/tmp/astral-fw-tables.sql");
@@ -115,35 +135,23 @@ public class InstallerFirewall {
         run("runuser -u postgres -- psql -d astral -f " + f, true);
     }
 
-    // Deploy: /opt com 2770 root:astral, /etc com properties 0640 root:astral,
-    // service roda com Group=astral (só grupo lê a senha — root também por ser dono).
-    private static void deploy(Path jarPath) {
-        run("mkdir -p /opt/astral-firewall", true);
-        run("cp " + jarPath.toAbsolutePath() + " /opt/astral-firewall/", true);
-        // Permissões estilo /opt/astral-platform: root:astral 2770, jar 0660
-        run("chown -R root:" + ASTRAL_GROUP + " /opt/astral-firewall", true);
-        run("chmod 2770 /opt/astral-firewall", true);
-        run("chmod 0660 /opt/astral-firewall/*.jar 2>/dev/null || true", false);
-
+    private static void deploy() {
+        run("mkdir -p /opt/astral-firewall && cp " + app() + "/fabric/firewall/target/astral-firewall-1.0.0.jar /opt/astral-firewall/", true);
         try {
             Files.createDirectories(Paths.get("/etc/astral"));
             Path props = Paths.get("/etc/astral/firewall.properties");
             Files.writeString(props,
                 "server.port=8040\nserver.address=127.0.0.1\n"
-              + "spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral\n"
-              + "spring.datasource.username=" + dbUser + "\n"
-              + "spring.datasource.password=" + dbPass + "\n"
+              + "spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral?ssl=true&sslmode=verify-ca&sslcert=/etc/astral/certs/client-astral.crt&sslkey=/etc/astral/certs/client-astral.pk8&sslrootcert=/etc/astral/certs/root.crt\n"
+              + "spring.datasource.username=astral\n"
               + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
               + "spring.jpa.hibernate.ddl-auto=update\nspring.thymeleaf.cache=false\n");
-            // SEGURANÇA: só root e grupo astral leem a senha
             run("chown root:" + ASTRAL_GROUP + " " + props, false);
             run("chmod 0640 " + props, false);
             System.out.println("[OK] " + props + " com 0640 root:" + ASTRAL_GROUP);
         } catch (IOException ignored) {}
 
-        String javaBin = run("readlink -f $(which java)", false);
-        if (javaBin != null) javaBin = javaBin.trim(); else javaBin = "/usr/bin/java";
-
+        String javaBin = run("readlink -f $(which java)", false).trim();
         try {
             Files.writeString(Paths.get("/etc/systemd/system/astral-firewall.service"),
                 "[Unit]\nDescription=Astral Firewall Module\nAfter=network.target postgresql.service astral-platform.service\n\n"
@@ -156,16 +164,6 @@ public class InstallerFirewall {
         run("systemctl daemon-reload && systemctl enable astral-firewall && systemctl restart astral-firewall", false);
     }
 
-    private static void setupDb(HttpExchange ex) throws IOException {
-        if (!"POST".equals(ex.getRequestMethod())) { send(ex, 405, "{}", "application/json"); return; }
-        String body = new String(ex.getRequestBody().readAllBytes());
-        dbUser = jax(body, "username"); dbPass = jax(body, "password");
-        if (dbUser.isEmpty() || dbPass.isEmpty()) { send(ex, 400, "{\"error\":\"Dados inválidos\"}", "application/json"); return; }
-        needSetup = false;
-        send(ex, 200, "{\"success\":true}", "application/json");
-    }
-    private static String jax(String j, String k) { var m = java.util.regex.Pattern.compile("\"" + k + "\"\\s*:\\s*\"([^\"]*)\"").matcher(j); return m.find() ? m.group(1) : ""; }
-
     private static void ui(HttpExchange ex) throws IOException {
         send(ex, 200, """
             <!DOCTYPE html><html><head><meta charset="UTF-8"><style>
@@ -173,20 +171,14 @@ public class InstallerFirewall {
             .box{width:480px;border:2px solid #ff5c5c;border-radius:14px;padding:26px;text-align:center;background:rgba(10,4,6,.85)}
             h1{color:#ff8888}.bar{height:18px;background:#111;border-radius:9px;overflow:hidden;margin:16px 0}
             .fill{height:100%;width:0;background:linear-gradient(90deg,#ff5c5c,#c22);transition:width .4s}
-            #status{color:#aaa;font-size:14px}#sf{margin-top:14px}
-            input{width:80%;padding:9px;margin:5px;border:1px solid #ff5c5c;border-radius:6px;background:#0b0f14;color:#fff}
-            button{padding:10px 24px;background:#ff5c5c;border:none;border-radius:6px;color:#fff;cursor:pointer}
+            #status{color:#aaa;font-size:14px}
             </style></head><body><div class="box">
             <h1>🔥 ASTRAL FIREWALL — INSTALADOR</h1>
             <div class="bar"><div class="fill" id="fill"></div></div><div id="status">...</div>
-            <div id="sf"><input id="u" placeholder="usuário do banco (ex: euripedes)"><input id="p" type="password" placeholder="senha">
-            <button onclick="sd()">Criar banco/tabelas e continuar</button></div></div>
+            </div>
             <script>var e=new EventSource('/api/stream');e.onmessage=function(ev){var d=JSON.parse(ev.data);
             document.getElementById('fill').style.width=d.progress+'%';document.getElementById('status').textContent=d.status;
-            if(d.progress>=100)e.close();};
-            function sd(){fetch('/api/setup-db',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({username:u.value,password:p.value})}).then(r=>r.json()).then(d=>{if(d.success)sf.style.display='none';})}
-            </script></body></html>""", "text/html");
+            if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
     }
 
     private static void stream(HttpExchange ex) throws IOException {
@@ -204,19 +196,66 @@ public class InstallerFirewall {
         } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
     }
 
-    private static void send(HttpExchange ex, int c, String b, String t) throws IOException { byte[] x = b.getBytes(); ex.getResponseHeaders().set("Content-Type", t); ex.sendResponseHeaders(c, x.length); ex.getResponseBody().write(x); ex.close(); }
-    private static void up(int p, String s) { progress.set(p); status = s; System.out.println("[" + p + "%] " + s); }
-    private static String run(String c, boolean log) { if (log) System.out.println("$ " + c); try { Process p = new ProcessBuilder("bash", "-c", c).redirectErrorStream(true).start(); String o = new String(p.getInputStream().readAllBytes()); p.waitFor(); return o; } catch (Exception e) { return ""; } }
-    private static String detectDistro() { try { String c = Files.readString(Paths.get("/etc/os-release")).toLowerCase(); if (c.contains("debian") || c.contains("ubuntu")) return "debian"; if (c.contains("arch")) return "arch"; } catch (Exception ignored) {} return "rhel"; }
-    private static String getLocalIP() { try { Process p = new ProcessBuilder("bash", "-c", "ip route get 1.1.1.1 | awk '/src/{for(i=1;i<=NF;i++)if($i==\"src\")print $(i+1)}'").start(); return new String(p.getInputStream().readAllBytes()).trim(); } catch (Exception e) { return "127.0.0.1"; } }
-    private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
-    private static void sleep(long ms) { try { Thread.sleep(ms); } catch (Exception ignored) {} }
+    private static void send(HttpExchange ex, int c, String b, String t) throws IOException {
+        byte[] x = b.getBytes();
+        ex.getResponseHeaders().set("Content-Type", t);
+        ex.sendResponseHeaders(c, x.length);
+        ex.getResponseBody().write(x);
+        ex.close();
+    }
+
+    private static void up(int p, String s) {
+        progress.set(p);
+        status = s;
+        System.out.println("[" + p + "%] " + s);
+    }
+
+    private static String run(String c, boolean log) {
+        if (log) System.out.println("$ " + c);
+        try {
+            Process p = new ProcessBuilder("bash", "-c", c).redirectErrorStream(true).start();
+            String o = new String(p.getInputStream().readAllBytes());
+            p.waitFor();
+            return o;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String detectDistro() {
+        try {
+            String c = Files.readString(Paths.get("/etc/os-release")).toLowerCase();
+            if (c.contains("debian") || c.contains("ubuntu")) return "debian";
+            if (c.contains("arch")) return "arch";
+        } catch (Exception ignored) {}
+        return "rhel";
+    }
+
+    private static String getLocalIP() {
+        try {
+            Process p = new ProcessBuilder("bash", "-c", "ip route get 1.1.1.1 | awk '/src/{for(i=1;i<=NF;i++)if($i==\"src\")print $(i+1)}'").start();
+            return new String(p.getInputStream().readAllBytes()).trim();
+        } catch (Exception e) {
+            return "127.0.0.1";
+        }
+    }
+
+    private static boolean isRoot() {
+        return System.getProperty("user.name").equals("root");
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (Exception ignored) {}
+    }
 
     private static void writeProject() throws IOException {
         String base = app() + "/fabric/firewall";
         String jbase = base + "/src/main/java/com/astral/firewall";
         for (String d : new String[]{jbase + "/model", jbase + "/repo", jbase + "/service", jbase + "/api", jbase + "/ws", jbase + "/web", base + "/src/main/resources/templates"})
             Files.createDirectories(Paths.get(d));
+
         write(base + "/pom.xml", FW_POM);
         write(base + "/src/main/resources/application.properties", FW_PROPS);
         write(base + "/src/main/resources/templates/firewall.html", FW_HTML);
@@ -235,6 +274,7 @@ public class InstallerFirewall {
         write(jbase + "/model/AuditLog.java", FW_AL);
         write(jbase + "/model/FirewallSnapshot.java", FW_SNAP);
         write(jbase + "/model/FirewallState.java", FW_STATE);
+
         write(jbase + "/repo/FirewallRuleRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface FirewallRuleRepo extends JpaRepository<FirewallRule,Long> { java.util.List<FirewallRule> findByChainOrderByPriority(String chain); }\n");
         write(jbase + "/repo/PortForwardRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface PortForwardRepo extends JpaRepository<PortForward,Long> {}\n");
         write(jbase + "/repo/MasqueradeRuleRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface MasqueradeRuleRepo extends JpaRepository<MasqueradeRule,Long> {}\n");
@@ -249,6 +289,7 @@ public class InstallerFirewall {
         write(jbase + "/repo/AuditLogRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface AuditLogRepo extends JpaRepository<AuditLog,Long> { java.util.List<AuditLog> findTop200ByOrderByTimestampDesc(); }\n");
         write(jbase + "/repo/FirewallSnapshotRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface FirewallSnapshotRepo extends JpaRepository<FirewallSnapshot,Long> { java.util.List<FirewallSnapshot> findAllByOrderByCreatedAtDesc(); }\n");
         write(jbase + "/repo/FirewallStateRepo.java", "package com.astral.firewall.repo;\nimport com.astral.firewall.model.*;\nimport org.springframework.data.jpa.repository.JpaRepository;\npublic interface FirewallStateRepo extends JpaRepository<FirewallState,String> {}\n");
+
         write(jbase + "/service/AuditService.java", FW_AUDIT);
         write(jbase + "/service/IptablesService.java", FW_IPT);
         write(jbase + "/service/StatsService.java", FW_STATS);
@@ -258,7 +299,11 @@ public class InstallerFirewall {
         write(jbase + "/ws/WsConfig.java", FW_WSC);
         write(jbase + "/web/PagesController.java", FW_PAGES);
     }
-    private static void write(String p, String c) throws IOException { Files.writeString(Paths.get(p), c); System.out.println("[OK] " + Paths.get(p).getFileName()); }
+
+    private static void write(String p, String c) throws IOException {
+        Files.writeString(Paths.get(p), c);
+        System.out.println("[OK] " + Paths.get(p).getFileName());
+    }
 
     private static final String TABLES_SQL = """
         CREATE TABLE IF NOT EXISTS firewall_rule (id BIGSERIAL PRIMARY KEY, chain VARCHAR(20), priority INT, protocol VARCHAR(10), src_cidr VARCHAR(50), dst_cidr VARCHAR(50), port VARCHAR(30), iface VARCHAR(30), action VARCHAR(10), enabled BOOLEAN, comment VARCHAR(512), applied_at TIMESTAMP);
@@ -279,34 +324,33 @@ public class InstallerFirewall {
         CREATE TABLE IF NOT EXISTS firewall_state (key VARCHAR(40) PRIMARY KEY, value VARCHAR(80));
         """;
 
-    // POM com tags XML completas (era o bug que fazia o mvn falhar)
-    private static final String FW_POM =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
-        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n" +
-        " xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n" +
-        "<modelVersion>4.0.0</modelVersion>\n" +
-        "<parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.2.0</version><relativePath/></parent>\n" +
-        "<groupId>com.astral</groupId><artifactId>astral-firewall</artifactId><version>1.0.0</version>\n" +
-        "<properties><java.version>21</java.version></properties>\n" +
-        "<dependencies>\n" +
-        "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>\n" +
-        "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-thymeleaf</artifactId></dependency>\n" +
-        "<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>\n" +
-        "<dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>\n" +
-        "</dependencies>\n" +
-        "<build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>\n" +
-        "</project>\n";
+    private static final String FW_POM = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+        <modelVersion>4.0.0</modelVersion>
+        <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.2.0</version><relativePath/></parent>
+        <groupId>com.astral</groupId><artifactId>astral-firewall</artifactId><version>1.0.0</version>
+        <properties><java.version>21</java.version></properties>
+        <dependencies>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-thymeleaf</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
+        <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>
+        </dependencies>
+        <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
+        </project>
+        """;
 
     private static final String FW_PROPS = """
         server.port=8040
         server.address=127.0.0.1
-        spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral
+        spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral?ssl=true&sslmode=verify-ca&sslcert=/etc/astral/certs/client-astral.crt&sslkey=/etc/astral/certs/client-astral.pk8&sslrootcert=/etc/astral/certs/root.crt
         spring.datasource.username=astral
-        spring.datasource.password=astral
         spring.datasource.driver-class-name=org.postgresql.Driver
         spring.jpa.hibernate.ddl-auto=update
         spring.thymeleaf.cache=false
         """;
+
     private static final String FW_APP = """
         package com.astral.firewall;
         import org.springframework.boot.SpringApplication;
@@ -315,6 +359,7 @@ public class InstallerFirewall {
         @SpringBootApplication @EnableScheduling
         public class FirewallApplication { public static void main(String[] a){ SpringApplication.run(FirewallApplication.class,a); } }
         """;
+
     private static final String FW_RULE = """
         package com.astral.firewall.model;
         import jakarta.persistence.*; import java.time.Instant;
@@ -326,6 +371,7 @@ public class InstallerFirewall {
         @Column(length=512) public String comment=""; public Instant appliedAt;
         }
         """;
+
     private static final String FW_PF = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
@@ -336,56 +382,67 @@ public class InstallerFirewall {
         @Column(length=512) public String description="";
         }
         """;
+
     private static final String FW_MQ = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class MasqueradeRule { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String iface; public boolean enabled=true; }
         """;
+
     private static final String FW_ZONE = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class Zone { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String name; public String trustLevel="LAN"; public String defaultPolicy="ACCEPT"; public String color="#57e389"; }
         """;
+
     private static final String FW_ZI = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class ZoneInterface { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public Long zoneId; public String ifaceName; }
         """;
+
     private static final String FW_HG = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class HostGroup { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String name; @ElementCollection(fetch=FetchType.EAGER) public java.util.List<String> cidrs=new java.util.ArrayList<>(); }
         """;
+
     private static final String FW_PG = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class PortGroup { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String name; @ElementCollection(fetch=FetchType.EAGER) public java.util.List<String> ports=new java.util.ArrayList<>(); }
         """;
+
     private static final String FW_SC = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class Schedule { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String name; public String daysOfWeek="SEG,TER,QUA,QUI,SEX"; public java.time.LocalTime startTime=java.time.LocalTime.of(8,0); public java.time.LocalTime endTime=java.time.LocalTime.of(18,0); }
         """;
+
     private static final String FW_RL = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class RateLimitPolicy { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String port; public String protocol="TCP"; public int ratePerSecond=20; public boolean enabled=true; }
         """;
+
     private static final String FW_AB = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class AutoBanRule { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public int maxAttempts=5; public int windowMinutes=5; public int banMinutes=30; public String targetPort="22"; public boolean enabled=true; }
         """;
+
     private static final String FW_TL = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class ThreatList { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String name; public String sourceUrl; public java.time.Instant lastUpdated; public int ipCount; public boolean enabled=true; }
         """;
+
     private static final String FW_AL = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class AuditLog { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String username; public String entityType; public String entityId; public String action; @Column(length=8192) public String diffJson; public java.time.Instant timestamp=java.time.Instant.now(); }
         """;
+
     private static final String FW_SNAP = """
         package com.astral.firewall.model;
         import jakarta.persistence.*; import java.time.Instant;
@@ -396,11 +453,13 @@ public class InstallerFirewall {
         public FirewallSnapshot(){} public FirewallSnapshot(String l,String d){label=l;dumpText=d;}
         }
         """;
+
     private static final String FW_STATE = """
         package com.astral.firewall.model;
         import jakarta.persistence.*;
         @Entity public class FirewallState { @Id public String key; public String value; }
         """;
+
     private static final String FW_AUDIT = """
         package com.astral.firewall.service;
         import com.astral.firewall.model.AuditLog; import com.astral.firewall.repo.AuditLogRepo;
@@ -412,6 +471,7 @@ public class InstallerFirewall {
         AuditLog a=new AuditLog(); a.username=user==null?"admin":user; a.entityType=type; a.entityId=id; a.action=action; a.diffJson=diff; repo.save(a); }
         }
         """;
+
     private static final String FW_IPT = """
         package com.astral.firewall.service;
         import com.astral.firewall.model.*; import com.astral.firewall.repo.*;
@@ -479,6 +539,7 @@ public class InstallerFirewall {
         private void setState(String k,String v){FirewallState st=state.findById(k).orElse(new FirewallState());st.key=k;st.value=v;state.save(st);}
         }
         """;
+
     private static final String FW_STATS = """
         package com.astral.firewall.service;
         import org.springframework.stereotype.Service;
@@ -514,6 +575,7 @@ public class InstallerFirewall {
         }
         }
         """;
+
     private static final String FW_BK = """
         package com.astral.firewall.service;
         import org.springframework.beans.factory.annotation.Value; import org.springframework.stereotype.Service;
@@ -532,6 +594,7 @@ public class InstallerFirewall {
         return c==0;}catch(Exception e){return false;}}
         }
         """;
+
     private static final String FW_API = """
         package com.astral.firewall.api;
         import com.astral.firewall.model.*; import com.astral.firewall.repo.*; import com.astral.firewall.service.*;
@@ -598,6 +661,7 @@ public class InstallerFirewall {
         @GetMapping("/audit") public Mono<List<AuditLog>> auditList(){return call(()->audits.findTop200ByOrderByTimestampDesc());}
         }
         """;
+
     private static final String FW_WS = """
         package com.astral.firewall.ws;
         import org.springframework.stereotype.Component;
@@ -615,6 +679,7 @@ public class InstallerFirewall {
         }
         }
         """;
+
     private static final String FW_WSC = """
         package com.astral.firewall.ws;
         import org.springframework.context.annotation.Bean; import org.springframework.context.annotation.Configuration;
@@ -627,11 +692,13 @@ public class InstallerFirewall {
         @Bean public WebSocketHandlerAdapter wsAdapter(){ return new WebSocketHandlerAdapter(); }
         }
         """;
+
     private static final String FW_PAGES = """
         package com.astral.firewall.web;
         import org.springframework.stereotype.Controller; import org.springframework.web.bind.annotation.GetMapping;
         @Controller public class PagesController { @GetMapping({"/firewall","/firewall/"}) public String page(){ return "firewall"; } }
         """;
+
     private static final String FW_HTML = """
         <!DOCTYPE html>
         <html lang="pt-br">
