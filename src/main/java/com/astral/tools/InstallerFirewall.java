@@ -40,9 +40,10 @@ public class InstallerFirewall {
             up(5, "Detectando distribuição...");
             String distro = detectDistro();
 
-            up(8, "Liberando porta da UI no iptables...");
-            run("iptables -I INPUT 1 -p tcp --dport " + PORT + " -j ACCEPT", false);
-            run("iptables -I INPUT 1 -p tcp --dport 8040 -j ACCEPT", false);
+            // SEGURANÇA: só insere a regra se NÃO existir (não apaga nada, não duplica)
+            up(8, "Verificando porta da UI no iptables (sem mexer no que já existe)...");
+            run("iptables -C INPUT -p tcp --dport " + PORT + " -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport " + PORT + " -j ACCEPT", false);
+            run("iptables -C INPUT -p tcp --dport 8040 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 8040 -j ACCEPT", false);
 
             up(10, "Garantindo iptables/ipset persistentes...");
             if (distro.equals("debian")) run("DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent ipset", true);
@@ -344,7 +345,6 @@ public class InstallerFirewall {
                     "CREATE TABLE IF NOT EXISTS firewall_snapshot (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMP, label VARCHAR(80), dump_text TEXT);\n" +
                     "CREATE TABLE IF NOT EXISTS firewall_state (key VARCHAR(40) PRIMARY KEY, value VARCHAR(80));\n";
 
-    // POM XML COMPLETO E VÁLIDO (as tags estavam faltando!)
     private static final String FW_POM =
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" +
                     "<project xmlns=\"http://maven.apache.org/POM/4.0.0\"\n" +
@@ -608,6 +608,7 @@ public class InstallerFirewall {
                     "return c==0;}catch(Exception e){return false;}}\n" +
                     "}\n";
 
+    // FW_API COM LAMBDAS EXPLÍCITAS (corrige os 6 erros de method reference)
     private static final String FW_API =
             "package com.astral.firewall.api;\n" +
                     "import com.astral.firewall.model.*; import com.astral.firewall.repo.*; import com.astral.firewall.service.*;\n" +
@@ -624,48 +625,57 @@ public class InstallerFirewall {
                     "private final AuditLogRepo audits; private final FirewallSnapshotRepo snaps;\n" +
                     "public FirewallApiController(IptablesService i,StatsService s,AuditService a,BackupService b,FirewallRuleRepo r,PortForwardRepo f,MasqueradeRuleRepo m,ZoneRepo z,ZoneInterfaceRepo zi,HostGroupRepo hg,PortGroupRepo pg,ScheduleRepo sc,RateLimitPolicyRepo rl,AutoBanRuleRepo ab,ThreatListRepo tl,AuditLogRepo al,FirewallSnapshotRepo sn){ipt=i;stats=s;audit=a;backup=b;rules=r;forwards=f;masq=m;zones=z;zifaces=zi;hgroups=hg;pgroups=pg;schedules=sc;rates=rl;bans=ab;threats=tl;audits=al;snaps=sn;}\n" +
                     "private <T> Mono<T> call(java.util.concurrent.Callable<T> c){return Mono.fromCallable(c).subscribeOn(Schedulers.boundedElastic());}\n" +
-                    "@GetMapping(\"/status\") public Mono<Map<String,Object>> status(){return call(()->Map.of(\"active\",true,\"motor\",\"iptables\",\"panicActive\",ipt.panicActive(),\"rulesActive\",rules.findAll().stream().filter(r->r.enabled).count(),\"pending\",rules.findAll().stream().filter(r->r.appliedAt==null).count()));}\n" +
-                    "@GetMapping(\"/stats\") public Mono<Map<String,Object>> stats(){return call(stats::stats);}\n" +
-                    "@PostMapping(\"/panic\") public Mono<Map<String,Object>> panic(){return call(()->ipt.panic(\"admin\"));}\n" +
-                    "@PostMapping(\"/panic/revert\") public Mono<Map<String,Object>> revert(){return call(()->ipt.revert(\"admin\"));}\n" +
-                    "@GetMapping(\"/rules\") public Mono<List<FirewallRule>> rules(){return call(rules::findAll);}\n" +
+                    "@GetMapping(\"/status\") public Mono<Map<String,Object>> status(){return call(() -> Map.of(\"active\",true,\"motor\",\"iptables\",\"panicActive\",ipt.panicActive(),\"rulesActive\",rules.findAll().stream().filter(r->r.enabled).count(),\"pending\",rules.findAll().stream().filter(r->r.appliedAt==null).count()));}\n" +
+                    "@GetMapping(\"/stats\") public Mono<Map<String,Object>> stats(){return call(() -> stats.stats());}\n" +
+                    "@PostMapping(\"/panic\") public Mono<Map<String,Object>> panic(){return call(() -> ipt.panic(\"admin\"));}\n" +
+                    "@PostMapping(\"/panic/revert\") public Mono<Map<String,Object>> revert(){return call(() -> ipt.revert(\"admin\"));}\n" +
+                    "@GetMapping(\"/rules\") public Mono<List<FirewallRule>> rules(){return call(() -> rules.findAll());}\n" +
                     "@PostMapping(\"/rules\") public Mono<?> saveRule(@RequestBody FirewallRule r){return call(()->{if(r.priority==0)r.priority=(int)rules.count()+1;r.appliedAt=null;audit.log(\"admin\",\"RULE\",String.valueOf(r.id),\"SAVE\",r.chain+\"/\"+r.action);return Map.of(\"saved\",rules.save(r),\"sync\",ipt.applyFromDb(\"admin\"));});}\n" +
                     "@DeleteMapping(\"/rules/{id}\") public Mono<Map<String,Object>> delRule(@PathVariable Long id){return call(()->{rules.deleteById(id);audit.log(\"admin\",\"RULE\",id.toString(),\"DELETE\",\"\");return ipt.applyFromDb(\"admin\");});}\n" +
-                    "@PostMapping(\"/rules/apply\") public Mono<Map<String,Object>> apply(){return call(()->ipt.applyFromDb(\"admin\"));}\n" +
-                    "@GetMapping(\"/forwards\") public Mono<List<PortForward>> fw(){return call(forwards::findAll);}\n" +
+                    "@PostMapping(\"/rules/reorder\") public Mono<Map<String,Object>> reorder(@RequestBody Map<String,Object> body){return call(()->{String chain=(String)body.get(\"chain\");@SuppressWarnings(\"unchecked\") List<Number> ids=(List<Number>)body.get(\"orderedIds\");int p=1;\n" +
+                    "for(Number n:ids){rules.findById(n.longValue()).ifPresent(r->{if(r.chain.equals(chain)){r.priority=p++;r.appliedAt=null;rules.save(r);}});}return ipt.applyFromDb(\"admin\");});}\n" +
+                    "@PostMapping(\"/rules/apply\") public Mono<Map<String,Object>> apply(){return call(() -> ipt.applyFromDb(\"admin\"));}\n" +
+                    "@GetMapping(\"/simulate\") public Mono<Map<String,Object>> sim(@RequestParam String proto,@RequestParam String port,@RequestParam(defaultValue=\"0.0.0.0\") String src,@RequestParam(defaultValue=\"0.0.0.0\") String dst){return call(()->{for(FirewallRule r:rules.findByChainOrderByPriority(\"INPUT\"))if(r.enabled&&match(r,proto,port,src,dst))return Map.of(\"match\",true,\"rule\",r);return Map.<String,Object>of(\"match\",false,\"policy\",\"DROP\");});}\n" +
+                    "private boolean match(FirewallRule r,String proto,String port,String src,String dst){if(!r.protocol.equals(\"ALL\")&&!r.protocol.equalsIgnoreCase(proto))return false;if(!r.port.isBlank()&&!r.port.equals(port))return false;if(!r.srcCidr.isBlank()&&!inCidr(src,r.srcCidr))return false;if(!r.dstCidr.isBlank()&&!inCidr(dst,r.dstCidr))return false;return true;}\n" +
+                    "private boolean inCidr(String ip,String cidr){try{String[] c=cidr.split(\"/\");byte[] a=InetAddress.getByName(c[0]).getAddress();byte[] b=InetAddress.getByName(ip).getAddress();int bits=c.length>1?Integer.parseInt(c[1]):32,full=bits/8,rem=bits%8;for(int i=0;i<full;i++)if(a[i]!=b[i])return false;if(rem>0){int m=(0xFF00>>rem)&0xFF;if((a[full]&m)!=(b[full]&m))return false;}return true;}catch(Exception e){return false;}}\n" +
+                    "@GetMapping(\"/forwards\") public Mono<List<PortForward>> fw(){return call(() -> forwards.findAll());}\n" +
                     "@PostMapping(\"/forwards\") public Mono<?> saveFw(@RequestBody PortForward f){return call(()->{boolean clash=forwards.findAll().stream().anyMatch(o->o.enabled&&o.iface.equals(f.iface)&&o.externalPort.equals(f.externalPort)&&o.protocol.equals(f.protocol)&&!o.id.equals(f.id));if(clash)return Map.of(\"success\",false,\"error\",\"Conflito de porta na mesma interface.\");return Map.of(\"saved\",forwards.save(f),\"sync\",ipt.applyFromDb(\"admin\"));});}\n" +
                     "@DeleteMapping(\"/forwards/{id}\") public Mono<Map<String,Object>> delFw(@PathVariable Long id){return call(()->{forwards.deleteById(id);return ipt.applyFromDb(\"admin\");});}\n" +
-                    "@GetMapping(\"/masquerade\") public Mono<List<MasqueradeRule>> mq(){return call(masq::findAll);}\n" +
+                    "@GetMapping(\"/masquerade\") public Mono<List<MasqueradeRule>> mq(){return call(() -> masq.findAll());}\n" +
                     "@PostMapping(\"/masquerade\") public Mono<?> saveMq(@RequestBody MasqueradeRule m){return call(()->Map.of(\"saved\",masq.save(m),\"sync\",ipt.applyFromDb(\"admin\")));}\n" +
                     "@DeleteMapping(\"/masquerade/{id}\") public Mono<Map<String,Object>> delMq(@PathVariable Long id){return call(()->{masq.deleteById(id);return ipt.applyFromDb(\"admin\");});}\n" +
-                    "@GetMapping(\"/zones\") public Mono<List<Zone>> z(){return call(zones::findAll);}\n" +
-                    "@PostMapping(\"/zones\") public Mono<Zone> saveZ(@RequestBody Zone z){return call(zones::save);}\n" +
+                    "@GetMapping(\"/zones\") public Mono<List<Zone>> z(){return call(() -> zones.findAll());}\n" +
+                    "@PostMapping(\"/zones\") public Mono<Zone> saveZ(@RequestBody Zone z){return call(() -> zones.save(z));}\n" +
                     "@DeleteMapping(\"/zones/{id}\") public Mono<Map<String,String>> delZ(@PathVariable Long id){return call(()->{zones.deleteById(id);zifaces.deleteByZoneId(id);return Map.of(\"success\",\"true\");});}\n" +
-                    "@GetMapping(\"/hostgroups\") public Mono<List<HostGroup>> hg(){return call(hgroups::findAll);}\n" +
-                    "@PostMapping(\"/hostgroups\") public Mono<HostGroup> saveHg(@RequestBody HostGroup g){return call(hgroups::save);}\n" +
+                    "@GetMapping(\"/hostgroups\") public Mono<List<HostGroup>> hg(){return call(() -> hgroups.findAll());}\n" +
+                    "@PostMapping(\"/hostgroups\") public Mono<HostGroup> saveHg(@RequestBody HostGroup g){return call(() -> hgroups.save(g));}\n" +
                     "@DeleteMapping(\"/hostgroups/{id}\") public Mono<Map<String,String>> delHg(@PathVariable Long id){return call(()->{hgroups.deleteById(id);return Map.of(\"success\",\"true\");});}\n" +
-                    "@GetMapping(\"/portgroups\") public Mono<List<PortGroup>> pg(){return call(pgroups::findAll);}\n" +
-                    "@PostMapping(\"/portgroups\") public Mono<PortGroup> savePg(@RequestBody PortGroup g){return call(pgroups::save);}\n" +
+                    "@GetMapping(\"/portgroups\") public Mono<List<PortGroup>> pg(){return call(() -> pgroups.findAll());}\n" +
+                    "@PostMapping(\"/portgroups\") public Mono<PortGroup> savePg(@RequestBody PortGroup g){return call(() -> pgroups.save(g));}\n" +
                     "@DeleteMapping(\"/portgroups/{id}\") public Mono<Map<String,String>> delPg(@PathVariable Long id){return call(()->{pgroups.deleteById(id);return Map.of(\"success\",\"true\");});}\n" +
-                    "@GetMapping(\"/schedules\") public Mono<List<Schedule>> sc(){return call(schedules::findAll);}\n" +
-                    "@PostMapping(\"/schedules\") public Mono<Schedule> saveSc(@RequestBody Schedule s){return call(schedules::save);}\n" +
+                    "@GetMapping(\"/schedules\") public Mono<List<Schedule>> sc(){return call(() -> schedules.findAll());}\n" +
+                    "@PostMapping(\"/schedules\") public Mono<Schedule> saveSc(@RequestBody Schedule s){return call(() -> schedules.save(s));}\n" +
                     "@DeleteMapping(\"/schedules/{id}\") public Mono<Map<String,String>> delSc(@PathVariable Long id){return call(()->{schedules.deleteById(id);return Map.of(\"success\",\"true\");});}\n" +
-                    "@GetMapping(\"/ratelimits\") public Mono<List<RateLimitPolicy>> rl(){return call(rates::findAll);}\n" +
+                    "@GetMapping(\"/ratelimits\") public Mono<List<RateLimitPolicy>> rl(){return call(() -> rates.findAll());}\n" +
                     "@PostMapping(\"/ratelimits\") public Mono<?> saveRl(@RequestBody RateLimitPolicy r){return call(()->Map.of(\"saved\",rates.save(r),\"sync\",ipt.applyFromDb(\"admin\")));}\n" +
                     "@DeleteMapping(\"/ratelimits/{id}\") public Mono<Map<String,Object>> delRl(@PathVariable Long id){return call(()->{rates.deleteById(id);return ipt.applyFromDb(\"admin\");});}\n" +
-                    "@GetMapping(\"/autoban\") public Mono<List<AutoBanRule>> ab(){return call(bans::findAll);}\n" +
-                    "@PostMapping(\"/autoban\") public Mono<AutoBanRule> saveAb(@RequestBody AutoBanRule b){return call(bans::save);}\n" +
+                    "@GetMapping(\"/autoban\") public Mono<List<AutoBanRule>> ab(){return call(() -> bans.findAll());}\n" +
+                    "@PostMapping(\"/autoban\") public Mono<AutoBanRule> saveAb(@RequestBody AutoBanRule b){return call(() -> bans.save(b));}\n" +
                     "@DeleteMapping(\"/autoban/{id}\") public Mono<Map<String,String>> delAb(@PathVariable Long id){return call(()->{bans.deleteById(id);return Map.of(\"success\",\"true\");});}\n" +
-                    "@GetMapping(\"/threatlists\") public Mono<List<ThreatList>> tl(){return call(threats::findAll);}\n" +
-                    "@PostMapping(\"/threatlists\") public Mono<ThreatList> saveTl(@RequestBody ThreatList t){return call(threats::save);}\n" +
+                    "@GetMapping(\"/threatlists\") public Mono<List<ThreatList>> tl(){return call(() -> threats.findAll());}\n" +
+                    "@PostMapping(\"/threatlists\") public Mono<ThreatList> saveTl(@RequestBody ThreatList t){return call(() -> threats.save(t));}\n" +
+                    "@PostMapping(\"/threatlists/{id}/refresh\") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh(\"ipset create astral-threats hash:net -!\");String raw=ipt.sh(\"curl -fsSL \"+t.sourceUrl);int n=0;for(String line:raw.split(NL)){String ip=line.trim().split(\" \")[0];if(isIpish(ip)){ipt.sh(\"ipset add astral-threats \"+ip+\" -!\");n++;}}t.ipCount=n;t.lastUpdated=java.time.Instant.now();threats.save(t);return Map.of(\"success\",true,\"ipCount\",n);});}\n" +
+                    "private boolean isIpish(String s){if(s.isEmpty())return false;int dots=0;for(char c:s.toCharArray()){if(c=='.')dots++;else if(!Character.isDigit(c)&&c!='/'&&c!='-')return false;}return dots>=1;}\n" +
                     "@GetMapping(\"/logs\") public Mono<List<Map<String,String>>> logs(@RequestParam(required=false) String ip,@RequestParam(required=false) String action){return call(()->{List<Map<String,String>> out=new ArrayList<>();for(String line:ipt.sh(\"journalctl -k -o short-unix --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' | tail -200\").split(NL)){if(line.isBlank())continue;if(ip!=null&&!line.contains(\"SRC=\"+ip))continue;if(action!=null&&!line.contains(\"ASTRAL-FW-\"+action))continue;out.add(Map.of(\"raw\",line));}return out;});}\n" +
+                    "@GetMapping(\"/logs/export\") public Mono<String> exportLogs(@RequestParam(defaultValue=\"json\") String format){return call(()->{String raw=ipt.sh(\"journalctl -k --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' || true\");if(format.equals(\"csv\")){StringBuilder b=new StringBuilder(\"line\"+NL);for(String l:raw.split(NL))b.append(l.replace(\",\",\";\")).append(NL);return b.toString();}return raw;});}\n" +
                     "@GetMapping(\"/snapshots\") public Mono<List<FirewallSnapshot>> snapList(){return call(()->snaps.findAllByOrderByCreatedAtDesc());}\n" +
                     "@PostMapping(\"/snapshots/revert/{id}\") public Mono<Map<String,Object>> snapRevert(@PathVariable Long id){return call(()->{Optional<FirewallSnapshot> s=snaps.findById(id);if(s.isEmpty())return Map.of(\"success\",false);ipt.restoreDump(s.get().dumpText);ipt.persist();audit.log(\"admin\",\"SNAPSHOT\",id.toString(),\"REVERT\",\"\");return Map.of(\"success\",true);});}\n" +
-                    "@GetMapping(value=\"/backup\",produces=MediaType.TEXT_PLAIN_VALUE) public Mono<String> backup(){return call(backup::exportSql);}\n" +
+                    "@GetMapping(value=\"/backup\",produces=MediaType.TEXT_PLAIN_VALUE) public Mono<String> backup(){return call(() -> backup.exportSql());}\n" +
                     "@PostMapping(value=\"/backup/restore\",consumes=MediaType.TEXT_PLAIN_VALUE) public Mono<Map<String,Object>> restore(@RequestBody String sql){return call(()->{boolean ok=backup.restoreSql(sql);if(ok)ipt.applyFromDb(\"admin\");audit.log(\"admin\",\"BACKUP\",\"*\",\"RESTORE\",\"ok=\"+ok);return Map.of(\"success\",ok);});}\n" +
                     "@GetMapping(\"/audit\") public Mono<List<AuditLog>> auditList(){return call(()->audits.findTop200ByOrderByTimestampDesc());}\n" +
                     "}\n";
 
+    // FW_WS com Mono.<Void>never() (corrige o erro de tipo)
     private static final String FW_WS =
             "package com.astral.firewall.ws;\n" +
                     "import org.springframework.stereotype.Component;\n" +
@@ -679,7 +689,7 @@ public class InstallerFirewall {
                     "catch(Exception e){ return session.close(); }\n" +
                     "Flux<WebSocketMessage> out=Flux.create(sink->{ Thread t=new Thread(()->{ try(InputStream in=proc.getInputStream()){\n" +
                     "byte[] buf=new byte[4096]; int n; while((n=in.read(buf))!=-1) sink.next(session.textMessage(new String(buf,0,n,StandardCharsets.UTF_8))); }catch(Exception ignored){} sink.complete(); }); t.setDaemon(true); t.start(); });\n" +
-                    "return session.send(out).then(Mono.never()).onErrorResume(e->Mono.empty()).doFinally(s->proc.destroyForcibly());\n" +
+                    "return session.send(out).then(Mono.<Void>never()).onErrorResume(e->Mono.empty()).doFinally(s->proc.destroyForcibly());\n" +
                     "}\n" +
                     "}\n";
 
@@ -700,7 +710,6 @@ public class InstallerFirewall {
                     "import org.springframework.stereotype.Controller; import org.springframework.web.bind.annotation.GetMapping;\n" +
                     "@Controller public class PagesController { @GetMapping({\"/firewall\",\"/firewall/\"}) public String page(){ return \"firewall\"; } }\n";
 
-    // HTML completo com layout do firewall
     private static final String FW_HTML =
             "<!DOCTYPE html>\n" +
                     "<html lang=\"pt-br\">\n" +
