@@ -378,8 +378,8 @@ public class InstallerFirewall {
 
     private static final String TABLES_SQL =
             "CREATE TABLE IF NOT EXISTS firewall_rule (id BIGSERIAL PRIMARY KEY, chain VARCHAR(20), priority INT, protocol VARCHAR(10), src_cidr VARCHAR(50), dst_cidr VARCHAR(50), port VARCHAR(30), iface VARCHAR(30), action VARCHAR(30), enabled BOOLEAN, comment VARCHAR(512), raw_rule VARCHAR(1024), bytes VARCHAR(30), packets VARCHAR(30), applied_at TIMESTAMP);\n" +
-                    "CREATE TABLE IF NOT EXISTS port_forward (id BIGSERIAL PRIMARY KEY, iface VARCHAR(30), external_port VARCHAR(30), protocol VARCHAR(10), internal_ip VARCHAR(50), internal_port VARCHAR(30), enabled BOOLEAN, description VARCHAR(512));\n" +
-                    "CREATE TABLE IF NOT EXISTS masquerade_rule (id BIGSERIAL PRIMARY KEY, iface VARCHAR(30), enabled BOOLEAN);\n" +
+                    "CREATE TABLE IF NOT EXISTS port_forward (id BIGSERIAL PRIMARY KEY, iface VARCHAR(30), external_port VARCHAR(30), protocol VARCHAR(10), internal_ip VARCHAR(50), internal_port VARCHAR(30), enabled BOOLEAN, description VARCHAR(512), bytes VARCHAR(30), packets VARCHAR(30));\n" +
+                    "CREATE TABLE IF NOT EXISTS masquerade_rule (id BIGSERIAL PRIMARY KEY, iface VARCHAR(30), enabled BOOLEAN, bytes VARCHAR(30), packets VARCHAR(30));\n" +
                     "CREATE TABLE IF NOT EXISTS zone (id BIGSERIAL PRIMARY KEY, name VARCHAR(80), trust_level VARCHAR(20), default_policy VARCHAR(10), color VARCHAR(20));\n" +
                     "CREATE TABLE IF NOT EXISTS zone_interface (id BIGSERIAL PRIMARY KEY, zone_id BIGINT, iface_name VARCHAR(30));\n" +
                     "CREATE TABLE IF NOT EXISTS host_group (id BIGSERIAL PRIMARY KEY, name VARCHAR(80));\n" +
@@ -444,7 +444,7 @@ public class InstallerFirewall {
                     "public class FirewallApplication {\n" +
                     "private final IptablesService ipt; public FirewallApplication(IptablesService i){ipt=i;}\n" +
                     "public static void main(String[] a){ SpringApplication.run(FirewallApplication.class,a); }\n" +
-                    "@EventListener(ApplicationReadyEvent.class) public void init(){ ipt.syncFromRuntime(); }\n" +
+                    "@EventListener(ApplicationReadyEvent.class) public void init(){ ipt.syncFromRuntime(); ipt.syncNatFromDb(); }\n" +
                     "}\n";
 
     private static final String FW_RULE =
@@ -469,12 +469,13 @@ public class InstallerFirewall {
                     "public String iface; public String externalPort; public String protocol=\"TCP\";\n" +
                     "public String internalIp; public String internalPort; public boolean enabled=true;\n" +
                     "@Column(length=512) public String description=\"\";\n" +
+                    "public String bytes=\"0\"; public String packets=\"0\";\n" +
                     "}\n";
 
     private static final String FW_MQ =
             "package com.astral.firewall.model;\n" +
                     "import jakarta.persistence.*;\n" +
-                    "@Entity public class MasqueradeRule { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String iface; public boolean enabled=true; }\n";
+                    "@Entity public class MasqueradeRule { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; public String iface; public boolean enabled=true; public String bytes=\"0\"; public String packets=\"0\"; }\n";
 
     private static final String FW_ZONE =
             "package com.astral.firewall.model;\n" +
@@ -547,7 +548,6 @@ public class InstallerFirewall {
                     "AuditLog a=new AuditLog(); a.username=user==null?\"admin\":user; a.entityType=type; a.entityId=id; a.action=action; a.diffJson=diff; repo.save(a); }\n" +
                     "}\n";
 
-    // Modificado para capturar Bytres via iptables-save -c e aplicar Port Forwarding corretamente no kernel!
     private static final String FW_IPT =
             "package com.astral.firewall.service;\n" +
                     "import com.astral.firewall.model.*; import com.astral.firewall.repo.*;\n" +
@@ -574,7 +574,7 @@ public class InstallerFirewall {
                     "String ruleLine=l; String pkts=\"0\", bytes=\"0\";\n" +
                     "if(l.startsWith(\"[\")) { int cb=l.indexOf(']'); if(cb>0){ String[] counts=l.substring(1,cb).split(\":\"); if(counts.length==2){pkts=counts[0]; bytes=counts[1];} ruleLine=l.substring(cb+2).trim(); } }\n" +
                     "if(ruleLine.startsWith(\"-A INPUT\") || ruleLine.startsWith(\"-A FORWARD\") || ruleLine.startsWith(\"-A OUTPUT\")){\n" +
-                    "if(ruleLine.contains(\"ASTRAL_BANNED\") || ruleLine.contains(\"hashlimit\")) continue;\n" +
+                    "if(ruleLine.contains(\"ASTRAL_BANNED\") || ruleLine.contains(\"hashlimit\") || ruleLine.contains(\"auto-fwd-\")) continue;\n" +
                     "FirewallRule r=new FirewallRule(); r.rawRule=ruleLine.substring(3).trim();\n" +
                     "r.chain=r.rawRule.split(\" \")[0]; r.priority=p++;\n" +
                     "r.action=extract(ruleLine,\" -j ([a-zA-Z0-9_]+)\",1,\"ACCEPT\");\n" +
@@ -586,10 +586,36 @@ public class InstallerFirewall {
                     "r.bytes=bytes; r.packets=pkts;\n" +
                     "r.enabled=true; r.appliedAt=Instant.now();\n" +
                     "rules.save(r); } } }\n" +
+                    "public void updateNatStats() {\n" +
+                    "String dump = sh(\"sudo iptables-save -c -t nat\"); if(dump==null) return;\n" +
+                    "Map<Long, String> pfBytes = new HashMap<>(); Map<Long, String> masqBytes = new HashMap<>();\n" +
+                    "for(String l : dump.split(NL)) { if(!l.startsWith(\"[\")) continue;\n" +
+                    "int cb = l.indexOf(']'); if(cb<0) continue;\n" +
+                    "String[] counts = l.substring(1,cb).split(\":\"); if(counts.length!=2) continue;\n" +
+                    "String bytes = counts[1];\n" +
+                    "java.util.regex.Matcher m1 = java.util.regex.Pattern.compile(\"pfwd-(\\\\d+)\").matcher(l);\n" +
+                    "if(m1.find()) pfBytes.put(Long.parseLong(m1.group(1)), bytes);\n" +
+                    "java.util.regex.Matcher m2 = java.util.regex.Pattern.compile(\"masq-(\\\\d+)\").matcher(l);\n" +
+                    "if(m2.find()) masqBytes.put(Long.parseLong(m2.group(1)), bytes); }\n" +
+                    "List<PortForward> pfs = forwards.findAll(); boolean savePf = false;\n" +
+                    "for(PortForward pf : pfs) { if(pfBytes.containsKey(pf.id)) { pf.bytes = pfBytes.get(pf.id); savePf = true; } }\n" +
+                    "if(savePf) forwards.saveAll(pfs);\n" +
+                    "List<MasqueradeRule> masqs = masq.findAll(); boolean saveMq = false;\n" +
+                    "for(MasqueradeRule mq : masqs) { if(masqBytes.containsKey(mq.id)) { mq.bytes = masqBytes.get(mq.id); saveMq = true; } }\n" +
+                    "if(saveMq) masq.saveAll(masqs); }\n" +
                     "public void syncNatFromDb() {\n" +
                     "sh(\"sudo iptables -t nat -F PREROUTING\"); sh(\"sudo iptables -t nat -F POSTROUTING\");\n" +
-                    "for(PortForward pf : forwards.findAll()) { if(pf.enabled) { String pt = pf.protocol.toLowerCase(); sh(\"sudo iptables -t nat -A PREROUTING -i \"+pf.iface+\" -p \"+pt+\" -m \"+pt+\" --dport \"+pf.externalPort+\" -j DNAT --to-destination \"+pf.internalIp+\":\"+pf.internalPort); } }\n" +
-                    "for(MasqueradeRule m : masq.findAll()) { if(m.enabled) { sh(\"sudo iptables -t nat -A POSTROUTING -o \"+m.iface+\" -j MASQUERADE\"); } }\n" +
+                    "for(PortForward pf : forwards.findAll()) { if(pf.enabled) {\n" +
+                    "String pt = pf.protocol.toLowerCase();\n" +
+                    "String iface = (pf.iface != null && !pf.iface.isBlank() && !pf.iface.equalsIgnoreCase(\"any\")) ? \"-i \" + pf.iface.trim() + \" \" : \"\";\n" +
+                    "String dest = pf.internalIp.trim();\n" +
+                    "if(pf.internalPort != null && !pf.internalPort.isBlank()) dest += \":\" + pf.internalPort.trim();\n" +
+                    "sh(\"sudo iptables -t nat -A PREROUTING \"+iface+\"-p \"+pt+\" -m \"+pt+\" --dport \"+pf.externalPort.trim()+\" -m comment --comment \\\"pfwd-\"+pf.id+\"\\\" -j DNAT --to-destination \"+dest);\n" +
+                    "} }\n" +
+                    "for(MasqueradeRule m : masq.findAll()) { if(m.enabled) {\n" +
+                    "String iface = (m.iface != null && !m.iface.isBlank() && !m.iface.equalsIgnoreCase(\"any\")) ? \"-o \" + m.iface.trim() + \" \" : \"\";\n" +
+                    "sh(\"sudo iptables -t nat -A POSTROUTING \"+iface+\"-m comment --comment \\\"masq-\"+m.id+\"\\\" -j MASQUERADE\");\n" +
+                    "} }\n" +
                     "persist(); }\n" +
                     "private String extract(String s,String p,int g,String d){java.util.regex.Matcher m=java.util.regex.Pattern.compile(p).matcher(s); return m.find()?m.group(g):d;}\n" +
                     "public String executeAndSync(String cmd){ String out=sh(\"sudo iptables \"+cmd); persist(); syncFromRuntime(); return out; }\n" +
@@ -695,7 +721,6 @@ public class InstallerFirewall {
                     "if(r.port != null && !r.port.isBlank()) { if(r.port.contains(\",\")) cmd += \" -m multiport --dports \" + r.port.replace(\" \", \"\"); else cmd += \" --dport \" + r.port; }\n" +
                     "if(r.srcCidr != null && !r.srcCidr.isBlank() && !r.srcCidr.equalsIgnoreCase(\"any\") && !r.srcCidr.equals(\"0.0.0.0/0\")) cmd += \" -s \" + r.srcCidr;\n" +
                     "if(r.dstCidr != null && !r.dstCidr.isBlank() && !r.dstCidr.equalsIgnoreCase(\"any\") && !r.dstCidr.equals(\"0.0.0.0/0\")) cmd += \" -d \" + r.dstCidr;\n" +
-                    "if(r.comment != null && !r.comment.isBlank()) cmd += \" -m comment --comment \\\"\" + r.comment + \"\\\"\";\n" +
                     "cmd += \" -j \" + action;\n" +
                     "String out = ipt.executeAndSync(cmd);\n" +
                     "if(out != null && out.contains(\"ERR\")) return Map.of(\"success\", false, \"error\", out);\n" +
@@ -710,18 +735,24 @@ public class InstallerFirewall {
                     "@GetMapping(\"/simulate\") public Mono<Map<String,Object>> sim(@RequestParam String proto,@RequestParam String port,@RequestParam(defaultValue=\"0.0.0.0\") String src,@RequestParam(defaultValue=\"0.0.0.0\") String dst){return call(()->{for(FirewallRule r:rules.findByChainOrderByPriority(\"INPUT\"))if(r.enabled&&match(r,proto,port,src,dst))return Map.of(\"match\",true,\"rule\",r);return Map.<String,Object>of(\"match\",false,\"policy\",\"DROP\");});}\n" +
                     "private boolean match(FirewallRule r,String proto,String port,String src,String dst){if(!r.protocol.equals(\"ALL\")&&!r.protocol.equalsIgnoreCase(proto))return false;if(!r.port.isBlank()&&!r.port.equals(port))return false;if(!r.srcCidr.isBlank()&&!inCidr(src,r.srcCidr))return false;if(!r.dstCidr.isBlank()&&!inCidr(dst,r.dstCidr))return false;return true;}\n" +
                     "private boolean inCidr(String ip,String cidr){try{String[] c=cidr.split(\"/\");byte[] a=InetAddress.getByName(c[0]).getAddress();byte[] b=InetAddress.getByName(ip).getAddress();int bits=c.length>1?Integer.parseInt(c[1]):32,full=bits/8,rem=bits%8;for(int i=0;i<full;i++)if(a[i]!=b[i])return false;if(rem>0){int m=(0xFF00>>rem)&0xFF;if((a[full]&m)!=(b[full]&m))return false;}return true;}catch(Exception e){return false;}}\n" +
-                    "@GetMapping(\"/forwards\") public Mono<List<PortForward>> fw(){return call(() -> forwards.findAll());}\n" +
-                    "@PostMapping(\"/forwards\") public Mono<?> saveFw(@RequestBody PortForward f){return call(()->{boolean clash=forwards.findAll().stream().anyMatch(o->o.enabled&&o.iface.equals(f.iface)&&o.externalPort.equals(f.externalPort)&&o.protocol.equals(f.protocol)&&!o.id.equals(f.id));if(clash)return Map.of(\"success\",false,\"error\",\"Conflito de porta na mesma interface.\");\n" +
+                    "@GetMapping(\"/forwards\") public Mono<List<PortForward>> fw(){return call(() -> { ipt.updateNatStats(); return forwards.findAll(); });}\n" +
+                    "@PostMapping(\"/forwards\") public Mono<?> saveFw(@RequestBody PortForward f){return call(()->{\n" +
+                    "boolean clash=forwards.findAll().stream().anyMatch(o->o.enabled && o.externalPort.equals(f.externalPort) && o.protocol.equals(f.protocol) && !o.id.equals(f.id));\n" +
+                    "if(clash)return Map.of(\"success\",false,\"error\",\"Conflito de porta externa.\");\n" +
                     "PortForward saved=forwards.save(f); ipt.syncNatFromDb();\n" +
-                    "String pt = f.protocol.toLowerCase(); String autoFwd = \"-I FORWARD 1 -i \" + f.iface + \" -p \" + pt + \" -m \" + pt + \" --dport \" + f.internalPort + \" -d \" + f.internalIp + \" -m comment --comment \\\"auto-fwd-\" + saved.id + \"\\\" -j ACCEPT\";\n" +
-                    "ipt.executeAndSync(autoFwd);\n" +
+                    "String pt = f.protocol.toLowerCase();\n" +
+                    "String iface = (f.iface != null && !f.iface.isBlank() && !f.iface.equalsIgnoreCase(\"any\")) ? \"-i \" + f.iface.trim() + \" \" : \"\";\n" +
+                    "String dport = (f.internalPort != null && !f.internalPort.isBlank()) ? f.internalPort.trim() : f.externalPort.trim();\n" +
+                    "String autoFwd = \"-I FORWARD 1 \" + iface + \"-p \" + pt + \" -m \" + pt + \" --dport \" + dport + \" -d \" + f.internalIp.trim() + \" -m comment --comment \\\"auto-fwd-\" + saved.id + \"\\\" -j ACCEPT\";\n" +
+                    "String out = ipt.executeAndSync(autoFwd);\n" +
+                    "if(out != null && out.contains(\"ERR\")) { forwards.delete(saved); ipt.syncNatFromDb(); return Map.of(\"success\",false,\"error\",out); }\n" +
                     "return Map.of(\"saved\",saved,\"sync\",Map.of(\"success\",true));});}\n" +
                     "@DeleteMapping(\"/forwards/{id}\") public Mono<Map<String,Object>> delFw(@PathVariable Long id){return call(()->{forwards.deleteById(id); ipt.syncNatFromDb();\n" +
                     "ipt.sh(\"sudo iptables-save | grep -v \\\"auto-fwd-\" + id + \"\\\" | sudo iptables-restore\"); ipt.persist(); ipt.syncFromRuntime();\n" +
                     "return Map.of(\"success\",true);});}\n" +
-                    "@GetMapping(\"/masquerade\") public Mono<List<MasqueradeRule>> mq(){return call(() -> masq.findAll());}\n" +
+                    "@GetMapping(\"/masquerade\") public Mono<List<MasqueradeRule>> mq(){return call(() -> { ipt.updateNatStats(); return masq.findAll(); });}\n" +
                     "@PostMapping(\"/masquerade\") public Mono<?> saveMq(@RequestBody MasqueradeRule m){return call(()->{MasqueradeRule saved=masq.save(m); ipt.syncNatFromDb(); return Map.of(\"saved\",saved,\"sync\",Map.of(\"success\",true));});}\n" +
-                    "@DeleteMapping(\"/masquerade/{id}\") public Mono<Map<String,Object>> delMq(@PathVariable Long id){return call(()->{masq.deleteById(id); ipt.syncNatFromDb(); return Map.of(\"success\",true);});}\n" +
+                    "@DeleteMapping(\"/(masquerade|masquerade_rule)/{id}\") public Mono<Map<String,Object>> delMq(@PathVariable Long id){return call(()->{masq.deleteById(id); ipt.syncNatFromDb(); return Map.of(\"success\",true);});}\n" +
                     "@GetMapping(\"/zones\") public Mono<List<Zone>> z(){return call(() -> zones.findAll());}\n" +
                     "@PostMapping(\"/zones\") public Mono<Zone> saveZ(@RequestBody Zone z){return call(() -> zones.save(z));}\n" +
                     "@DeleteMapping(\"/zones/{id}\") public Mono<Map<String,String>> delZ(@PathVariable Long id){return call(()->{zones.deleteById(id);zifaces.deleteByZoneId(id);return Map.of(\"success\",\"true\");});}\n" +
@@ -787,7 +818,6 @@ public class InstallerFirewall {
                     "import org.springframework.stereotype.Controller; import org.springframework.web.bind.annotation.GetMapping;\n" +
                     "@Controller public class PagesController { @GetMapping({\"/\", \"/firewall\", \"/firewall/\"}) public String page(){ return \"firewall\"; } }\n";
 
-    // COLUNA DE DADOS INCLUÍDA NA INTERFACE AQUI ABAIXO
     private static final String FW_HTML =
             "<!DOCTYPE html>\n" +
                     "<html lang=\"pt-br\">\n" +
@@ -846,8 +876,8 @@ public class InstallerFirewall {
                     "if(s==='dashboard'){const[st,sm]=await Promise.all([api('/status'),api('/stats')]);\n" +
                     "c.innerHTML='<div class=\"cards\"><div class=\"card\"><div class=\"k\">BLOQUEADOS (24H)</div><div class=\"v amber\">'+sm.blocked24+'</div><div class=\"s\">+'+sm.rejected24+' rejeitados</div></div><div class=\"card\"><div class=\"k\">PERMITIDOS (24H)</div><div class=\"v green\">'+sm.accepted24+'</div><div class=\"s\">tráfego normal</div></div><div class=\"card\"><div class=\"k\">REGRAS ATIVAS</div><div class=\"v white\">'+st.rulesActive+'</div><div class=\"s\">'+st.pending+' pendentes</div></div><div class=\"card\"><div class=\"k\">TENTATIVAS SSH</div><div class=\"v amber\">'+sm.sshAttempts+'</div><div class=\"s\">bloqueadas</div></div></div><div class=\"panel\"><h3>TRÁFEGO — BLOQUEADO x PERMITIDO</h3><div class=\"bars\">'+sm.series.map(b=>'<div class=\"col\"><div class=\"a\" style=\"height:'+Math.min(b.allowed/10,100)+'%\"></div><div class=\"b\" style=\"height:'+Math.min(b.blocked*3,100)+'%\"></div></div>').join('')+'</div></div><div class=\"panel\"><h3>TOP IPs BLOQUEADOS</h3><table><tr><th>ORIGEM</th><th>PORTA</th><th>AÇÃO</th></tr>'+sm.topBlocked.map(t=>'<tr><td>'+t.ip+'</td><td>'+t.port+'</td><td><span class=\"pill drop\">'+t.action+'</span></td></tr>').join('')+'</table></div>'}\n" +
                     "if(s==='rules'){const rs=await api('/rules');c.innerHTML='<div class=\"panel\"><h3>REGRAS</h3><button class=\"act\" onclick=\"api(&#39;/rules/apply&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;rules&#39;))\">Atualizar Tela</button> <button class=\"act\" onclick=\"newRule()\">+ Nova</button><table><tr><th>#</th><th>CHAIN</th><th>PROTO</th><th>PORTA</th><th>ORIGEM</th><th>AÇÃO</th><th>DADOS</th><th>STATUS</th><th></th></tr>'+rs.sort((a,b)=>a.priority-b.priority).map(r=>'<tr><td>'+r.priority+'</td><td>'+r.chain+'</td><td>'+r.protocol+'</td><td>'+r.port+'</td><td>'+(r.srcCidr||'any')+'</td><td><span class=\"pill '+(r.action==='ACCEPT'?'accept':'drop')+'\">'+r.action+'</span></td><td>'+formatBytes(r.bytes)+'</td><td>'+(r.appliedAt?'aplicada':'pendente')+'</td><td><button class=\"act\" onclick=\"api(&#39;/rules/'+r.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;rules&#39;))\">x</button></td></tr>').join('')+'</table></div>'}\n" +
-                    "if(s==='nat'){const[fs,ms]=await Promise.all([api('/forwards'),api('/masquerade')]);c.innerHTML='<div class=\"panel\"><h3>PORT FORWARDING</h3><table><tr><th>IFACE</th><th>EXT</th><th>INTERNO</th><th></th></tr>'+fs.map(f=>'<tr><td>'+f.iface+'</td><td>'+f.externalPort+'</td><td>'+f.internalIp+':'+f.internalPort+'</td><td><button class=\"act\" onclick=\"api(&#39;/forwards/'+f.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;nat&#39;))\">x</button></td></tr>').join('')+'</table><input id=\"fi\" placeholder=\"iface\"><input id=\"fe\" placeholder=\"porta ext\"><input id=\"fip\" placeholder=\"ip int\"><input id=\"fpo\" placeholder=\"porta int\"><button class=\"act\" onclick=\"api(&#39;/forwards&#39;,{method:&#39;POST&#39;,body:JSON.stringify({iface:fi.value,externalPort:fe.value,protocol:&#39;TCP&#39;,internalIp:fip.value,internalPort:fpo.value,enabled:true})}).then(()=>show(&#39;nat&#39;))\">+ Forward</button></div><div class=\"panel\"><h3>MASQUERADE</h3>'+ms.map(m=>'<div>'+m.iface+' <button class=\"act\" onclick=\"api(&#39;/masquerade/'+m.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;nat&#39;))\">x</button></div>').join('')+'<input id=\"mi\" placeholder=\"iface\"><button class=\"act\" onclick=\"api(&#39;/masquerade&#39;,{method:&#39;POST&#39;,body:JSON.stringify({iface:mi.value,enabled:true})}).then(()=>show(&#39;nat&#39;))\">+ Masquerade</button></div>'}\n" +
-                    "if(s==='zones'){const z=await api('/zones');c.innerHTML='<div class=\"panel\"><h3>ZONAS</h3>'+z.map(x=>'<div>'+x.name+' ('+x.trustLevel+'/'+x.defaultPolicy+')</div>').join('')+'<input id=\"zn\" placeholder=\"nome\"><select id=\"zt\"><option>WAN</option><option>LAN</option><option>DMZ</option></select><button class=\"act\" onclick=\"api(&#39;/zones&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:zn.value,trustLevel:zt.value,defaultPolicy:zt.value===&#39;LAN&#39;?&#39;ACCEPT&#39;:&#39;DROP&#39;})}).then(()=>show(&#39;zones&#39;))\">+ Zona</button></div>'}\n" +
+                    "if(s==='nat'){const[fs,ms]=await Promise.all([api('/forwards'),api('/masquerade')]);c.innerHTML='<div class=\"panel\"><h3>PORT FORWARDING</h3><table><tr><th>IFACE</th><th>EXT</th><th>INTERNO</th><th>DADOS</th><th></th></tr>'+fs.map(f=>'<tr><td>'+f.iface+'</td><td>'+f.externalPort+'</td><td>'+f.internalIp+':'+f.internalPort+'</td><td>'+formatBytes(f.bytes)+'</td><td><button class=\"act\" onclick=\"api(&#39;/forwards/'+f.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;nat&#39;))\">x</button></td></tr>').join('')+'</table><br><input id=\"fi\" placeholder=\"iface (ex: ens160)\"><input id=\"fe\" placeholder=\"porta ext\"><input id=\"fip\" placeholder=\"ip interno\"><input id=\"fpo\" placeholder=\"porta int\"><button class=\"act\" onclick=\"api(&#39;/forwards&#39;,{method:&#39;POST&#39;,body:JSON.stringify({iface:fi.value,externalPort:fe.value,protocol:&#39;TCP&#39;,internalIp:fip.value,internalPort:fpo.value,enabled:true})}).then(()=>show(&#39;nat&#39;))\">+ Forward</button></div><div class=\"panel\"><h3>MASQUERADE (NAT de Saída)</h3><table><tr><th>IFACE SAÍDA</th><th>DADOS</th><th></th></tr>'+ms.map(m=>'<tr><td>'+m.iface+'</td><td>'+formatBytes(m.bytes)+'</td><td><button class=\"act\" onclick=\"api(&#39;/masquerade/'+m.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;nat&#39;))\">x</button></td></tr>').join('')+'</table><br><input id=\"mi\" placeholder=\"iface (ex: ens160)\"><button class=\"act\" onclick=\"api(&#39;/masquerade&#39;,{method:&#39;POST&#39;,body:JSON.stringify({iface:mi.value,enabled:true})}).then(()=>show(&#39;nat&#39;))\">+ Masquerade</button></div>'}\n" +
+                    "if(s==='zones'){const z=await api('/zones');c.innerHTML='<div class=\"panel\"><h3>ZONAS</h3><table><tr><th>NOME</th><th>TRUST</th><th>POLÍTICA</th><th></th></tr>'+z.map(x=>'<tr><td>'+x.name+'</td><td>'+x.trustLevel+'</td><td>'+x.defaultPolicy+'</td><td><button class=\"act\" onclick=\"api(&#39;/zones/'+x.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;zones&#39;))\">x</button></td></tr>').join('')+'</table><br><input id=\"zn\" placeholder=\"nome (ex: dmz)\"><select id=\"zt\"><option>WAN</option><option>LAN</option><option>DMZ</option></select><button class=\"act\" onclick=\"api(&#39;/zones&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:zn.value,trustLevel:zt.value,defaultPolicy:zt.value===&#39;LAN&#39;?&#39;ACCEPT&#39;:&#39;DROP&#39;})}).then(()=>show(&#39;zones&#39;))\">+ Zona</button></div>'}\n" +
                     "if(s==='groups'){const[h,p]=await Promise.all([api('/hostgroups'),api('/portgroups')]);c.innerHTML='<div class=\"panel\"><h3>GRUPOS DE HOSTS</h3>'+h.map(g=>'<div>'+g.name+': '+g.cidrs.join(', ')+'</div>').join('')+'<input id=\"hn\" placeholder=\"nome\"><input id=\"hc\" placeholder=\"cidrs separados por vírgula\"><button class=\"act\" onclick=\"api(&#39;/hostgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:hn.value,cidrs:hc.value?hc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))\">+</button></div><div class=\"panel\"><h3>GRUPOS DE PORTAS</h3>'+p.map(g=>'<div>'+g.name+': '+g.ports.join(', ')+'</div>').join('')+'<input id=\"pn\" placeholder=\"nome\"><input id=\"pc\" placeholder=\"portas\"><button class=\"act\" onclick=\"api(&#39;/portgroups&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:pn.value,ports:pc.value?pc.value.split(&#39;,&#39;):[]})}).then(()=>show(&#39;groups&#39;))\">+</button></div>'}\n" +
                     "if(s==='protections'){const[r,a,t]=await Promise.all([api('/ratelimits'),api('/autoban'),api('/threatlists')]);c.innerHTML='<div class=\"panel\"><h3>RATE LIMIT</h3>'+r.map(x=>'<div>porta '+x.port+': '+x.ratePerSecond+'/s</div>').join('')+'<input id=\"rp\" placeholder=\"porta\"><input id=\"rr\" value=\"20\"><button class=\"act\" onclick=\"api(&#39;/ratelimits&#39;,{method:&#39;POST&#39;,body:JSON.stringify({port:rp.value,ratePerSecond:+rr.value,enabled:true})}).then(()=>show(&#39;protections&#39;))\">+</button></div><div class=\"panel\"><h3>AUTO-BAN</h3>'+a.map(x=>'<div>'+x.maxAttempts+' tentativas / '+x.windowMinutes+'min</div>').join('')+'<button class=\"act\" onclick=\"api(&#39;/autoban&#39;,{method:&#39;POST&#39;,body:JSON.stringify({maxAttempts:5,windowMinutes:5,banMinutes:30,targetPort:&#39;22&#39;,enabled:true})}).then(()=>show(&#39;protections&#39;))\">+ SSH</button></div><div class=\"panel\"><h3>BLOCKLISTS</h3>'+t.map(x=>'<div>'+x.name+' ('+x.ipCount+') <button class=\"act\" onclick=\"api(&#39;/threatlists/'+x.id+'/refresh&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;protections&#39;))\">atualizar</button></div>').join('')+'<input id=\"tn\" placeholder=\"nome\"><input id=\"tu\" placeholder=\"url\"><button class=\"act\" onclick=\"api(&#39;/threatlists&#39;,{method:&#39;POST&#39;,body:JSON.stringify({name:tn.value,sourceUrl:tu.value,enabled:true})}).then(()=>show(&#39;protections&#39;))\">+</button></div>'}\n" +
                     "if(s==='logs'){c.innerHTML='<div class=\"panel\"><h3>LOGS (tempo real)</h3><div id=\"live\"></div><button class=\"act\" onclick=\"location.href=&#39;/firewall/api/logs/export?format=csv&#39;\">Exportar CSV</button></div>';window.liveTimer=setInterval(function(){api('/logs').then(function(l){var el=document.getElementById('live');if(el){el.textContent=l.map(function(x){return x.raw}).join('\\n');el.scrollTop=el.scrollHeight}}).catch(function(){})},2000)}\n" +
