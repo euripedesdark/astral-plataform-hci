@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class InstallerFirewall {
 
-    private static final int PORT = 5001;
+    private static final int PORT = 5000;
     private static final AtomicInteger progress = new AtomicInteger(0);
     private static String status = "Aguardando...";
     private static volatile boolean done = false;
@@ -60,7 +60,7 @@ public class InstallerFirewall {
             writeProject();
 
             up(70, "Compilando módulo (mvn package)...");
-            run("cd " + app() + "/fabric/firewall && mvn -B -DskipTests clean package", true);
+            run("cd " + app() + "/fabric/firewall && sudo mvn -B -DskipTests clean package", true);
 
             up(80, "Deploy em /opt/astral-firewall + systemd service...");
             deploy();
