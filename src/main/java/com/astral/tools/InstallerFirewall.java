@@ -591,7 +591,7 @@ public class InstallerFirewall {
                     "r.enabled=true; r.appliedAt=Instant.now();\n" +
                     "rules.save(r); } } }\n" +
                     "private String extract(String s,String p,int g,String d){java.util.regex.Matcher m=java.util.regex.Pattern.compile(p).matcher(s); return m.find()?m.group(g):d;}\n" +
-                    "public void executeAndSync(String cmd){ sh(\"iptables \"+cmd); persist(); syncFromRuntime(); }\n" +
+                    "public String executeAndSync(String cmd){ String out=sh(\"iptables \"+cmd); persist(); syncFromRuntime(); return out; }\n" +
                     "private void guards(List<String> o){o.add(\"-A INPUT -i lo -j ACCEPT\");o.add(\"-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\");\n" +
                     "o.add(\"-A INPUT -p tcp --dport 80 -j ACCEPT\");o.add(\"-A INPUT -s 127.0.0.1/32 -p tcp --dport 8040 -j ACCEPT\");o.add(\"-A INPUT -j ASTRAL_BANNED\");}\n" +
                     "private String args(FirewallRule r){ if(r.rawRule!=null&&!r.rawRule.isBlank()) return \"-A \"+r.chain+\" \"+r.rawRule.substring(r.chain.length()).trim();\n" +
@@ -599,7 +599,7 @@ public class InstallerFirewall {
                     "if(!r.iface.isBlank())b.append(\" -i \").append(r.iface);\n" +
                     "if(!r.protocol.equals(\"ALL\"))b.append(\" -p \").append(r.protocol.toLowerCase());\n" +
                     "if(!r.port.isBlank())b.append(\" --dport \").append(r.port);\n" +
-                    "if(!r.srcCidr.isBlank())b.append(\" -s \").append(r.srcCidr);\n" +
+                    "if(!r.srcCidr.isBlank()&&!r.srcCidr.equalsIgnoreCase(\"any\")&&!r.srcCidr.equalsIgnoreCase(\"all\"))b.append(\" -s \").append(r.srcCidr);\n" +
                     "if(!r.dstCidr.isBlank())b.append(\" -d \").append(r.dstCidr);return b.toString();}\n" +
                     "public String buildFromDb(boolean panic){\n" +
                     "List<String> f=new ArrayList<>(),n=new ArrayList<>();\n" +
@@ -721,10 +721,14 @@ public class InstallerFirewall {
                     "String cmd = \"-I \" + r.chain + \" 1 \";\n" +
                     "if(r.protocol!=null&&!r.protocol.equals(\"ALL\")) cmd += \"-p \" + r.protocol.toLowerCase() + \" \";\n" +
                     "if(r.port!=null&&!r.port.isBlank()) cmd += \"--dport \" + r.port + \" \";\n" +
-                    "if(r.srcCidr!=null&&!r.srcCidr.isBlank()) cmd += \"-s \" + r.srcCidr + \" \";\n" +
+                    "String src=normalizeCidr(r.srcCidr);\n" +
+                    "if(src!=null) cmd += \"-s \" + src + \" \";\n" +
                     "cmd += \"-j \" + (r.action!=null&&!r.action.isBlank()?r.action:\"ACCEPT\");\n" +
-                    "ipt.executeAndSync(cmd); audit.log(\"admin\",\"RULE\",\"*\",\"SAVE\",cmd); return Map.of(\"success\",true);\n" +
+                    "String out=ipt.executeAndSync(cmd);\n" +
+                    "if(out!=null&&!out.isBlank()){ audit.log(\"admin\",\"RULE\",\"*\",\"SAVE_FAILED\",cmd+\" :: \"+out); return Map.of(\"success\",false,\"error\",out.trim(),\"cmd\",cmd); }\n" +
+                    "audit.log(\"admin\",\"RULE\",\"*\",\"SAVE\",cmd); return Map.of(\"success\",true);\n" +
                     "});}\n" +
+                    "private String normalizeCidr(String s){ if(s==null) return null; String t=s.trim(); if(t.isEmpty()||t.equalsIgnoreCase(\"any\")||t.equalsIgnoreCase(\"all\")||t.equals(\"*\")||t.equals(\"0.0.0.0/0\")) return null; return t; }\n" +
                     "@DeleteMapping(\"/rules/{id}\") public Mono<Map<String,Object>> delRule(@PathVariable Long id){return call(()->{\n" +
                     "rules.findById(id).ifPresent(r->{ ipt.executeAndSync(\"-D \" + r.rawRule); });\n" +
                     "audit.log(\"admin\",\"RULE\",id.toString(),\"DELETE\",\"\"); return Map.of(\"success\",true);\n" +
@@ -870,6 +874,6 @@ public class InstallerFirewall {
                     "if(s==='backup'){c.innerHTML='<div class=\"panel\"><h3>BACKUP & RESTORE (BANCO)</h3><button class=\"act\" onclick=\"location.href=&#39;/firewall/api/backup&#39;\">Exportar dump SQL</button> <input type=\"file\" id=\"bkf\"><button class=\"act\" onclick=\"restoreBk()\">Restaurar</button><h3>SNAPSHOTS</h3><div id=\"snaps\"></div></div>';api('/snapshots').then(l=>snaps.innerHTML=l.map(x=>'<div>'+x.createdAt+' — '+x.label+' <button class=\"act\" onclick=\"api(&#39;/snapshots/revert/'+x.id+'&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;backup&#39;))\">reverter</button></div>').join(''))}\n" +
                     "}\n" +
                     "async function restoreBk(){const f=bkf.files[0];if(!f)return;const txt=await f.text();await api('/backup/restore',{method:'POST',headers:{'Content-Type':'text/plain'},body:txt});show('backup')}\n" +
-                    "function newRule(){const r={chain:prompt('Chain','INPUT'),protocol:prompt('Protocolo','TCP'),port:prompt('Porta',''),srcCidr:prompt('Origem CIDR',''),action:prompt('Ação','ACCEPT'),enabled:true,comment:''};api('/rules',{method:'POST',body:JSON.stringify(r)}).then(()=>show('rules'))}\n" +
+                    "function newRule(){const r={chain:prompt('Chain','INPUT'),protocol:prompt('Protocolo','TCP'),port:prompt('Porta',''),srcCidr:prompt('Origem CIDR (deixe em branco para qualquer origem, não digite \\\"any\\\")',''),action:prompt('Ação','ACCEPT'),enabled:true,comment:''};api('/rules',{method:'POST',body:JSON.stringify(r)}).then(function(res){if(res&&res.success===false){alert('Falha ao aplicar a regra no iptables:\\n\\n'+(res.error||'erro desconhecido')+'\\n\\ncmd: '+(res.cmd||''))}show('rules')})}\n" +
                     "</script></body></html>\n";
 }
