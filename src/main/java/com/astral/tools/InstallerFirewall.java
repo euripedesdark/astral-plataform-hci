@@ -766,4 +766,3 @@ public class InstallerFirewall {
                     "function newRule(){const r={chain:prompt('Chain','INPUT'),protocol:prompt('Protocolo','TCP'),port:prompt('Porta',''),srcCidr:prompt('Origem CIDR',''),action:prompt('Ação','ACCEPT'),enabled:true,comment:''};api('/rules',{method:'POST',body:JSON.stringify(r)}).then(()=>show('rules'))}\n" +
                     "</script></body></html>\n";
 }
-}
