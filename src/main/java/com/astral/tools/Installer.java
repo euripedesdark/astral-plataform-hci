@@ -850,6 +850,7 @@ public class Installer {
         import org.springframework.web.bind.annotation.RequestMapping;
         import org.springframework.web.bind.annotation.RestController;
         import org.springframework.web.reactive.function.client.WebClient;
+        import org.springframework.web.reactive.function.BodyInserters;
         import org.springframework.web.server.ServerWebExchange;
         import reactor.core.publisher.Mono;
         import java.net.URI;
@@ -882,9 +883,18 @@ public class Installer {
                 String rest = path.substring(("/" + first).length());
                 String q = exchange.getRequest().getURI().getRawQuery();
                 String url = "http://127.0.0.1:" + port + rest + (q != null ? "?" + q : "");
-                return client.method(exchange.getRequest().getMethod()).uri(URI.create(url))
+                
+                return client.method(exchange.getRequest().getMethod())
+                    .uri(URI.create(url))
+                    .headers(h -> {
+                        h.putAll(exchange.getRequest().getHeaders());
+                        h.remove("Host");
+                    })
+                    .body(BodyInserters.fromDataBuffers(exchange.getRequest().getBody()))
                     .exchangeToMono(resp -> resp.bodyToMono(byte[].class).defaultIfEmpty(new byte[0])
-                        .map(body -> ResponseEntity.status(resp.statusCode()).body(body)))
+                        .map(body -> ResponseEntity.status(resp.statusCode())
+                            .headers(outHeaders -> outHeaders.putAll(resp.headers().asHttpHeaders()))
+                            .body(body)))
                     .onErrorResume(e -> Mono.just(ResponseEntity.status(502)
                         .body(("Backend " + first + " indisponivel").getBytes())));
             }
