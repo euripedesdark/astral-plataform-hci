@@ -17,7 +17,18 @@ public class InstallerFirewall {
 
     public static void main(String[] args) throws Exception {
         if (!isRoot()) { System.err.println("ERRO: use sudo"); System.exit(1); }
-        HttpServer s = HttpServer.create(new InetSocketAddress(PORT), 0);
+        freePortIfHeldByOldInstance(PORT);
+        HttpServer s;
+        try {
+            s = HttpServer.create(new InetSocketAddress(PORT), 0);
+        } catch (java.net.BindException e) {
+            System.err.println("ERRO: porta " + PORT + " já está em uso e não foi possível liberá-la automaticamente.");
+            System.err.println("Quem está segurando a porta:");
+            System.err.println(run("ss -ltnp 2>/dev/null | grep ':" + PORT + "' || lsof -i:" + PORT + " 2>/dev/null", false));
+            System.err.println("Finalize esse processo manualmente (kill <PID>) e rode o instalador de novo.");
+            System.exit(1);
+            return;
+        }
         s.createContext("/", e -> send(e, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html"));
         s.createContext("/install.html", InstallerFirewall::ui);
         s.createContext("/api/stream", InstallerFirewall::stream);
@@ -258,6 +269,27 @@ public class InstallerFirewall {
         } catch (Exception e) {
             return "127.0.0.1";
         }
+    }
+
+    private static void freePortIfHeldByOldInstance(int port) {
+        // Mata qualquer processo java segurando essa porta que NÃO seja este processo atual
+        // (cobre instâncias soltas em background que 'pkill -f installer-firewall.jar' não pegou,
+        // por exemplo se o jar foi renomeado ou rodado com outro classpath).
+        String pids = run("ss -ltnp 2>/dev/null | grep ':" + port + " ' | grep -oP 'pid=\\K[0-9]+' | sort -u"
+                + " || fuser " + port + "/tcp 2>/dev/null", false);
+        if (pids == null) return;
+        long myPid = ProcessHandle.current().pid();
+        for (String pidStr : pids.trim().split("\\s+")) {
+            if (pidStr.isBlank()) continue;
+            try {
+                long pid = Long.parseLong(pidStr.trim());
+                if (pid == myPid) continue;
+                System.out.println("[AVISO] Porta " + port + " ocupada pelo PID " + pid + " — finalizando instância antiga...");
+                run("kill -9 " + pid, true);
+            } catch (NumberFormatException ignored) {}
+        }
+        if (pids.trim().isEmpty()) return;
+        sleep(500);
     }
 
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
