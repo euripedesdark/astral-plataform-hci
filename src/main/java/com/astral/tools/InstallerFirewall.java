@@ -51,9 +51,12 @@ public class InstallerFirewall {
             }
             up(30, "Criando tabelas do firewall no banco...");
             createTables();
+            up(48, "Limpando build anterior do módulo (evita lixo de execuções antigas)...");
+            cleanModule();
             up(50, "Escrevendo projeto do módulo...");
             writeProject();
             fixOwnership();
+            verifyGeneratedSources();
             up(70, "Compilando módulo (mvn package)...");
             String owner;
             try { owner = Files.getOwner(Paths.get(app())).getName(); } catch (IOException e) { owner = "root"; }
@@ -260,6 +263,43 @@ public class InstallerFirewall {
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (Exception ignored) {} }
 
+    private static void cleanModule() throws IOException {
+        // Remove qualquer resquício de execuções anteriores do instalador (fontes antigas,
+        // target/ com dono diferente, pom cacheado etc.) para garantir build 100% determinístico.
+        Path fw = Paths.get(app(), "fabric", "firewall");
+        if (Files.exists(fw)) {
+            run("rm -rf " + fw, true);
+            System.out.println("[OK] Diretório antigo removido: " + fw);
+        }
+        // Também limpa qualquer artefato antigo do módulo que possa ter sido instalado
+        // no repositório local Maven do usuário dono do projeto (evita reaproveitar .class velho).
+        try {
+            String owner = Files.getOwner(Paths.get(app())).getName();
+            run("runuser -u " + owner + " -- rm -rf /home/" + owner + "/.m2/repository/com/astral/astral-firewall", false);
+        } catch (IOException ignored) {}
+    }
+
+    private static void verifyGeneratedSources() {
+        // Sanity check pós-escrita: se algum arquivo-chave não bateu com o esperado,
+        // falha cedo com uma mensagem clara em vez de deixar o mvn dar um erro genérico.
+        String jbase = app() + "/fabric/firewall/src/main/java/com/astral/firewall";
+        checkContains(jbase + "/model/FirewallRule.java", "public String rawRule");
+        checkContains(jbase + "/service/IptablesService.java", "r.rawRule");
+        checkContains(jbase + "/api/FirewallApiController.java", "rawRule");
+    }
+
+    private static void checkContains(String path, String needle) {
+        try {
+            String content = Files.readString(Paths.get(path));
+            if (!content.contains(needle)) {
+                System.err.println("[AVISO] " + path + " não contém \"" + needle + "\" após a escrita — "
+                        + "possível falha de I/O ou processo concorrente sobrescrevendo o arquivo.");
+            }
+        } catch (IOException e) {
+            System.err.println("[AVISO] Não foi possível ler " + path + " para verificação: " + e.getMessage());
+        }
+    }
+
     private static void writeProject() throws IOException {
         String base = app() + "/fabric/firewall";
         String jbase = base + "/src/main/java/com/astral/firewall";
@@ -390,7 +430,7 @@ public class InstallerFirewall {
                     "import jakarta.persistence.*; import java.time.Instant;\n" +
                     "@Entity public class FirewallRule {\n" +
                     "@Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id;\n" +
-                    "public String chain; public int priority; public String protocol=\"TCP\";\n" +
+                    "public String chain=\"INPUT\"; public int priority; public String protocol=\"TCP\";\n" +
                     "public String srcCidr=\"\"; public String dstCidr=\"\"; public String port=\"\";\n" +
                     "public String iface=\"\"; public String action=\"ACCEPT\"; public boolean enabled=true;\n" +
                     "@Column(length=512) public String comment=\"\";\n" +
@@ -520,9 +560,43 @@ public class InstallerFirewall {
                     "rules.save(r); } } }\n" +
                     "private String extract(String s,String p,int g,String d){java.util.regex.Matcher m=java.util.regex.Pattern.compile(p).matcher(s); return m.find()?m.group(g):d;}\n" +
                     "public void executeAndSync(String cmd){ sh(\"iptables \"+cmd); persist(); syncFromRuntime(); }\n" +
+                    "private void guards(List<String> o){o.add(\"-A INPUT -i lo -j ACCEPT\");o.add(\"-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\");\n" +
+                    "o.add(\"-A INPUT -p tcp --dport 80 -j ACCEPT\");o.add(\"-A INPUT -s 127.0.0.1/32 -p tcp --dport 8040 -j ACCEPT\");o.add(\"-A INPUT -j ASTRAL_BANNED\");}\n" +
+                    "private String args(FirewallRule r){ if(r.rawRule!=null&&!r.rawRule.isBlank()) return \"-A \"+r.chain+\" \"+r.rawRule.substring(r.chain.length()).trim();\n" +
+                    "StringBuilder b=new StringBuilder(\"-A \"+r.chain);\n" +
+                    "if(!r.iface.isBlank())b.append(\" -i \").append(r.iface);\n" +
+                    "if(!r.protocol.equals(\"ALL\"))b.append(\" -p \").append(r.protocol.toLowerCase());\n" +
+                    "if(!r.port.isBlank())b.append(\" --dport \").append(r.port);\n" +
+                    "if(!r.srcCidr.isBlank())b.append(\" -s \").append(r.srcCidr);\n" +
+                    "if(!r.dstCidr.isBlank())b.append(\" -d \").append(r.dstCidr);return b.toString();}\n" +
+                    "public String buildFromDb(boolean panic){\n" +
+                    "List<String> f=new ArrayList<>(),n=new ArrayList<>();\n" +
+                    "f.add(\"*filter\");f.add(\":INPUT DROP [0:0]\");f.add(\":FORWARD DROP [0:0]\");f.add(\":OUTPUT ACCEPT [0:0]\");f.add(\":ASTRAL_BANNED - [0:0]\");guards(f);\n" +
+                    "if(!panic){\n" +
+                    "for(RateLimitPolicy rl:rates.findAll())if(rl.enabled){\n" +
+                    "f.add(\"-A INPUT -p \"+rl.protocol.toLowerCase()+\" --dport \"+rl.port+\" -m hashlimit --hashlimit-mode srcip --hashlimit-rate \"+rl.ratePerSecond+\"/second --hashlimit-burst 5 -j ACCEPT\");\n" +
+                    "f.add(\"-A INPUT -p \"+rl.protocol.toLowerCase()+\" --dport \"+rl.port+\" -m limit --limit 3/minute -j LOG --log-prefix \"+Q+\"ASTRAL-FW-DROP: \"+Q);\n" +
+                    "f.add(\"-A INPUT -p \"+rl.protocol.toLowerCase()+\" --dport \"+rl.port+\" -j DROP\");}\n" +
+                    "for(String ch:List.of(\"INPUT\",\"OUTPUT\",\"FORWARD\"))\n" +
+                    "for(FirewallRule r:rules.findByChainOrderByPriority(ch))if(r.enabled){\n" +
+                    "if(r.action.equals(\"DROP\")||r.action.equals(\"REJECT\"))f.add(args(r)+\" -m limit --limit 6/minute -j LOG --log-prefix \"+Q+\"ASTRAL-FW-\"+r.action+\": \"+Q);\n" +
+                    "else if(r.action.equals(\"LOG\"))f.add(args(r)+\" -j LOG --log-prefix \"+Q+\"ASTRAL-FW: \"+Q);else f.add(args(r)+\" -j \"+r.action);}\n" +
+                    "for(PortForward pf:forwards.findAll())if(pf.enabled)f.add(\"-A FORWARD -i \"+pf.iface+\" -p \"+pf.protocol.toLowerCase()+\" --dport \"+pf.externalPort+\" -j ACCEPT\");\n" +
+                    "f.add(\"-A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\");\n" +
+                    "} else f.add(\"-A INPUT -p tcp --dport 22 -j ACCEPT\");\n" +
+                    "f.add(\"COMMIT\");\n" +
+                    "n.add(\"*nat\");n.add(\":PREROUTING ACCEPT [0:0]\");n.add(\":POSTROUTING ACCEPT [0:0]\");\n" +
+                    "if(!panic)for(PortForward pf:forwards.findAll())if(pf.enabled)\n" +
+                    "n.add(\"-A PREROUTING -i \"+pf.iface+\" -p \"+pf.protocol.toLowerCase()+\" --dport \"+pf.externalPort+\" -j DNAT --to-destination \"+pf.internalIp+\":\"+pf.internalPort);\n" +
+                    "for(MasqueradeRule m:masq.findAll())if(m.enabled)n.add(\"-A POSTROUTING -o \"+m.iface+\" -j MASQUERADE\");\n" +
+                    "n.add(\"COMMIT\");return String.join(NL,f)+NL+String.join(NL,n)+NL;}\n" +
+                    "public boolean validate(String script){try{Path t=Files.createTempFile(\"fw\",\".rules\");Files.writeString(t,script);\n" +
+                    "String out=run(List.of(\"bash\",\"-c\",\"iptables-restore --test \"+t.toAbsolutePath()),null);Files.deleteIfExists(t);return out.isBlank();}catch(Exception e){return false;}}\n" +
                     "public FirewallSnapshot saveSnapshot(String label){return snaps.save(new FirewallSnapshot(label,sh(\"iptables-save\")));}\n" +
                     "public void restoreDump(String dump){run(List.of(\"iptables-restore\"),dump);}\n" +
-                    "public Map<String,Object> applyFromDb(String user){ syncFromRuntime(); return Map.of(\"success\",true); }\n" +
+                    "public Map<String,Object> applyFromDb(String user){\n" +
+                    "syncFromRuntime(); return Map.of(\"success\",true);\n" +
+                    "}\n" +
                     "public Map<String,Object> panic(String user){\n" +
                     "saveSnapshot(\"pre-panic\");\n" +
                     "sh(\"iptables -P INPUT DROP; iptables -P FORWARD DROP; iptables -F INPUT; iptables -A INPUT -i lo -j ACCEPT; iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -A INPUT -p tcp --dport 22 -j ACCEPT; iptables -A INPUT -s 127.0.0.1/32 -p tcp --dport 8040 -j ACCEPT; iptables -A INPUT -p tcp --dport 5001 -j ACCEPT\");\n" +
@@ -617,10 +691,10 @@ public class InstallerFirewall {
                     "if(r.port!=null&&!r.port.isBlank()) cmd += \"--dport \" + r.port + \" \";\n" +
                     "if(r.srcCidr!=null&&!r.srcCidr.isBlank()) cmd += \"-s \" + r.srcCidr + \" \";\n" +
                     "cmd += \"-j \" + (r.action!=null&&!r.action.isBlank()?r.action:\"ACCEPT\");\n" +
-                    "ipt.executeAndSync(cmd); audit.log(\"admin\",\"RULE\",\"*\",\"SAVE\",cmd); return Map.of(\"saved\",r,\"sync\",Map.of(\"success\",true));\n" +
+                    "ipt.executeAndSync(cmd); audit.log(\"admin\",\"RULE\",\"*\",\"SAVE\",cmd); return Map.of(\"success\",true);\n" +
                     "});}\n" +
                     "@DeleteMapping(\"/rules/{id}\") public Mono<Map<String,Object>> delRule(@PathVariable Long id){return call(()->{\n" +
-                    "rules.findById(id).ifPresent(r->{ ipt.executeAndSync(\"-D \" + r.chain + \" \" + r.rawRule.substring(r.chain.length()).trim()); });\n" +
+                    "rules.findById(id).ifPresent(r->{ ipt.executeAndSync(\"-D \" + r.rawRule); });\n" +
                     "audit.log(\"admin\",\"RULE\",id.toString(),\"DELETE\",\"\"); return Map.of(\"success\",true);\n" +
                     "});}\n" +
                     "@PostMapping(\"/rules/apply\") public Mono<Map<String,Object>> apply(){return call(() -> { ipt.syncFromRuntime(); return Map.of(\"success\",true); });}\n" +
