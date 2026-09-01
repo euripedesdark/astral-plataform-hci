@@ -16,10 +16,10 @@ import java.util.UUID;
 @RequestMapping("/api/auth")
 public class LoginController {
 
-    /** GET /api/auth/login -> manda o navegador para a página de login (evita o Whitelabel 405) */
+    /** GET /api/auth/login -> manda o navegador para a página de login (evita o Whitelabel 405)[cite: 9] */
     @GetMapping("/login")
     public ResponseEntity<Void> loginGet() {
-        return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/")).build();
+        return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/login/index.html")).build();
     }
 
     @CrossOrigin(origins = "*")
@@ -28,7 +28,7 @@ public class LoginController {
         String username = credentials.get("username");
         String password = credentials.get("password");
         Map<String, Object> response = new HashMap<>();
-        String jdbcUrl = "jdbc:postgresql://localhost:5432/astral";
+        String jdbcUrl = "jdbc:postgresql://127.0.0.1:5432/astral";
         try (Connection connection = DriverManager.getConnection(jdbcUrl, username, password)) {
             String token = UUID.randomUUID().toString();
             response.put("success", true);

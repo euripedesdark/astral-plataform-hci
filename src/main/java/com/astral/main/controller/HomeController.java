@@ -8,14 +8,19 @@ import org.springframework.web.bind.annotation.GetMapping;
 import java.util.List;
 
 /**
- * Renderiza o dashboard principal exibido apos o login.
- * Cada botao corresponde a uma rota real do Nginx (astral.conf).
+ * Renderiza o dashboard principal exibido apos o login.[cite: 10]
+ * Cada botao corresponde a uma rota real do Nginx (astral.conf).[cite: 10]
  *
- * Para adicionar/remover/reordenar um card, mexa apenas em buildButtons();
- * o template (home.html) so itera sobre essa lista.
+ * Para adicionar/remover/reordenar um card, mexa apenas em buildButtons();[cite: 10]
+ * o template (home.html) so itera sobre essa lista.[cite: 10]
  */
 @Controller
 public class HomeController {
+
+    @GetMapping("/")
+    public String root() {
+        return "redirect:/login/index.html";
+    }
 
     @GetMapping("/inicio")
     public String home(Model model) {
