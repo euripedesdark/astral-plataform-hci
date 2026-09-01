@@ -43,7 +43,6 @@ public class Installer {
 
     private static void runInstallation() {
         try {
-            // LIBERA PORTAS ANTES DE ESPERAR O FORMULÁRIO (evita deadlock com iptables DROP)
             configureFirewall();
 
             while (needAdmin) sleep(300);
@@ -140,28 +139,19 @@ public class Installer {
         Path certDir = Paths.get("/etc/astral/certs");
         try { Files.createDirectories(certDir); } catch (IOException ignored) {}
 
-        // CA Root
         runCmd("openssl req -new -x509 -days 3650 -nodes -out " + certDir + "/root.crt -keyout " + certDir + "/root.key -subj \"/CN=Astral-Root-CA\"", true);
-
-        // Server cert
         runCmd("openssl req -new -nodes -out " + certDir + "/server.csr -keyout " + certDir + "/server.key -subj \"/CN=127.0.0.1\"", true);
         runCmd("openssl x509 -req -in " + certDir + "/server.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/server.crt", true);
-
-        // Client cert (para usuário astral via mTLS)
         runCmd("openssl req -new -nodes -out " + certDir + "/client-astral.csr -keyout " + certDir + "/client-astral.key -subj \"/CN=astral\"", true);
         runCmd("openssl x509 -req -in " + certDir + "/client-astral.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/client-astral.crt", true);
         runCmd("openssl pkcs8 -topk8 -inform PEM -outform DER -in " + certDir + "/client-astral.key -out " + certDir + "/client-astral.pk8 -nocrypt", true);
 
-        // Copia certs do server para PostgreSQL
         runCmd("cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/pgsql/data/ 2>/dev/null || cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/postgres/data/ 2>/dev/null || true", false);
         runCmd("chown postgres:postgres /var/lib/pgsql/data/root.crt /var/lib/pgsql/data/server.crt /var/lib/pgsql/data/server.key 2>/dev/null || chown postgres:postgres /var/lib/postgres/data/root.crt /var/lib/postgres/data/server.crt /var/lib/postgres/data/server.key 2>/dev/null || true", false);
         runCmd("chmod 0600 /var/lib/pgsql/data/server.key 2>/dev/null || chmod 0600 /var/lib/postgres/data/server.key 2>/dev/null || true", false);
 
-        // Permissões dos certs: root:astral 0640
         runCmd("chown -R root:" + ASTRAL_GROUP + " " + certDir, false);
         runCmd("chmod 0640 " + certDir + "/*", false);
-
-        System.out.println("[OK] Certificados SSL gerados em " + certDir);
     }
 
     private static void configurePostgresSSL() {
@@ -176,9 +166,7 @@ public class Installer {
                 String addOn = "\n# mTLS Astral Platform\nssl = on\nssl_ca_file = 'root.crt'\nssl_cert_file = 'server.crt'\nssl_key_file = 'server.key'\n";
                 Files.writeString(confFile, conf + addOn);
             }
-        } catch (IOException e) {
-            System.err.println("[AVISO] Não foi possível modificar postgresql.conf: " + e.getMessage());
-        }
+        } catch (IOException ignored) {}
 
         Path hbaFile = Paths.get(pgData, "pg_hba.conf");
         try {
@@ -188,18 +176,9 @@ public class Installer {
                             && !l.matches("^host\\s+astral\\s+" + adminUser + ".*"))
                     .collect(java.util.stream.Collectors.joining("\n"));
 
-            String rules =
-                    "# Astral Platform - mTLS para aplicações\n" +
-                            "hostssl astral astral 127.0.0.1/32 cert\n" +
-                            "# Astral Platform - admin via senha\n" +
-                            "host astral " + adminUser + " 127.0.0.1/32 md5\n" +
-                            "host astral " + adminUser + " ::1/128 md5\n\n";
-
+            String rules = "# Astral Platform - mTLS para aplicações\nhostssl astral astral 127.0.0.1/32 cert\n# Astral Platform - admin via senha\nhost astral " + adminUser + " 127.0.0.1/32 md5\nhost astral " + adminUser + " ::1/128 md5\n\n";
             Files.writeString(hbaFile, rules + newHba);
-            System.out.println("[OK] pg_hba.conf configurado para mTLS + admin");
-        } catch (IOException e) {
-            System.err.println("[AVISO] Não foi possível modificar pg_hba.conf: " + e.getMessage());
-        }
+        } catch (IOException ignored) {}
 
         runCmd("systemctl restart postgresql", true);
         sleep(3000);
@@ -207,25 +186,8 @@ public class Installer {
 
     private static void ensureDatabaseBaseMTLS() {
         configurePostgresSSL();
-
-        // Cria role astral SEM senha (só mTLS)
-        String sqlAstral = "DO $$ BEGIN\n"
-                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\n"
-                + "CREATE ROLE astral LOGIN SUPERUSER;\n"
-                + "ELSE\n"
-                + "ALTER ROLE astral WITH LOGIN SUPERUSER;\n"
-                + "END IF; END $$;\n\n"
-                + "SELECT 'CREATE DATABASE astral OWNER astral'\n"
-                + "WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
-
-        // Cria role admin COM senha
-        String sqlAdmin = "DO $$ BEGIN\n"
-                + "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + adminUser + "') THEN\n"
-                + "CREATE ROLE " + adminUser + " LOGIN SUPERUSER PASSWORD '" + adminPass + "';\n"
-                + "ELSE\n"
-                + "ALTER ROLE " + adminUser + " WITH LOGIN SUPERUSER PASSWORD '" + adminPass + "';\n"
-                + "END IF; END $$;\n"
-                + "GRANT ALL PRIVILEGES ON DATABASE astral TO " + adminUser + ";\n";
+        String sqlAstral = "DO $$ BEGIN\nIF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\nCREATE ROLE astral LOGIN SUPERUSER;\nELSE\nALTER ROLE astral WITH LOGIN SUPERUSER;\nEND IF; END $$;\n\nSELECT 'CREATE DATABASE astral OWNER astral'\nWHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
+        String sqlAdmin = "DO $$ BEGIN\nIF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + adminUser + "') THEN\nCREATE ROLE " + adminUser + " LOGIN SUPERUSER PASSWORD '" + adminPass + "';\nELSE\nALTER ROLE " + adminUser + " WITH LOGIN SUPERUSER PASSWORD '" + adminPass + "';\nEND IF; END $$;\nGRANT ALL PRIVILEGES ON DATABASE astral TO " + adminUser + ";\n";
 
         try {
             Path f1 = Paths.get("/tmp/astral-init-mtls.sql");
@@ -237,8 +199,6 @@ public class Installer {
             Files.writeString(f2, sqlAdmin);
             runCmd("chmod 0644 " + f2, false);
             runCmd("runuser -u postgres -- psql -f " + f2, true);
-
-            System.out.println("[OK] Base 'astral' garantida: role astral (mTLS) + admin '" + adminUser + "' (md5)");
         } catch (IOException ignored) {}
     }
 
@@ -255,22 +215,15 @@ public class Installer {
     private static void relaxSelinux() {
         runCmd("setenforce 0 2>/dev/null || true", false);
         runCmd("sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true", false);
-        System.out.println("[OK] SELinux em permissive (persistente).");
     }
 
     private static void createAstralGroup() {
         String exists = runCmd("getent group " + ASTRAL_GROUP, false);
-        if (exists == null) {
-            runCmd("groupadd " + ASTRAL_GROUP, true);
-            System.out.println("[OK] Grupo '" + ASTRAL_GROUP + "' criado.");
-        } else {
-            System.out.println("[OK] Grupo '" + ASTRAL_GROUP + "' já existe.");
-        }
+        if (exists == null) runCmd("groupadd " + ASTRAL_GROUP, true);
         try {
             String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
             runCmd("usermod -aG " + ASTRAL_GROUP + " " + owner + " 2>/dev/null || true", false);
             runCmd("usermod -aG " + ASTRAL_GROUP + " root 2>/dev/null || true", false);
-            System.out.println("[OK] Usuários '" + owner + "' e 'root' no grupo '" + ASTRAL_GROUP + "'.");
         } catch (IOException ignored) {}
     }
 
@@ -279,7 +232,6 @@ public class Installer {
         runCmd("systemctl disable nginx 2>/dev/null || true", false);
         runCmd("pkill -x nginx 2>/dev/null || true", false);
         runCmd("dnf remove -y nginx 2>/dev/null || apt-get purge -y nginx 2>/dev/null || true", true);
-        runCmd("pkill -x nginx 2>/dev/null || true", false);
         runCmd("rm -f /etc/nginx/conf.d/astral.conf /etc/nginx/sites-enabled/astral.conf /etc/nginx/sites-available/astral.conf", false);
     }
 
@@ -329,21 +281,15 @@ public class Installer {
                     return; 
                 }
                 fetch('/api/setup-admin', {
-                    method:'POST', 
-                    headers:{'Content-Type':'application/json'},
+                    method:'POST', headers:{'Content-Type':'application/json'},
                     body: JSON.stringify({username:user, password:pass})
-                })
-                .then(r => r.json())
-                .then(data => {
+                }).then(r => r.json()).then(data => {
                     if (data.success) {
                         document.getElementById('adminForm').classList.add('hidden');
                         document.getElementById('installProgress').classList.remove('hidden');
                         startStream();
-                    } else {
-                        document.getElementById('formError').textContent = 'Erro: ' + (data.error || 'desconhecido');
-                    }
-                })
-                .catch(e => document.getElementById('formError').textContent = 'Erro: ' + e);
+                    } else { document.getElementById('formError').textContent = 'Erro: ' + (data.error || 'desconhecido'); }
+                }).catch(e => document.getElementById('formError').textContent = 'Erro: ' + e);
             }
             function startStream() {
                 var evt = new EventSource('/api/stream');
@@ -351,10 +297,7 @@ public class Installer {
                     var d = JSON.parse(e.data);
                     document.getElementById('fill').style.width = d.progress + '%';
                     document.getElementById('status').textContent = d.status;
-                    if (d.progress >= 100) { 
-                        evt.close(); 
-                        document.getElementById('redirectBtn').style.display = 'inline-block'; 
-                    }
+                    if (d.progress >= 100) { evt.close(); document.getElementById('redirectBtn').style.display = 'inline-block'; }
                 };
             }
             function redirectToHome() { window.location.href = '/'; }
@@ -382,23 +325,22 @@ public class Installer {
         String app = System.getProperty("user.dir");
         Path base  = Paths.get(app, "src", "main", "java", "com", "astral", "main");
         Path ctrl  = base.resolve("controller");
-        Path model = base.resolve("model");
+        Path filter= base.resolve("filter");
         Path cfg   = base.resolve("config");
-        Path tpl   = Paths.get(app, "src", "main", "resources", "templates");
-        Path imgs  = Paths.get(app, "src", "main", "resources", "static", "images");
-        Path fonts = Paths.get(app, "src", "main", "resources", "static", "fonts");
-        for (Path d : new Path[]{base, ctrl, model, cfg, tpl, imgs, fonts}) Files.createDirectories(d);
+
+        for (Path d : new Path[]{base, ctrl, filter, cfg}) {
+            Files.createDirectories(d);
+        }
 
         write(Paths.get(app, "pom.xml"), POM_XML);
         write(base.resolve("AstralApplication.java"), ASTRAL_APP_JAVA);
         write(ctrl.resolve("HomeController.java"), HOME_CONTROLLER_JAVA);
         write(ctrl.resolve("LoginController.java"), LOGIN_CONTROLLER_JAVA);
         write(ctrl.resolve("ProxyController.java"), PROXY_CONTROLLER_JAVA);
-        write(model.resolve("DashboardButton.java"), DASHBOARD_BUTTON_JAVA);
         write(cfg.resolve("WebSocketConfig.java"), WS_CONFIG_JAVA);
         write(cfg.resolve("TerminalWebSocketHandler.java"), WS_HANDLER_JAVA);
         write(cfg.resolve("DatabaseBootstrap.java"), DB_BOOTSTRAP_JAVA);
-        write(tpl.resolve("home.html"), DEFAULT_HOME_HTML);
+        write(filter.resolve("AuthFilter.java"), AUTH_FILTER_JAVA);
     }
 
     private static void write(Path p, String content) throws IOException {
@@ -408,19 +350,7 @@ public class Installer {
     }
 
     private static void ensureFonts() {
-        try {
-            Path fonts = Paths.get(System.getProperty("user.dir"), "src", "main", "resources", "static", "fonts");
-            Files.createDirectories(fonts);
-            String[][] fs = {
-                    {"orbitron-bold.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-700-normal.woff2"},
-                    {"orbitron-black.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-900-normal.woff2"}
-            };
-            for (String[] f : fs) {
-                Path dst = fonts.resolve(f[0]);
-                if (Files.exists(dst) && Files.size(dst) > 1000) continue;
-                runCmd("curl -fsSL -o " + dst + " " + f[1], false);
-            }
-        } catch (IOException ignored) {}
+        // As fontes agora devem ser gerenciadas pela pasta /fabric/frontend do usuário
     }
 
     private static void fixOwnership() {
@@ -429,7 +359,6 @@ public class Installer {
             runCmd("chown -R " + owner + ":" + ASTRAL_GROUP + " " + System.getProperty("user.dir") + " 2>/dev/null || true", false);
             runCmd("find " + System.getProperty("user.dir") + " -type d -exec chmod 2775 {} \\; 2>/dev/null || true", false);
             runCmd("find " + System.getProperty("user.dir") + " -type f -exec chmod 0664 {} \\; 2>/dev/null || true", false);
-            System.out.println("[OK] Ownership devolvido: " + owner + ":" + ASTRAL_GROUP + " (2775/0664 com setgid).");
         } catch (IOException ignored) {}
     }
 
@@ -444,7 +373,6 @@ public class Installer {
         }
 
         String javaBin = detectJavaBin();
-        System.out.println("[OK] Binário Java detectado: " + javaBin);
         runCmd("ln -sf " + javaBin + " /usr/bin/java", false);
 
         runCmd("mkdir -p /opt/astral-platform", true);
@@ -452,6 +380,13 @@ public class Installer {
         runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform", true);
         runCmd("chmod 2770 /opt/astral-platform", true);
         runCmd("chmod 0660 /opt/astral-platform/*.jar 2>/dev/null || true", false);
+
+        //Copia todo o frontend criado pelo usuário para o diretório final servido pelo Spring Boot
+        System.out.println("[DEPLOY] Integrando os arquivos estáticos de /fabric/frontend...");
+        runCmd("rm -rf /opt/astral-platform/frontend", false);
+        runCmd("cp -r " + app + "/fabric/frontend /opt/astral-platform/", true);
+        runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform/frontend", false);
+        runCmd("chmod -R 2775 /opt/astral-platform/frontend", false);
 
         runCmd("mkdir -p /etc/astral", false);
         runCmd("chown root:" + ASTRAL_GROUP + " /etc/astral", false);
@@ -473,11 +408,10 @@ public class Installer {
                             + "spring.jpa.hibernate.ddl-auto=update\n"
                             + "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect\n"
                             + "spring.jackson.serialization.fail-on-empty-beans=false\n"
-                            + "spring.web.resources.static-locations=classpath:/static/\n"
+                            + "spring.web.resources.static-locations=file:/opt/astral-platform/frontend/\n"
                             + "spring.thymeleaf.cache=false\n");
             runCmd("chown root:" + ASTRAL_GROUP + " " + props, false);
             runCmd("chmod 0640 " + props, false);
-            System.out.println("[OK] application.properties gerado com mTLS automático");
         } catch (IOException ignored) {}
 
         String svc = "[Unit]\n"
@@ -613,7 +547,11 @@ public class Installer {
         try (OutputStream os = ex.getResponseBody()) { os.write(b); }
     }
 
-    private static void updateProgress(int p, String s) { progress.set(p); status = s; System.out.println("[" + p + "%] " + s); }
+    private static void updateProgress(int p, String s) {
+        progress.set(p);
+        status = s;
+        System.out.println("[" + p + "%] " + s);
+    }
 
     private static String runCmd(String cmd, boolean log) {
         if (log) System.out.println("$ " + cmd);
@@ -621,7 +559,11 @@ public class Installer {
             Process p = new ProcessBuilder("bash", "-c", cmd).redirectErrorStream(true).start();
             StringBuilder out = new StringBuilder();
             try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-                String l; while ((l = br.readLine()) != null) { if (log) System.out.println("  " + l); out.append(l).append("\n"); }
+                String l;
+                while ((l = br.readLine()) != null) {
+                    if (log) System.out.println("  " + l);
+                    out.append(l).append("\n");
+                }
             }
             int code = p.waitFor();
             return code == 0 ? out.toString() : null;
@@ -646,7 +588,8 @@ public class Installer {
             Process p = pb.start();
             StringBuilder out = new StringBuilder();
             try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-                String l; while ((l = br.readLine()) != null) out.append(l);
+                String l;
+                while ((l = br.readLine()) != null) out.append(l);
             }
             int code = p.waitFor();
             String result = out.toString().trim();
@@ -659,7 +602,14 @@ public class Installer {
     }
 
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
-    private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
+
+    private static void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+    // =========================================================================
+    // TEMPLATES MULTI-LINE (Mantendo apenas o backend em Java, sem injetar HTML)
+    // =========================================================================
 
     private static final String POM_XML = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -680,7 +630,6 @@ public class Installer {
             <properties><java.version>21</java.version></properties>
             <dependencies>
                 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>
-                <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-thymeleaf</artifactId></dependency>
                 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
                 <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>
             </dependencies>
@@ -692,40 +641,62 @@ public class Installer {
         package com.astral.main;
         import org.springframework.boot.SpringApplication;
         import org.springframework.boot.autoconfigure.SpringBootApplication;
+        
         @SpringBootApplication
         public class AstralApplication {
-            public static void main(String[] args) { SpringApplication.run(AstralApplication.class, args); }
+            public static void main(String[] args) { 
+                SpringApplication.run(AstralApplication.class, args); 
+            }
         }
         """;
 
     private static final String HOME_CONTROLLER_JAVA = """
         package com.astral.main.controller;
-        import com.astral.main.model.DashboardButton;
         import org.springframework.stereotype.Controller;
-        import org.springframework.ui.Model;
         import org.springframework.web.bind.annotation.GetMapping;
-        import java.util.List;
+        
         @Controller
         public class HomeController {
-            @GetMapping("/inicio")
-            public String home(Model model) {
-                model.addAttribute("buttons", buildButtons());
-                model.addAttribute("pageTitle", "ASTRAL PLATFORM");
-                return "home";
+            
+            @GetMapping("/")
+            public String root() {
+                // Redireciona a raiz direto para o seu frontend de login real (index.html na pasta login)
+                return "redirect:/login/index.html";
             }
-            private List<DashboardButton> buildButtons() {
-                return List.of(
-                    new DashboardButton("dns", "DNS Management", "dns_management.png", "/dns"),
-                    new DashboardButton("firewall", "Firewall", "firewall.png", "/firewall"),
-                    new DashboardButton("proxy", "Proxy System", "proxy_system.png", "/proxy"),
-                    new DashboardButton("domain", "Domain Controllers", "domain_controllers.png", "/domain"),
-                    new DashboardButton("postgres", "PostgreSQL Admin", "postgresql_admin.png", "/postgres"),
-                    new DashboardButton("web", "Web Server Admin", "web_server_admin.png", "/web"),
-                    new DashboardButton("vm", "Virtual Machines", "virtual_machines.png", "/vm"),
-                    new DashboardButton("storage", "Storage", "storage.png", "/storage"),
-                    new DashboardButton("network", "Network Config & VLAN", "network_config_vlan.png", "/network"),
-                    new DashboardButton("terminal", "Terminal", "terminal.jpeg", "#terminal")
-                );
+        }
+        """;
+
+    private static final String AUTH_FILTER_JAVA = """
+        package com.astral.main.filter;
+        import org.springframework.http.HttpCookie;
+        import org.springframework.http.HttpStatus;
+        import org.springframework.stereotype.Component;
+        import org.springframework.web.server.ServerWebExchange;
+        import org.springframework.web.server.WebFilter;
+        import org.springframework.web.server.WebFilterChain;
+        import reactor.core.publisher.Mono;
+        import java.net.URI;
+        
+        @Component
+        public class AuthFilter implements WebFilter {
+            @Override
+            public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+                String path = exchange.getRequest().getURI().getPath();
+                
+                // Libera o carregamento do login e todos os assets visuais (css/js/svg) que o seu frontend pede
+                if (path.equals("/") || path.startsWith("/login/") || path.startsWith("/api/auth/") || 
+                    path.endsWith(".css") || path.endsWith(".js") || path.endsWith(".png") || path.endsWith(".svg")) {
+                    return chain.filter(exchange);
+                }
+                
+                HttpCookie tokenCookie = exchange.getRequest().getCookies().getFirst("astral_token");
+                if (tokenCookie == null || tokenCookie.getValue().isEmpty()) {
+                    exchange.getResponse().setStatusCode(HttpStatus.FOUND);
+                    exchange.getResponse().getHeaders().setLocation(URI.create("/login/index.html"));
+                    return exchange.getResponse().setComplete();
+                }
+                
+                return chain.filter(exchange);
             }
         }
         """;
@@ -742,6 +713,7 @@ public class Installer {
         import java.util.HashMap;
         import java.util.Map;
         import java.util.UUID;
+        
         @RestController
         @RequestMapping("/api/auth")
         public class LoginController {
@@ -768,11 +740,6 @@ public class Installer {
         }
         """;
 
-    private static final String DASHBOARD_BUTTON_JAVA = """
-        package com.astral.main.model;
-        public record DashboardButton(String id, String label, String image, String route) {}
-        """;
-
     private static final String WS_CONFIG_JAVA = """
         package com.astral.main.config;
         import org.springframework.context.annotation.Bean;
@@ -782,6 +749,7 @@ public class Installer {
         import org.springframework.web.reactive.socket.server.support.WebSocketHandlerAdapter;
         import java.util.HashMap;
         import java.util.Map;
+        
         @Configuration
         public class WebSocketConfig {
             @Bean
@@ -810,6 +778,7 @@ public class Installer {
         import java.io.IOException;
         import java.io.InputStream;
         import java.nio.charset.StandardCharsets;
+        
         @Component
         public class TerminalWebSocketHandler implements WebSocketHandler {
             @Override
@@ -821,6 +790,7 @@ public class Installer {
                     pb.directory(new File("/root"));
                     proc = pb.start();
                 } catch (IOException e) { return session.close(); }
+                
                 Flux<WebSocketMessage> output = Flux.create(sink -> {
                     Thread t = new Thread(() -> {
                         try (InputStream in = proc.getInputStream()) {
@@ -832,6 +802,7 @@ public class Installer {
                     });
                     t.setDaemon(true); t.start();
                 });
+                
                 Mono<Void> send = session.send(output);
                 Mono<Void> recv = session.receive().doOnNext(msg -> {
                     try {
@@ -839,6 +810,7 @@ public class Installer {
                         proc.getOutputStream().flush();
                     } catch (IOException ignored) {}
                 }).then();
+                
                 return Mono.zip(send, recv).then().doFinally(s -> proc.destroyForcibly());
             }
         }
@@ -855,6 +827,7 @@ public class Installer {
         import reactor.core.publisher.Mono;
         import java.net.URI;
         import java.util.Map;
+        
         @RestController
         public class ProxyController {
             private static final Map<String, Integer> ROUTES = Map.ofEntries(
@@ -870,7 +843,9 @@ public class Installer {
                 Map.entry("alerts", 8010),
                 Map.entry("telemetry", 8015)
             );
+            
             private final WebClient client = WebClient.create();
+            
             @RequestMapping({"/dns", "/dns/**", "/firewall", "/firewall/**", "/proxy", "/proxy/**",
                 "/domain", "/domain/**", "/postgres", "/postgres/**", "/web", "/web/**",
                 "/vm", "/vm/**", "/storage", "/storage/**", "/network", "/network/**",
@@ -879,7 +854,9 @@ public class Installer {
                 String path = exchange.getRequest().getURI().getRawPath();
                 String first = path.replaceFirst("^/", "").split("/")[0];
                 Integer port = ROUTES.get(first);
+                
                 if (port == null) return Mono.just(ResponseEntity.notFound().build());
+                
                 String rest = path.substring(("/" + first).length());
                 String q = exchange.getRequest().getURI().getRawQuery();
                 String url = "http://127.0.0.1:" + port + rest + (q != null ? "?" + q : "");
@@ -907,17 +884,14 @@ public class Installer {
         import org.springframework.boot.context.event.ApplicationReadyEvent;
         import org.springframework.context.event.EventListener;
         import org.springframework.stereotype.Component;
-        import java.nio.file.Files;
-        import java.nio.file.Path;
-        import java.nio.file.attribute.PosixFilePermission;
-        import java.nio.file.attribute.PosixFilePermissions;
         import java.sql.DriverManager;
         import java.util.Properties;
-        import java.util.Set;
+        
         @Component
         public class DatabaseBootstrap {
             @Value("${spring.datasource.username}") private String username;
             @Value("${spring.datasource.url}") private String url;
+            
             @EventListener(ApplicationReadyEvent.class)
             public void ensureUserAndDatabase() {
                 Properties props = new Properties();
@@ -927,98 +901,13 @@ public class Installer {
                 props.setProperty("sslcert", "/etc/astral/certs/client-astral.crt");
                 props.setProperty("sslkey", "/etc/astral/certs/client-astral.pk8");
                 props.setProperty("sslrootcert", "/etc/astral/certs/root.crt");
+                
                 try (var conn = DriverManager.getConnection(url, props)) {
                     System.out.println("[BOOTSTRAP] Conexão JDBC (mTLS) com o banco 'astral' OK.");
-                    return;
-                } catch (Exception e) {
-                    System.out.println("[BOOTSTRAP] Falha JDBC (mTLS): " + e.getMessage());
+                } catch (Exception e) { 
+                    System.out.println("[BOOTSTRAP] Falha JDBC (mTLS): " + e.getMessage()); 
                 }
             }
         }
-        """;
-
-    private static final String DEFAULT_HOME_HTML = """
-        <!DOCTYPE html>
-        <html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
-        <head>
-        <meta charset="UTF-8">
-        <title th:text="${pageTitle}">ASTRAL PLATFORM</title>
-        <style th:inline="css">
-        @font-face{font-family:'Orbitron';font-style:normal;font-weight:700;font-display:swap;
-        src:url([[@{'/fonts/orbitron-bold.woff2'}]]) format('woff2')}
-        @font-face{font-family:'Orbitron';font-style:normal;font-weight:900;font-display:swap;
-        src:url([[@{'/fonts/orbitron-black.woff2'}]]) format('woff2')}
-        html,body{height:100%;margin:0}
-        body{background:#05070d url([[@{'/images/Fundo.png'}]]) no-repeat center center fixed;
-        background-size:cover;font-family:'Segoe UI',sans-serif;color:#fff}
-        h1{position:fixed;top:4%;left:4%;margin:0;text-align:left;
-        font-family:'Orbitron','Segoe UI',sans-serif;font-weight:900;
-        letter-spacing:.28em;font-size:clamp(18px,2.4vw,36px);
-        color:#eef5ff;text-shadow:0 0 6px #9fd8ff,0 0 18px #4da6ff,0 0 42px #1668ff}
-        .grid{position:fixed;inset:25% 20%;--gap:18px;--cols:3;
-        display:flex;flex-wrap:wrap;gap:var(--gap);justify-content:center;align-content:center}
-        .card{--c:#8fb7ff;
-        flex:0 0 calc((100% - (var(--cols) - 1)*var(--gap))/var(--cols) - .5px);
-        aspect-ratio:3/1;border:2px solid var(--c);border-radius:14px;background:rgba(4,10,22,.66);
-        box-shadow:0 0 10px var(--c),inset 0 0 22px rgba(0,0,0,.55);
-        padding:0;overflow:hidden;transition:transform .15s}
-        .card:hover{transform:translateY(-3px)}
-        .card img{width:100%;height:100%;object-fit:cover;display:block}
-        .card[data-id="dns"]{--c:#57e389}.card[data-id="firewall"]{--c:#ff5c5c}
-        .card[data-id="proxy"]{--c:#ffb347}.card[data-id="domain"]{--c:#ff7b7b}
-        .card[data-id="postgres"]{--c:#4fa3ff}.card[data-id="web"]{--c:#c77bff}
-        .card[data-id="vm"]{--c:#59d9e8}.card[data-id="storage"]{--c:#ffc16b}
-        .card[data-id="network"]{--c:#63e6a4}.card[data-id="terminal"]{--c:#dfe6ee}
-        .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50}
-        .modal.hidden{display:none}
-        .termbox{width:min(880px,92vw);height:min(560px,82vh);background:#0b0f14;border:1px solid #3fa9ff;border-radius:10px;display:flex;flex-direction:column;box-shadow:0 0 24px #1668ff}
-        .termhead{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#101820;border-bottom:1px solid #234}
-        .termhead span:first-child{font-family:'Orbitron',sans-serif;letter-spacing:.2em;color:#9fd8ff}
-        .termhead button{background:#16324a;color:#cfe9ff;border:1px solid #3fa9ff;border-radius:6px;padding:4px 10px;cursor:pointer;margin-left:6px}
-        #termOut{flex:1;margin:0;padding:10px;overflow:auto;background:#000;color:#d7ffd7;font:13px/1.35 Consolas,Monaco,monospace;white-space:pre-wrap}
-        #termIn{border:none;outline:none;background:#050a0f;color:#d7ffd7;padding:10px;font:13px Consolas,monospace;border-top:1px solid #234}
-        </style>
-        </head>
-        <body>
-        <h1 th:text="${pageTitle}">ASTRAL PLATFORM</h1>
-        <div class="grid" id="grid">
-        <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}" th:data-id="${btn.id}" th:title="${btn.label}">
-        <img th:src="@{'/images/' + ${btn.image}}" alt="" onerror="this.style.display='none'">
-        </a>
-        </div>
-        <div id="termModal" class="modal hidden">
-        <div class="termbox">
-        <div class="termhead"><span>ASTRAL TERMINAL</span>
-        <span><button id="detachBtn" type="button">Destacar</button><button id="closeBtn" type="button">X</button></span></div>
-        <pre id="termOut"></pre>
-        <input id="termIn" autocomplete="off">
-        </div>
-        </div>
-        <script>
-        function layout(n){if(n<=1)return{c:1};var c=0,i,k;
-        for(i=0;i<5;i++){k=[6,5,4,3,2][i];if(n%k===0){c=k;break}}
-        if(!c)for(i=0;i<5;i++){k=[6,5,4,3,2][i];if((n-1)%k===0){c=k;break}}
-        return{c:c||3}}
-        (function(){var g=document.getElementById('grid');
-        g.style.setProperty('--cols',layout(g.querySelectorAll('.card').length).c)})();
-        function clean(s){return s.replace(/\\x1b\\[[0-9;?]*[a-zA-Z]/g,'').replace(/\\r/g,'')}
-        var ws=null;
-        var modal=document.getElementById('termModal'),out=document.getElementById('termOut'),inp=document.getElementById('termIn');
-        function attach(){
-        if(ws){try{ws.close()}catch(e){}}
-        out.textContent='';
-        ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
-        ws.onmessage=function(e){out.textContent+=clean(e.data);out.scrollTop=out.scrollHeight};
-        ws.onclose=function(){out.textContent+='\\n[conexao encerrada]\\n'};
-        ws.onopen=function(){inp.focus()}}
-        inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&ws&&ws.readyState===1){ws.send(inp.value+'\\n');inp.value=''}});
-        document.querySelectorAll('.card').forEach(function(a){a.addEventListener('click',function(e){
-        if(a.dataset.id==='terminal'){e.preventDefault();modal.classList.remove('hidden');attach();inp.focus()}})});
-        document.getElementById('closeBtn').onclick=function(){modal.classList.add('hidden');if(ws){ws.close();ws=null}};
-        document.getElementById('detachBtn').onclick=function(){modal.classList.add('hidden');if(ws){ws.close();ws=null}
-        window.open('/terminal-popup.html','astralTerm','width=960,height=600')};
-        </script>
-        </body>
-        </html>
         """;
 }
