@@ -22,15 +22,15 @@ def main():
     os.makedirs("tools-classes", exist_ok=True)
 
     # Compila o Java
-    javac = "/usr/lib/jvm/jdk-21.0.12.7-oracle-x64/bin/javac"
+    javac = "/usr/lib/jvm/jdk-21.0.12-oracle-x64/bin/javac"
     run_command([javac, "-d", "tools-classes", "src/main/java/com/astral/tools/InstallerFirewall.java"])
 
     # Cria o JAR
-    jar = "/usr/lib/jvm/jdk-21.0.12.7-oracle-x64/bin/jar"
+    jar = "/usr/lib/jvm/jdk-21.0.12-oracle-x64/bin/jar"
     run_command([jar, "cfe", "installer-firewall.jar", "com.astral.tools.InstallerFirewall", "-C", "tools-classes", "."])
 
     # Executa como sudo
-    java = "/usr/lib/jvm/jdk-21.0.12.7-oracle-x64/bin/java"
+    java = "/usr/lib/jvm/jdk-21.0.12-oracle-x64/bin/java"
     run_command(["sudo", java, "-jar", "installer-firewall.jar"])
 
 if __name__ == "__main__":
