@@ -50,10 +50,18 @@ public class InstallerFirewall {
             up(8, "Liberando porta da UI no iptables (sem apagar regras existentes)...");
             run("iptables -C INPUT -p tcp --dport " + PORT + " -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport " + PORT + " -j ACCEPT", false);
             run("iptables -C INPUT -p tcp --dport 8040 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport 8040 -j ACCEPT", false);
-            up(10, "Garantindo iptables/ipset persistentes...");
-            if (distro.equals("debian")) run("DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent ipset", true);
-            else if (distro.equals("arch")) run("pacman -S --noconfirm iptables-nft ipset", true);
-            else run("dnf install -y iptables-services ipset", true);
+            up(10, "Garantindo iptables/ipset e fail2ban persistentes...");
+
+            if (distro.equals("debian")) {
+                run("DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent ipset fail2ban", true);
+            } else if (distro.equals("arch")) {
+                run("pacman -S --noconfirm iptables-nft ipset fail2ban", true);
+            } else {
+                run("dnf install -y epel-release 2>/dev/null || true", false);
+                run("dnf install -y iptables-services ipset fail2ban", true);
+            }
+            run("systemctl enable fail2ban && systemctl restart fail2ban 2>/dev/null || true", false);
+
             up(20, "Validando conexão com banco via mTLS...");
             if (!validateMTLSConnection()) {
                 up(100, "ERRO: Falha ao conectar no banco via mTLS. Execute o instalador principal primeiro.");
@@ -62,7 +70,7 @@ public class InstallerFirewall {
             }
             up(30, "Criando tabelas do firewall no banco...");
             createTables();
-            up(48, "Limpando build anterior do módulo...");
+            up(48, "Limpando build anterior do módulo (evita lixo de execuções antigas)...");
             cleanModule();
             up(50, "Escrevendo projeto do módulo...");
             writeProject();
@@ -724,7 +732,6 @@ public class InstallerFirewall {
                     "return c==0;}catch(Exception e){return false;}}\n" +
                     "}\n";
 
-    // Adicionado os Datalists atualizados e os metódos corretos para gerenciar e excluir regras de grupo e proteção.
     private static final String FW_API =
             "package com.astral.firewall.api;\n" +
                     "import com.astral.firewall.model.*; import com.astral.firewall.repo.*; import com.astral.firewall.service.*;\n" +
@@ -743,6 +750,7 @@ public class InstallerFirewall {
                     "private <T> Mono<T> call(java.util.concurrent.Callable<T> c){return Mono.fromCallable(c).subscribeOn(Schedulers.boundedElastic());}\n" +
                     "@GetMapping(\"/status\") public Mono<Map<String,Object>> status(){return call(()->{Map<String,Object> m=new HashMap<>();m.put(\"active\",true);m.put(\"motor\",\"iptables\");m.put(\"panicActive\",ipt.panicActive());m.put(\"rulesActive\",rules.count());m.put(\"pending\",0);return m;});}\n" +
                     "@GetMapping(\"/stats\") public Mono<Map<String,Object>> stats(){return call(() -> stats.stats());}\n" +
+                    "@GetMapping(\"/ifaces\") public Mono<List<String>> ifaces(){return call(()->{String out=ipt.sh(\"ls /sys/class/net/\");List<String> r=new ArrayList<>();r.add(\"any\");if(out!=null)for(String i:out.split(NL))if(!i.isBlank()&&!i.trim().equals(\"lo\"))r.add(i.trim());return r;});}\n" +
                     "@GetMapping(\"/ui-data\") public Mono<Map<String,Object>> uiData(){return call(()->{\n" +
                     "Map<String,Object> m=new HashMap<>(); String out=ipt.sh(\"ls /sys/class/net/\"); List<String> r=new ArrayList<>(); r.add(\"any\");\n" +
                     "if(out!=null)for(String i:out.split(NL))if(!i.isBlank()&&!i.trim().equals(\"lo\"))r.add(i.trim());\n" +
@@ -809,7 +817,7 @@ public class InstallerFirewall {
                     "@GetMapping(\"/threatlists\") public Mono<List<ThreatList>> tl(){return call(() -> threats.findAll());}\n" +
                     "@PostMapping(\"/threatlists\") public Mono<ThreatList> saveTl(@RequestBody ThreatList t){return call(() -> { ThreatList saved = threats.save(t); ipt.syncProtectionsFromDb(); return saved; });}\n" +
                     "@DeleteMapping(\"/threatlists/{id}\") public Mono<Map<String,String>> delTl(@PathVariable Long id){return call(()->{threats.deleteById(id); ipt.syncProtectionsFromDb(); return Map.of(\"success\",\"true\");});}\n" +
-                    "@PostMapping(\"/threatlists/{id}/refresh\") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh(\"sudo ipset create astral-threats hash:net -! 2>/dev/null\");String raw=ipt.sh(\"curl -fsSL \"+t.sourceUrl);int n=0;if(raw!=null&&!raw.isBlank()){StringBuilder sb=new StringBuilder();for(String line:raw.split(NL)){if(line.trim().startsWith(\"#\"))continue;String ip=line.trim().split(\"\\\\s+\")[0];if(isIpish(ip)){sb.append(\"add astral-threats \").append(ip).append(\" -exist\\n\");n++;}}if(n>0){ipt.run(List.of(\"sudo\",\"ipset\",\"restore\"),sb.toString());}}t.ipCount=n;t.lastUpdated=java.time.Instant.now();threats.save(t); ipt.syncProtectionsFromDb(); return Map.of(\"success\",true,\"ipCount\",n);});}\n" +
+                    "@PostMapping(\"/threatlists/{id}/refresh\") public Mono<Map<String,Object>> refreshTl(@PathVariable Long id){return call(()->{ThreatList t=threats.findById(id).orElseThrow();ipt.sh(\"sudo ipset create astral-threats hash:net -! 2>/dev/null\");String raw=ipt.sh(\"curl -fsSL \"+t.sourceUrl);int n=0;if(raw!=null&&!raw.isBlank()){StringBuilder sb=new StringBuilder();for(String line:raw.split(NL)){if(line.trim().startsWith(\"#\"))continue;String ip=line.trim().split(\"\\\\s+\")[0];if(isIpish(ip)){sb.append(\"add astral-threats \").append(ip).append(\" -exist\\n\");n++;}}if(n>0){ipt.run(List.of(\"bash\",\"-c\",\"echo \\\"\"+sb.toString()+\"\\\" | sudo ipset restore\"), null);}}t.ipCount=n;t.lastUpdated=java.time.Instant.now();threats.save(t); ipt.syncProtectionsFromDb(); return Map.of(\"success\",true,\"ipCount\",n);});}\n" +
                     "private boolean isIpish(String s){if(s==null||s.isBlank())return false;int dots=0;for(char c:s.toCharArray()){if(c=='.')dots++;else if(!Character.isDigit(c)&&c!='/')return false;}return dots==3;}\n" +
                     "@GetMapping(\"/logs\") public Mono<List<Map<String,String>>> logs(@RequestParam(required=false) String ip,@RequestParam(required=false) String action){return call(()->{List<Map<String,String>> out=new ArrayList<>();for(String line:ipt.sh(\"sudo journalctl -k -o short-unix --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' | tail -200\").split(NL)){if(line.isBlank())continue;if(ip!=null&&!line.contains(\"SRC=\"+ip))continue;if(action!=null&&!line.contains(\"ASTRAL-FW-\"+action))continue;out.add(Map.of(\"raw\",line));}return out;});}\n" +
                     "@GetMapping(\"/logs/export\") public Mono<String> exportLogs(@RequestParam(defaultValue=\"json\") String format){return call(()->{String raw=ipt.sh(\"sudo journalctl -k --since '24 hours ago' 2>/dev/null | grep 'ASTRAL-FW' || true\");if(format.equals(\"csv\")){StringBuilder b=new StringBuilder(\"line\\n\");for(String l:raw.split(\"\\n\"))b.append(l.replace(\",\",\";\")).append(\"\\n\");return b.toString();}return raw;});}\n" +
@@ -921,6 +929,7 @@ public class InstallerFirewall {
                     "async function api(p,o){try{const r=await fetch('/firewall/api'+p,Object.assign({headers:{'Content-Type':'application/json'}},o));let data=null;try{data=await r.json()}catch(e){}if(!r.ok){const msg=(data&&(data.error||data.message))||('HTTP '+r.status);alert('Erro em '+p+':\\n\\n'+msg);throw new Error(msg)}return data}catch(e){alert('Falha ao chamar '+p+':\\n\\n'+e.message);throw e}}\n" +
                     "function panic(){if(!confirm('Ativar MODO PÂNICO?'))return;api('/panic',{method:'POST'}).then(()=>show('dashboard'))}\n" +
                     "async function show(s){cur=s;if(window.liveTimer){clearInterval(window.liveTimer);window.liveTimer=null}nav();document.getElementById('secTitle').textContent=SECS.find(x=>x[0]===s)[1].toUpperCase();const c=document.getElementById('content');c.innerHTML='';\n" +
+                    "if(ifaces.length===1){try{ifaces=await api('/ifaces');}catch(e){}}\n" +
                     "if(s==='dashboard'){const[st,sm]=await Promise.all([api('/status'),api('/stats')]);\n" +
                     "c.innerHTML='<div class=\"cards\"><div class=\"card\"><div class=\"k\">BLOQUEADOS (24H)</div><div class=\"v amber\">'+sm.blocked24+'</div><div class=\"s\">+'+sm.rejected24+' rejeitados</div></div><div class=\"card\"><div class=\"k\">PERMITIDOS (24H)</div><div class=\"v green\">'+sm.accepted24+'</div><div class=\"s\">tráfego normal</div></div><div class=\"card\"><div class=\"k\">REGRAS ATIVAS</div><div class=\"v white\">'+st.rulesActive+'</div><div class=\"s\">'+st.pending+' pendentes</div></div><div class=\"card\"><div class=\"k\">TENTATIVAS SSH</div><div class=\"v amber\">'+sm.sshAttempts+'</div><div class=\"s\">bloqueadas</div></div></div><div class=\"panel\"><h3>TRÁFEGO — BLOQUEADO x PERMITIDO</h3><div class=\"bars\">'+sm.series.map(b=>'<div class=\"col\"><div class=\"a\" style=\"height:'+Math.min(b.allowed/10,100)+'%\"></div><div class=\"b\" style=\"height:'+Math.min(b.blocked*3,100)+'%\"></div></div>').join('')+'</div></div><div class=\"panel\"><h3>TOP IPs BLOQUEADOS</h3><table><tr><th>ORIGEM</th><th>PORTA</th><th>AÇÃO</th></tr>'+sm.topBlocked.map(t=>'<tr><td>'+t.ip+'</td><td>'+t.port+'</td><td><span class=\"pill drop\">'+t.action+'</span></td></tr>').join('')+'</table></div>'}\n" +
                     "if(s==='rules'){const rs=await api('/rules');c.innerHTML='<div class=\"panel\"><h3>REGRAS</h3><button class=\"act\" onclick=\"api(&#39;/rules/apply&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;rules&#39;))\">Atualizar Tela</button><table><tr><th>#</th><th>CHAIN</th><th>PROTO</th><th>PORTA / GRUPO</th><th>ORIGEM / GRUPO</th><th>DESTINO</th><th>AÇÃO</th><th>DADOS</th><th>STATUS</th><th></th></tr>'+rs.sort((a,b)=>a.priority-b.priority).map(r=>'<tr><td>'+r.priority+'</td><td>'+r.chain+'</td><td>'+r.protocol+'</td><td>'+r.port+'</td><td>'+(r.srcCidr||'any')+'</td><td>'+(r.dstCidr||'any')+'</td><td><span class=\"pill '+(r.action==='ACCEPT'?'accept':'drop')+'\">'+r.action+'</span></td><td>'+formatBytes(r.bytes)+'</td><td>'+(r.appliedAt?'aplicada':'pendente')+'</td><td><button class=\"act\" onclick=\"api(&#39;/rules/'+r.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;rules&#39;))\">x</button></td></tr>').join('')+'</table><br><div class=\"form-row\"><select id=\"rCh\"><option>INPUT</option><option>FORWARD</option><option>OUTPUT</option></select><select id=\"rPr\"><option>TCP</option><option>UDP</option><option>ALL</option></select>'+inputOrGroupPort('rPo','Porta ou Grupo') + inputOrGroupHost('rSr','Origem (IP/Grupo)') + inputOrGroupHost('rDs','Destino (IP/Grupo)')+'<select id=\"rAc\"><option>ACCEPT</option><option>DROP</option><option>REJECT</option><option>LOG</option><option>QUEUE</option><option>RETURN</option></select><button class=\"act\" onclick=\"addR()\">+ Nova Regra</button></div></div>'}\n" +
