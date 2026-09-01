@@ -24,8 +24,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
 
             if (response.ok && data.token) {
-                // Autenticação aceita: guarda o token JWT e redireciona
-                localStorage.setItem('astral_token', data.token);
+                // Autenticação aceita: guarda o token JWT como COOKIE para o Spring Boot ler no redirecionamento
+                document.cookie = "astral_token=" + data.token + "; path=/; max-age=86400";
                 window.location.href = '/inicio';
             } else {
                 throw new Error(data.message || 'Acesso negado');
