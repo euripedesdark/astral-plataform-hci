@@ -58,4 +58,4 @@ def main():
     run_command(["sudo", java, "-jar", "installer.jar"])
 
 if __name__ == "__main__":
-    main()
+    main(
