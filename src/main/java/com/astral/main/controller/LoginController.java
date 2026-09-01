@@ -3,8 +3,7 @@ package com.astral.main.controller;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import java.net.URI;
+import reactor.core.publisher.Mono;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -16,29 +15,28 @@ import java.util.UUID;
 @RequestMapping("/api/auth")
 public class LoginController {
 
-    /** GET /api/auth/login -> manda o navegador para a página de login (evita o Whitelabel 405)[cite: 9] */
-    @GetMapping("/login")
-    public ResponseEntity<Void> loginGet() {
-        return ResponseEntity.status(HttpStatus.FOUND).location(URI.create("/login/index.html")).build();
-    }
-
     @CrossOrigin(origins = "*")
     @PostMapping("/login")
-    public ResponseEntity<Map<String, Object>> login(@RequestBody Map<String, String> credentials) {
-        String username = credentials.get("username");
-        String password = credentials.get("password");
-        Map<String, Object> response = new HashMap<>();
-        String jdbcUrl = "jdbc:postgresql://127.0.0.1:5432/astral";
-        try (Connection connection = DriverManager.getConnection(jdbcUrl, username, password)) {
-            String token = UUID.randomUUID().toString();
-            response.put("success", true);
-            response.put("token", token);
-            response.put("message", "Autenticado com sucesso");
-            return ResponseEntity.ok(response);
-        } catch (SQLException e) {
-            response.put("success", false);
-            response.put("message", "Usuário ou senha inválidos.");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
-        }
+    public Mono<ResponseEntity<Map<String, Object>>> login(@RequestBody Map<String, String> credentials) {
+        return Mono.fromCallable(() -> {
+            String username = credentials.get("username");
+            String password = credentials.get("password");
+            Map<String, Object> response = new HashMap<>();
+            String jdbcUrl = "jdbc:postgresql://127.0.0.1:5432/astral";
+
+            try (Connection c = DriverManager.getConnection(jdbcUrl, username, password)) {
+                response.put("success", true);
+                response.put("token", UUID.randomUUID().toString());
+                response.put("message", "Autenticado com sucesso");
+                return ResponseEntity.ok(response);
+            } catch (SQLException e) {
+                response.put("success", false);
+                response.put("message", "Falha de autenticação: " + e.getMessage());
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
+            }
+        });
     }
 }
+```[cite: 7]
+
+Com os arquivos alocados nas pastas padrão (`src/main/resources/static` e `templates`), o Spring Boot encontra o `index.html` e os scripts do popup sem precisar de mapeamentos customizados complexos. Basta recompilar com `mvn clean package` e reiniciar o serviço.
