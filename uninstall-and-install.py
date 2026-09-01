@@ -1,19 +1,47 @@
 import subprocess
 import os
+import glob
+import shutil
 
 def run_command(cmd):
     print(f"Executando: {' '.join(cmd)}")
-    subprocess.run(cmd)
+    # Usamos shell=True para comandos com sudo ou caminhos complexos funcionarem melhor
+    subprocess.run(" ".join(cmd), shell=True, check=True)
+
+def find_java_bin(bin_name):
+    # 1. Tenta achar globalmente
+    path = shutil.which(bin_name)
+    if path:
+        return path
+
+    # 2. Tenta achar nas pastas do Oracle JDK 21
+    oracle_paths = glob.glob(f"/usr/lib/jvm/jdk-21*/bin/{bin_name}")
+    if oracle_paths:
+        return oracle_paths[0]
+
+    # 3. Tenta achar nas pastas do OpenJDK 21
+    open_paths = glob.glob(f"/usr/lib/jvm/java-21-openjdk*/bin/{bin_name}")
+    if open_paths:
+        return open_paths[0]
+
+    # Fallback cego
+    return bin_name
 
 def main():
-    # Caminho base fixo para evitar problemas com sudo
+    # Caminho base fixo
     base_dir = os.path.expanduser("~/astral-plataform-hci")
     os.chdir(base_dir)
 
-    # Usa os comandos globais do Linux em vez de fixar a versão 21.0.12
-    javac = "javac"
-    java = "java"
-    jar = "jar"
+    # Busca os executáveis de forma inteligente
+    javac = find_java_bin("javac")
+    java = find_java_bin("java")
+    jar = find_java_bin("jar")
+
+    print(f"--- Binários detectados ---")
+    print(f"JAVAC: {javac}")
+    print(f"JAVA:  {java}")
+    print(f"JAR:   {jar}")
+    print(f"---------------------------")
 
     # 1. Compila e executa o Desinstalador
     os.makedirs("uninstaller-classes", exist_ok=True)
