@@ -1,4 +1,4 @@
-java_code = r'''package com.astral.tools;
+package com.astral.tools;
 
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
@@ -949,7 +949,3 @@ public class InstallerFirewall {
                     "function addTL(){api('/threatlists',{method:'POST',body:JSON.stringify({name:document.getElementById('tn').value,sourceUrl:document.getElementById('tu').value,enabled:true})}).then(()=>show('protections'))}\n" +
                     "</script></body></html>\n";
 }
-'''
-with open("InstallerFirewall.java", "w", encoding="utf-8") as f:
-        f.write(java_code)
-print("File generated successfully.")
