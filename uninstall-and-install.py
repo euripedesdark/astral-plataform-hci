@@ -10,9 +10,10 @@ def main():
     base_dir = os.path.expanduser("~/astral-plataform-hci")
     os.chdir(base_dir)
 
-    javac = "/usr/lib/jvm/jdk-21.0.12-oracle-x64/bin/javac"
-    java = "/usr/lib/jvm/jdk-21.0.12-oracle-x64/bin/java"
-    jar = "/usr/lib/jvm/jdk-21.0.12-oracle-x64/bin/jar"
+    # Usa os comandos globais do Linux em vez de fixar a versão 21.0.12
+    javac = "javac"
+    java = "java"
+    jar = "jar"
 
     # 1. Compila e executa o Desinstalador
     os.makedirs("uninstaller-classes", exist_ok=True)
