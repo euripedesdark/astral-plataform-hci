@@ -1,17 +1,19 @@
-document.addEventListener('DOMContentLoaded', () => {
-    const form = document.getElementById('loginForm');
-    const submitBtn = document.getElementById('submitBtn');
-    const errorMsg = document.getElementById('errorMsg');
-
-    form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-
-        const username = document.getElementById('username').value;
-        const password = document.getElementById('password').value;
-
-        submitBtn.textContent = 'AUTHENTICATING...';
-        submitBtn.style.pointerEvents = 'none';
-        errorMsg.style.display = 'none';
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    const r = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+    });
+    const data = await r.json();
+    if (r.ok && data.success) {
+        document.cookie = 'astral_token=' + encodeURIComponent(data.token) + '; path=/';
+        location.href = '/inicio';
+    } else {
+        document.getElementById('loginError').style.display = 'block';
+    }
+});
 
         try {
             // Requisição para a API (O Nginx roteia isso para o Spring Boot no 127.0.0.1:8081)
