@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>ASTRAL TERMINAL</title>
+<style>
+  html,body{height:100%;margin:0;background:#000}
+  pre{height:calc(100% - 40px);margin:0;padding:10px;overflow:auto;color:#d7ffd7;font:13px/1.35 'Consolas',monospace;white-space:pre-wrap}
+  input{width:100%;box-sizing:border-box;border:none;outline:none;background:#050a0f;color:#d7ffd7;padding:10px;font:13px 'Consolas',monospace;border-top:1px solid #234}
+</style></head>
+<body>
+<pre id="termOut"></pre>
+<input id="termIn" autocomplete="off" autofocus>
+<script>
+function clean(s){return s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g,'').replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g,'').replace(/\x1b[()][0-9A-B]/g,'').replace(/\r/g,'');}
+const out=document.getElementById('termOut'),inp=document.getElementById('termIn');
+const ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
+ws.onmessage=e=>{out.textContent+=clean(e.data);out.scrollTop=out.scrollHeight;};
+inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&ws.readyState===1){ws.send(inp.value+'\n');inp.value='';}});
+</script>
+</body></html>
