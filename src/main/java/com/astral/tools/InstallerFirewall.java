@@ -1,4 +1,4 @@
-package com.astral.tools;
+java_code = r'''package com.astral.tools;
 
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
@@ -609,8 +609,7 @@ public class InstallerFirewall {
                     "for(MasqueradeRule mq : masqs) { if(masqBytes.containsKey(mq.id)) { mq.bytes = masqBytes.get(mq.id); saveMq = true; } }\n" +
                     "if(saveMq) masq.saveAll(masqs); }\n" +
                     "private void clearManaged(String marker, String table) {\n" +
-                    "String dump = sh(\"sudo iptables-save -t \" + table); if(dump==null) return;\n" +
-                    "for(String l : dump.split(NL)) { if(l.contains(marker) && l.startsWith(\"-A \")) { sh(\"sudo iptables -t \" + table + \" -D \" + l.substring(3).trim()); } }\n" +
+                    "sh(\"sudo iptables-save -t \" + table + \" | grep '^-A .*\" + marker + \"' | sed 's/^-A /sudo iptables -t \" + table + \" -D /' | bash\");\n" +
                     "}\n" +
                     "public void syncNatFromDb() {\n" +
                     "clearManaged(\"pfwd-\", \"nat\"); clearManaged(\"masq-\", \"nat\"); clearManaged(\"auto-fwd-\", \"filter\");\n" +
@@ -929,7 +928,6 @@ public class InstallerFirewall {
                     "async function api(p,o){try{const r=await fetch('/firewall/api'+p,Object.assign({headers:{'Content-Type':'application/json'}},o));let data=null;try{data=await r.json()}catch(e){}if(!r.ok){const msg=(data&&(data.error||data.message))||('HTTP '+r.status);alert('Erro em '+p+':\\n\\n'+msg);throw new Error(msg)}return data}catch(e){alert('Falha ao chamar '+p+':\\n\\n'+e.message);throw e}}\n" +
                     "function panic(){if(!confirm('Ativar MODO PÂNICO?'))return;api('/panic',{method:'POST'}).then(()=>show('dashboard'))}\n" +
                     "async function show(s){cur=s;if(window.liveTimer){clearInterval(window.liveTimer);window.liveTimer=null}nav();document.getElementById('secTitle').textContent=SECS.find(x=>x[0]===s)[1].toUpperCase();const c=document.getElementById('content');c.innerHTML='';\n" +
-                    "if(ifaces.length===1){try{ifaces=await api('/ifaces');}catch(e){}}\n" +
                     "if(s==='dashboard'){const[st,sm]=await Promise.all([api('/status'),api('/stats')]);\n" +
                     "c.innerHTML='<div class=\"cards\"><div class=\"card\"><div class=\"k\">BLOQUEADOS (24H)</div><div class=\"v amber\">'+sm.blocked24+'</div><div class=\"s\">+'+sm.rejected24+' rejeitados</div></div><div class=\"card\"><div class=\"k\">PERMITIDOS (24H)</div><div class=\"v green\">'+sm.accepted24+'</div><div class=\"s\">tráfego normal</div></div><div class=\"card\"><div class=\"k\">REGRAS ATIVAS</div><div class=\"v white\">'+st.rulesActive+'</div><div class=\"s\">'+st.pending+' pendentes</div></div><div class=\"card\"><div class=\"k\">TENTATIVAS SSH</div><div class=\"v amber\">'+sm.sshAttempts+'</div><div class=\"s\">bloqueadas</div></div></div><div class=\"panel\"><h3>TRÁFEGO — BLOQUEADO x PERMITIDO</h3><div class=\"bars\">'+sm.series.map(b=>'<div class=\"col\"><div class=\"a\" style=\"height:'+Math.min(b.allowed/10,100)+'%\"></div><div class=\"b\" style=\"height:'+Math.min(b.blocked*3,100)+'%\"></div></div>').join('')+'</div></div><div class=\"panel\"><h3>TOP IPs BLOQUEADOS</h3><table><tr><th>ORIGEM</th><th>PORTA</th><th>AÇÃO</th></tr>'+sm.topBlocked.map(t=>'<tr><td>'+t.ip+'</td><td>'+t.port+'</td><td><span class=\"pill drop\">'+t.action+'</span></td></tr>').join('')+'</table></div>'}\n" +
                     "if(s==='rules'){const rs=await api('/rules');c.innerHTML='<div class=\"panel\"><h3>REGRAS</h3><button class=\"act\" onclick=\"api(&#39;/rules/apply&#39;,{method:&#39;POST&#39;}).then(()=>show(&#39;rules&#39;))\">Atualizar Tela</button><table><tr><th>#</th><th>CHAIN</th><th>PROTO</th><th>PORTA / GRUPO</th><th>ORIGEM / GRUPO</th><th>DESTINO</th><th>AÇÃO</th><th>DADOS</th><th>STATUS</th><th></th></tr>'+rs.sort((a,b)=>a.priority-b.priority).map(r=>'<tr><td>'+r.priority+'</td><td>'+r.chain+'</td><td>'+r.protocol+'</td><td>'+r.port+'</td><td>'+(r.srcCidr||'any')+'</td><td>'+(r.dstCidr||'any')+'</td><td><span class=\"pill '+(r.action==='ACCEPT'?'accept':'drop')+'\">'+r.action+'</span></td><td>'+formatBytes(r.bytes)+'</td><td>'+(r.appliedAt?'aplicada':'pendente')+'</td><td><button class=\"act\" onclick=\"api(&#39;/rules/'+r.id+'&#39;,{method:&#39;DELETE&#39;}).then(()=>show(&#39;rules&#39;))\">x</button></td></tr>').join('')+'</table><br><div class=\"form-row\"><select id=\"rCh\"><option>INPUT</option><option>FORWARD</option><option>OUTPUT</option></select><select id=\"rPr\"><option>TCP</option><option>UDP</option><option>ALL</option></select>'+inputOrGroupPort('rPo','Porta ou Grupo') + inputOrGroupHost('rSr','Origem (IP/Grupo)') + inputOrGroupHost('rDs','Destino (IP/Grupo)')+'<select id=\"rAc\"><option>ACCEPT</option><option>DROP</option><option>REJECT</option><option>LOG</option><option>QUEUE</option><option>RETURN</option></select><button class=\"act\" onclick=\"addR()\">+ Nova Regra</button></div></div>'}\n" +
@@ -951,3 +949,7 @@ public class InstallerFirewall {
                     "function addTL(){api('/threatlists',{method:'POST',body:JSON.stringify({name:document.getElementById('tn').value,sourceUrl:document.getElementById('tu').value,enabled:true})}).then(()=>show('protections'))}\n" +
                     "</script></body></html>\n";
 }
+'''
+with open("InstallerFirewall.java", "w", encoding="utf-8") as f:
+        f.write(java_code)
+print("File generated successfully.")
