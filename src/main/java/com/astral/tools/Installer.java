@@ -379,7 +379,7 @@ public class Installer {
         for (int p : ports) runCmd("iptables -C INPUT -p tcp --dport " + p + " -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport " + p + " -j ACCEPT", false);
         runCmd("iptables-save > /etc/sysconfig/iptables 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true", false);
     }
-    private static void sendResponse(HttpExchange ex, int code, String body, String type) {
+    private static void sendResponse(HttpExchange ex, int code, String body, String type) throws IOException {
         byte[] b = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", type + "; charset=UTF-8");
         ex.sendResponseHeaders(code, b.length);
