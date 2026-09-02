@@ -1,12 +1,14 @@
 <!DOCTYPE html>
-<html lang="pt-BR" xmlns:th="http://www.thymeleaf.org">
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Astral Platform - Login</title>
+    <!-- Fonte futurista para o título e texto -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@500;600&display=swap" rel="stylesheet">
 
-    <!-- Mapeamento dinâmico do Thymeleaf para o CSS -->
-    <link rel="stylesheet" th:href="@{/css/style.css}">
+    <!-- Folha de estilo externa -->
+    <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
@@ -50,7 +52,7 @@
         </form>
     </div>
 
-    <!-- Mapeamento dinâmico do Thymeleaf para o JS -->
-    <script th:src="@{/js/login.js}"></script>
+    <!-- Script importado da pasta js/ -->
+    <script src="js/login.js"></script>
 </body>
 </html>
