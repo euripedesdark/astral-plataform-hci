@@ -1,415 +1,225 @@
 Astral HCI-NGFW
-Abstract
+Resumo
 
-Astral HCI-NGFW is an open, auditable and intent-driven Hyperconverged Infrastructure (HCI) platform that treats networking, security and identity as first-class infrastructure primitives, not auxiliary services.
+Astral HCI-NGFW é uma plataforma de Infraestrutura Hiperconvergente (HCI) aberta, auditável e orientada por intenções, que trata rede, segurança e identidade como primitivos de infraestrutura de primeira classe, não como serviços auxiliares.
 
-Astral unifies compute (VMs and containers), network, firewall, identity and DNS into a single converged fabric, governed by a deterministic reconciliation engine and operated through explicit intents, approvals and rollback.
+Astral unifica computação (VMs e contêineres), rede, firewall, identidade e DNS em um único tecido convergente, governado por um motor de reconciliação determinístico e operado por intenções explícitas, aprovações e rollback.
 
-The project is released under the GNU General Public License v3.0 (GPLv3), ensuring long-term freedom, transparency and resistance to vendor lock-in.
+O projeto é lançado sob a licença GNU GPLv3, garantindo liberdade de longo prazo, transparência e resistência ao lock-in de fornecedores.
+Problema
 
-Problem Statement
+Plataformas modernas sofrem com problemas estruturais recorrentes:
 
-Modern infrastructure platforms suffer from recurring structural problems:
+    Complexidade artificial introduzida por produtos em camadas
 
-Artificial complexity introduced by layered products
+    Lock-in de fornecedores disfarçado de “recursos corporativos”
 
-Vendor lock-in disguised as “enterprise features”
+    Certificações caras usadas como barreiras operacionais
 
-Expensive certifications used as operational gatekeeping
+    Planos de controle opacos e frágeis
 
-Opaque control planes with fragile and non-deterministic behavior
+Rede, firewall, identidade e computação são tratados como silos separados, aumentando risco operacional e carga cognitiva. Astral resolve isso colapsando os silos em um único plano de controle autoritativo, totalmente observável.
+Filosofia de Design
 
-Networking, firewalling, identity and compute are usually treated as separate silos, managed by different tools and mental models. This fragmentation increases operational risk, slows down recovery and raises the cognitive load for infrastructure teams.
+Princípios inegociáveis:
 
-Astral addresses this by collapsing these silos into a single authoritative control plane, operated directly by infrastructure engineers and fully observable through explicit state and audit logs.
+    Determinismo sobre mágica
 
-Design Philosophy
+    Auditabilidade sobre conveniência
 
-Astral is built on four non-negotiable principles:
+    Fallback sobre dependência
 
-Determinism over magic
-Every action must be explainable, reproducible and reversible.
+    Autoridade humana sobre automação
 
-Auditability over convenience
-If a change cannot be audited, it is considered unsafe.
+O que torna Astral HCI
 
-Fallback over dependency
-Any optional component must be removable without stopping the platform.
+Não é um hipervisor com add-ons, mas um sistema operacional de infraestrutura:
 
-Human authority over automation
-Automation assists; humans decide.
+    Rede, firewall, identidade e DNS formam um domínio convergente
 
-If a system cannot be operated manually, it is considered unsafe by design.
+    VMs e contêineres consomem o mesmo tecido
 
-What Makes Astral HCI
+    Todas as mudanças seguem o ciclo intenção → reconciliar → commit
 
-Astral is not a hypervisor with add-ons.
+    Rollback é obrigatório
 
-It is an infrastructure operating system where:
+Cada nó é independente ou parte de cluster.
+Arquitetura
+Plano de Controle
 
-Network, firewall, identity and DNS form one converged domain
+    API sem estado
 
-VMs and containers consume the same infrastructure fabric
+    RBAC, aprovações e trilha de auditoria
 
-All changes follow the same intent → reconcile → commit lifecycle
+    Operação CLI-first
 
-Rollback is mandatory, not optional
+Motor de Reconciliação
 
-Each node is a fully converged HCI node, capable of operating independently or as part of a cluster.
+    Implementado em Python
 
-Core Architecture
-Control Plane
+    Valida intenções, calcula estado desejado vs observado
 
-Stateless, headless API layer
+    Aplica mudanças em estágios com rollback automático
 
-RBAC, approvals and full audit trail
+Persistência
 
-Designed for CLI-first and automation-driven operation
+    Banco relacional para estado autoritativo
 
-The control plane never hides state behind UI artifacts.
+    Data lake para telemetria histórica
 
-Reconciliation Engine
+Tecido Convergente
 
-Implemented in Python, the reconciliation engine:
+    Interfaces de rede, VLANs, firewall, NAT
 
-Validates declared intents
+    Controle de acesso baseado em identidade
 
-Computes desired versus observed state
+    DNS com políticas
 
-Produces deterministic execution plans
+Filosofia de Integração
 
-Applies changes in controlled stages
+Astral integra componentes maduros (Samba, DNS, firewall) em um sistema coerente. Falhas em qualquer componente disparam rollback completo.
+Computação e Contêineres
 
-Enforces automatic rollback on failure
+    Suporte a KVM/libvirt e contêineres OCI
 
-There is no imperative bypass path.
+    Ambos obedecem às mesmas regras de firewall e identidade
 
-Persistence & Data
+Armazenamento Distribuído
 
-Astral separates responsibilities clearly:
+    DRBD com orquestração
 
-Relational database for authoritative state, intents, commits and audit
+    Replicação síncrona e auditável
 
-Data lake for curated telemetry and historical analysis
+Ciclo de Intenção
 
-Promotion of data into the data lake is selective and policy-driven.
+    Criação da intenção
 
-Converged Infrastructure Fabric
+    Autorização
 
-Astral enforces a single logical fabric providing:
+    Reconciliação
 
-Network interfaces, VLANs and routing
+    Validação
 
-Stateful firewall and NAT
+    Commit ou rollback
 
-Identity-aware access control (AD / SSO)
+    Observação e auditoria
 
-DNS resolution and policy enforcement
+Observabilidade
 
-There is no separation between these domains.
+    Rede, firewall, DNS, identidade, VMs e contêineres
 
-If identity is unavailable, access is restricted.
-If firewall application fails, changes are rolled back atomically.
+    Detecção de drift contínua
 
-Architect’s Note: Integration as Philosophy
+Integração com CELESTE
 
-Astral follows an architectural philosophy of integration over replacement.
+    Projeto independente
 
-Rather than reinventing mature open-source components, Astral unifies them into a coherent, deterministic system. The role of the infrastructure architect is not to replace everything, but to connect proven systems with intent, clarity and control.
+    Sem dependência ou compartilhamento de plano de controle
 
-Example: Unified Identity, DNS and Firewall
+    Interação apenas via APIs explícitas
 
-In Astral, components such as:
+Licenciamento
 
-Samba (identity and directory)
+GPLv3 garante liberdade, transparência e proteção contra apropriação proprietária.
+Conclusão
 
-Authoritative DNS
+Astral HCI-NGFW é projetado para sobreviver a fornecedores e modismos, restaurando a infraestrutura como algo determinístico, auditável e operado por engenheiros.
 
-DNS filtering
+Diagrama resumido:
 
-Stateful firewall
-
-are not managed independently. They are expressed as a single declarative intent, reconciled together and audited in a unified log stream.
-
-Failure in any component triggers a full rollback, eliminating partial configuration states.
-
-Compute & Containers
-
-Astral supports:
-
-KVM / libvirt virtual machines
-
-OCI-compatible system containers
-
-Both workloads:
-
-Attach to the same network fabric
-
-Obey the same firewall rules
-
-Are governed by identity
-
-Emit identical audit and telemetry
-
-There is no secondary networking or security stack.
-
-Distributed Storage
-
-Astral uses DRBD with orchestration for distributed storage:
-
-Synchronous replication
-
-Predictable performance
-
-Deterministic behavior
-
-Storage is managed as an HCI resource and audited like any other infrastructure component.
-
-Intent Lifecycle
-
-Every infrastructure change follows the same lifecycle:
-
-Intent creation (no state change)
-
-Authorization and approval
-
-Reconciliation and diff computation
-
-Staging and validation
-
-Commit or automatic rollback
-
-Observation and audit
-
-There is no direct imperative configuration path.
-
-Observability
-
-Astral provides unified observability across the platform:
-
-Network and firewall activity
-
-DNS health and failover events
-
-Identity authentication and authorization
-
-VM and container performance
-
-Service and package health
-
-Drift detection is continuous and explicit.
-
-Assistive Intelligence (External Systems)
-
-Astral may integrate with external assistive intelligence systems.
-
-These systems are not part of Astral, are not required, and hold no authority over infrastructure state.
-
-They may provide:
-
-Anomaly detection
-
-Suggestions and analysis
-
-Observability enrichment
-
-All decisions and changes remain under explicit human control.
-
-Relationship with CELESTE
-
-CELESTE is an independent project, developed, licensed and distributed separately.
-
-Astral:
-
-Does not embed CELESTE
-
-Does not bundle CELESTE
-
-Does not depend on CELESTE
-
-Does not delegate authority to CELESTE
-
-Any interaction, if enabled, occurs exclusively through explicit, versioned APIs or data contracts, ensuring:
-
-No license entanglement
-
-No derived work relationship
-
-No runtime dependency
-
-No shared control plane
-
-Astral remains fully functional and fully compliant with its license regardless of the presence or absence of CELESTE.
-
-Replaceability and Fallback
-
-All optional integrations are treated as replaceable external systems.
-
-Operators may:
-
-Disable external integrations entirely
-
-Replace them with alternative systems
-
-Integrate Astral with external platforms
-
-Astral continues to operate fully in all cases.
-
-Licensing
-
-Astral HCI-NGFW is released under the GNU General Public License v3.0 (GPLv3).
-
-This guarantees:
-
-Freedom to use, study and modify
-
-Mandatory sharing of improvements
-
-Protection against proprietary enclosure
-
-External systems — including independent assistive intelligence projects — are not covered by this license unless explicitly stated in their own repositories.
-
-Conclusion
-
-Astral HCI-NGFW is designed to outlive vendors, trends and marketing cycles.
-
-It restores infrastructure to what it should be:
-
-Predictable
-
-Auditable
-
-Deterministic
-
-Engineer-operated
-
-Astral proves that true innovation lies not in replacing everything, but in integrating proven systems with discipline, clarity and intent.
-
-### Arquitetura em camadas
-
-### Diagrama resumido da arquitetura do projeto.
 
 ```mermaid
+
 flowchart TB
-  subgraph ControlPlane [Astral Control Plane]
-    direction TB
-    CP_API["API · RBAC · Audit · Approvals"]
+  subgraph ControlPlane [Plano de Controle Astral]
+    CP_API["API · RBAC · Auditoria · Aprovações"]
   end
 
-  subgraph Reconciler [Core Reconciliation Engine]
-    direction TB
-    RE["Python Control Core<br/>Intents · Desired State · Validation · Diff · Apply · Rollback"]
+  subgraph Reconciler [Motor de Reconciliação]
+    RE["Core em Python<br/>Intenções · Estado Desejado · Validação · Diff · Aplicar · Rollback"]
   end
 
-  subgraph Fabric [Converged Infrastructure Fabric]
-    direction TB
-    CF["Network · Firewall · Identity · DNS"]
+  subgraph Fabric [Tecido Convergente]
+    CF["Rede · Firewall · Identidade · DNS"]
   end
 
-  subgraph Runtime [Compute & Containers Runtime]
-    direction TB
-    RT["KVM / libvirt · OCI Containers"]
+  subgraph Runtime [Runtime de VMs e Contêineres]
+    RT["KVM / libvirt · Contêineres OCI"]
   end
 
   ControlPlane --> Reconciler
   Reconciler --> Fabric
   Fabric --> Runtime
-
-  classDef box fill:#f8f9fa,stroke:#2b2b2b,stroke-width:1px,color:#111;
-  class ControlPlane,Reconciler,Fabric,Runtime box;
 ```
 
-(External systems interact only through explicit APIs)
+Modelo Operacional
 
-Operational Model
+Astral é projetado para ser operado sem interface gráfica.
+Métodos principais de interação:
 
-Astral is designed to be operated without a graphical interface.
+    Ferramentas CLI
 
-Primary interaction methods:
+    Arquivos de intenção declarativos
 
-CLI tools
+    Automação via API
 
-Declarative intent files
+Modos de Falha e Operação Degradada
 
-API-driven automation
+Astral degrada de forma segura:
 
-This is intentional.
+    API indisponível → nenhuma mudança aplicada, runtime continua
 
-Astral assumes operators understand infrastructure and require clarity, predictability and control, not abstraction layers that hide state.
+    Motor de reconciliação parado → último estado commitado permanece
 
-Failure Modes & Degraded Operation
+    Banco indisponível → configuração congelada, workloads continuam
 
-Astral is designed to degrade safely.
+    Sistemas externos indisponíveis → apenas sugestões desativadas
 
-If optional components fail:
+Operação manual sempre possível.
+Escopo
 
-Control plane API unavailable → no changes applied, runtime continues
+Astral foca em:
 
-Reconciliation engine stopped → last committed state remains enforced
+    Computação (VMs e contêineres)
 
-Database unavailable → configuration frozen, workloads continue
+    Rede, firewall e roteamento
 
-External systems unavailable → suggestions and enrichment disabled
+    Identidade e DNS
 
-Manual operation is always possible.
+    Replicação de armazenamento
 
-Scope
+    Auditoria e observabilidade
 
-Astral explicitly focuses on core infrastructure:
+Não é PaaS, Kubernetes ou abstração de cloud.
+Não-Objetivos
 
-Compute (VMs and system containers)
+Para preservar estabilidade, Astral evita:
 
-Network, firewall and routing
+    Automação oculta
 
-Identity and DNS
+    Infraestrutura auto-modificável
 
-Storage replication
+    Auto-remediação sem aprovação
 
-Audit and observability
+    Configuração via UI
 
-Astral does not aim to be:
+Status do Projeto
 
-A PaaS
+Astral HCI-NGFW está em desenvolvimento inicial.
+Foco atual:
 
-A Kubernetes distribution
+    Contratos do plano de controle
 
-A cloud provider abstraction layer
+    Definição de esquema de intenções
 
-Those systems may run on Astral, but are not part of Astral itself.
+    Fundamentos do motor de reconciliação
 
-Non-Goals
+    Rede e firewall determinísticos
 
-To preserve stability and clarity, Astral explicitly avoids:
-
-Hidden automation
-
-Self-modifying infrastructure
-
-Auto-remediation without approval
-
-UI-driven configuration state
-
-If a feature reduces determinism, it is rejected.
-
-Project Status
-
-Astral HCI-NGFW is in active early development.
-
-Current focus:
-
-Control plane contracts
-
-Intent schema definition
-
-Reconciliation engine foundations
-
-Deterministic networking and firewall enforcement
-
-APIs, schemas and internal structures are expected to evolve.
-
-Repository Structure (Planned)
+Estrutura do Repositório:
 
 ```mermaid
+
 graph LR
   A[astral/] --> B[control-plane/]
   A --> C[reconciler/]
@@ -420,36 +230,30 @@ graph LR
   A --> H[docs/]
   A --> I[tools/]
 
-  B --> B1["API, RBAC, approvals, audit"]
-  C --> C1["Python reconciliation engine"]
-  D --> D1["Network, firewall, identity, DNS integration"]
-  E --> E1["DRBD orchestration"]
-  F --> F1["KVM and container runtime integration"]
-  G --> G1["Optional extensions"]
-  H --> H1["Architecture and intent documentation"]
-  I --> I1["CLI and operator utilities"]
-
-  classDef folder fill:#f3f4f6,stroke:#111,stroke-width:1px;
-  class A,B,C,D,E,F,G,H,I folder;
-
+  B --> B1["API, RBAC, aprovações, auditoria"]
+  C --> C1["Motor de reconciliação em Python"]
+  D --> D1["Integração de rede, firewall, identidade, DNS"]
+  E --> E1["Orquestração DRBD"]
+  F --> F1["Integração de runtime KVM e contêineres"]
+  G --> G1["Extensões opcionais"]
+  H --> H1["Documentação de arquitetura e intenções"]
+  I --> I1["CLI e utilitários de operação"]
 ```
 
+Declaração Final
 
+Astral não é construído para seguir tendências.
+É construído para:
 
-Final Statement
+    Ser compreendido
 
-Astral HCI-NGFW is not built to chase trends.
+    Ser auditado
 
-It is built to:
+    Ser operado sob pressão
 
-Be understood
+    Sobreviver a falhas de componentes
 
-Be audited
+    Permanecer livre e defensável
 
-Be operated under pressure
+Astral é infraestrutura para engenheiros que valorizam controle sobre conveniência.
 
-Survive component failure
-
-Remain free and defensible
-
-Astral is infrastructure for engineers who value control over convenience.
