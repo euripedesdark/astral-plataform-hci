@@ -1,241 +1,244 @@
-# Astral PLATAFORM & HCI – Reference and Updates Document
-#  
-**Living Document – Version 1.3**  
-**Last updated:** AUGUST 27, 2026  
+# Astral Platform & HCI – Documento de Referência e Atualizações
+#
+**Documento Vivo – Versão 1.4**
+**Última atualização:** 02 DE SETEMBRO DE 2026
 
 ---
 
-## 📋 ABOUT THIS DOCUMENT  
-*(unchanged)*
+## 📋 SOBRE ESTE DOCUMENTO
+*(inalterado)*
 
 ---
 
-## 📅 UPDATE TIMELINE  
+## 📅 LINHA DO TEMPO DE ATUALIZAÇÕES
 
-### **DECEMBER 18, 2025 – Version 0.1**  
-*(unchanged)*  
+### **18 DE DEZEMBRO DE 2025 – Versão 0.1**
+*(inalterado)*
 
-### **DECEMBER 20, 2025 – Version 1.0**  
-*(unchanged)*  
+### **20 DE DEZEMBRO DE 2025 – Versão 1.0**
+*(inalterado)*
 
-### **JANUARY 2, 2026 – Version 1.2**
-**New Feature**: **Context-Aware DNS Classification and Selection**
-- **Reason**: Enable offline, auditable, user-controlled DNS selection aligned with Astral principles
-- **Source Data**: Public DNS list from `public-dns.info` (CSV-based, no live API calls)
-- **Classification Criteria**: 
-- ✅ **Cloud Provider** (via `as_org`: Google, Cloudflare, AWS, etc.) 
-- ✅ **Country** (via `country_code`) 
-- ✅ **Reliability ≥ 0.95 + DNSSEC = true**
-- **Integration**: 
-- Fully embedded in **Layer 4 (Network)** and **Layer 5 (Firewall)** 
-- User selects DNS interactively during setup 
-- Selection propagates to **Pi-hole**, **dnsmasq**, and **firewall policies**
-- **Philosophy Alignment**: 
-- ✅ **Fallback over Dependency**: All data stored locally 
-- ✅ **Human Authority**: User chooses DNS 
-- ✅ **Auditability**: Selected DNS logged in PostgreSQL
+### **02 DE JANEIRO DE 2026 – Versão 1.2**
+**Novo recurso**: **Classificação e Seleção de DNS Sensível a Contexto**
+- **Motivo**: Habilitar seleção de DNS offline, auditável e controlada pelo usuário, alinhada aos princípios da Astral
+- **Fonte de dados**: Lista pública de DNS do `public-dns.info` (baseada em CSV, sem chamadas de API ao vivo)
+- **Critérios de classificação**:
+  - ✅ **Provedor de nuvem** (via `as_org`: Google, Cloudflare, AWS, etc.)
+  - ✅ **País** (via `country_code`)
+  - ✅ **Confiabilidade ≥ 0,95 + DNSSEC = true**
+- **Integração**:
+  - Totalmente embutida na **Camada 4 (Rede)** e **Camada 5 (Firewall)**
+  - Usuário seleciona o DNS interativamente durante a configuração
+  - A seleção se propaga para **Pi-hole**, **dnsmasq** e **políticas de firewall**
+- **Alinhamento filosófico**:
+  - ✅ **Fallback acima de dependência**: todos os dados armazenados localmente
+  - ✅ **Autoridade humana**: o usuário escolhe o DNS
+  - ✅ **Auditabilidade**: DNS selecionado registrado no PostgreSQL
 
-### **AUGUST 27, 2026 – Version 1.3 (Current)**
-**New Feature**: **Samba AD DC Multi-Distro Scripts & Unified Web Installer**
-- **Reason**: Expand identity layer support to major Linux families and streamline initial setup via web UI.
-- **Samba AD DC Scripts**: 
-- ✅ **Fedora/AlmaLinux**: `fedoradc-SSL.py` (with SSL/Step-CA) and `fedora42dc.py` (without SSL). 
-- ✅ **Arch Linux**: `arch-DC-SSL.py` (with SSL) and `arch42dc-no-ssl.py` (without SSL). 
-- ✅ **Debian 13**: `debian13-dc-ssl.py` (with SSL, AppArmor, modular BIND) and `debian13-dc-no-ssl.py` (without SSL). 
-- 🔐 **Standardization**: All scripts now use `auth.env` for sensitive configurations (`HOSTNAME_COMPLETO`, `REALM`, `SENHA_ADMIN`, `CERT_PWD`, etc.). 
-- 🛡️ **Distro-Specific Security**:
-- Fedora/RHEL: SELinux configuration included. 
-- Debian: Custom AppArmor profiles for Samba and BIND. 
-- Arch: Path and package adjustments (`pacman`, `iptables-services`).
+### **27 DE AGOSTO DE 2026 – Versão 1.3**
+**Novo recurso**: **Scripts Multi-Distro do Samba AD DC & Instalador Web Unificado**
+- **Motivo**: Expandir o suporte da camada de identidade para as principais famílias Linux e simplificar a configuração inicial via UI web.
+- **Scripts Samba AD DC**:
+  - ✅ **Fedora/AlmaLinux**: `fedoradc-SSL.py` (com SSL/Step-CA) e `fedora42dc.py` (sem SSL).
+  - ✅ **Arch Linux**: `arch-DC-SSL.py` (com SSL) e `arch42dc-no-ssl.py` (sem SSL).
+  - ✅ **Debian 13**: `debian13-dc-ssl.py` (com SSL, AppArmor, BIND modular) e `debian13-dc-no-ssl.py` (sem SSL).
+  - 🔐 **Padronização**: todos os scripts agora usam `auth.env` para configurações sensíveis (`HOSTNAME_COMPLETO`, `REALM`, `SENHA_ADMIN`, `CERT_PWD`, etc.).
+  - 🛡️ **Segurança específica por distro**:
+    - Fedora/RHEL: configuração de SELinux incluída.
+    - Debian: perfis customizados de AppArmor para Samba e BIND.
+    - Arch: ajustes de path e pacotes (`pacman`, `iptables-services`).
+- **Instalador Web Unificado (`instalador.py` + `frontend/index.html`)**:
+  - 🚀 **Execução**: roda via `sudo python3 instalador.py` diretamente da raiz do repositório Git.
+  - 🌐 **Acesso remoto**: servidor Flask embutido, acessível via navegador em outra máquina (`http://IP_DO_SERVIDOR:5000`).
+  - 🔄 **Fluxo de 10 etapas**:
+    1. Execução com `sudo` no diretório do Git.
+    2. Detecção automática do IP da máquina.
+    3. Endereço de acesso exibido no terminal.
+    4. Handshake SSE (Server-Sent Events) com o frontend.
+    5. Sincronização do repositório (`apt-get update` / `dnf makecache` / `pacman -Sy`).
+    6. Instalação silenciosa do Node.js e NPM.
+    7. **Instalação do PostgreSQL com feedback em tempo real** (mostra o pacote sendo instalado e uma barra de progresso).
+    8. Validação de socket na porta 5432 e início do serviço.
+    9. Transição para o formulário de credenciais (usuário admin e senha mestra).
+    10. Criação do superusuário e do banco **`astral`** via `sudo -i -u postgres psql`.
+  - 🧠 **Detecção automática de distro**:
+    - Lê `/etc/os-release` para identificar Debian/Ubuntu, RHEL/Fedora/Alma ou Arch Linux.
+    - Adapta automaticamente os comandos (`apt`, `dnf`, `pacman`) e os nomes de pacotes.
+  - 🗄️ **Criação do banco `astral`**: o instalador cria automaticamente o banco principal da aplicação e concede privilégios totais ao usuário criado.
+  - 🎨 **Frontend estilo React**: interface limpa com barra de progresso animada, log de instalação em tempo real e transição suave para o dashboard final.
 
-- **Unified Web Installer (`instalador.py` + `frontend/index.html`)**:
-- 🚀 **Execution**: Runs via `sudo python3 instalador.py` directly from the Git repository root. 
-- 🌐 **Remote Access**: Built-in Flask server accessible via a browser on another machine (`http://SERVER_IP:5000`). 
-- 🔄 **10-Step Workflow**:
-1. Execution with `sudo` in the Git directory. 
-2. Automatic machine IP detection. 
-3. Access address displayed in the terminal. 
-4. SSE (Server-Sent Events) handshake with the frontend. 
-5. Repository synchronization (`apt-get update` / `dnf makecache` / `pacman -Sy`). 
-6. Silent installation of Node.js and NPM. 
-7. **PostgreSQL installation with real-time feedback** (displays the package name being installed and a progress bar). 
-8. Socket validation on port 5432 and service startup. 
-9. Transition to the credentials form (Admin User and Master Password). 
-10. Creation of the superuser and the **`astral`** database via `sudo -i -u postgres psql`. 
-- 🧠 **Automatic Distro Detection**:
-- Reads `/etc/os-release` to identify Debian/Ubuntu, RHEL/Fedora/Alma, or Arch Linux. - Automatically adapts commands (`apt`, `dnf`, `pacman`) and package names. 
-- 🗄️ **`astral` Database Creation**: The installer automatically creates the application's main database and grants full privileges to the created user. 
-- 🎨 **React-like Frontend**: A clean interface featuring an animated progress bar, a real-time installation log, and a smooth transition to the final dashboard.
+### **02 DE SETEMBRO DE 2026 – Versão 1.4 (Atual)**
+**Consolidação de stack**: **Backend unificado em Java + Spring Boot**
+- **Motivo**: Reduzir a superfície de tecnologias do core, eliminar a duplicidade entre o serviço Python planejado e a camada Spring Boot, e simplificar operação/deploy.
+- **Backend**:
+  - ✅ **Java + Spring Boot** é agora a **única** tecnologia de backend do projeto — cobre UI, orquestração e os módulos de infraestrutura (ex.: Firewall).
+  - ❌ O núcleo em Python (antes previsto na Camada 2) foi **descontinuado**. Toda a lógica anteriormente planejada em Python (validação, reconciliação, execução) passa a ser implementada em Java.
+- **Frontend**:
+  - ✅ **JavaScript, HTML e CSS puros** — sem framework de build (sem React/Vue no momento).
+  - 📋 **Node.js**: reservado para uso futuro (ex.: build tooling, SSR de componentes mais complexos); **ainda não adotado** no projeto.
+- **Instaladores automatizados**:
+  - 🧩 **Instalador do Sistema Base** (`Installer.java`): provisiona pacotes e dependências do zero — Java/JDK, PostgreSQL, systemd units, estrutura do projeto (`fabric/`, `src/`), banco `astral`, usuário administrador e a própria plataforma principal (`astral-platform`).
+  - 🧩 **Instalador do Módulo de Firewall** (`InstallerFirewall.java`): standalone, provisiona especificamente o serviço `astral-firewall` (Spring Boot + iptables), incluindo build Maven, unit systemd, e liberação inicial de portas.
+  - Ambos os instaladores são **idempotentes** (podem ser executados novamente com segurança) e rodam como processos Java autônomos via `sudo java <Instalador>.java`, sem dependência de gerenciadores de pacote Python.
+- **Módulo de Firewall**: passa de "planejado" para **funcional** — ver Camada 5 abaixo.
+
 ---
 
-## 🎯 FUNDAMENTAL PRINCIPLES (IMMUTABLE)  
-*(unchanged)*
+## 🎯 PRINCÍPIOS FUNDAMENTAIS (IMUTÁVEIS)
+*(inalterado)*
 
 ---
 
-## 🏗️ IMPLEMENTATION STATUS BY LAYER  
+## 🏗️ STATUS DE IMPLEMENTAÇÃO POR CAMADA
 
 ```mermaid
 flowchart TB
-    subgraph L_APP [Application & Orchestration]
+    subgraph L_APP [Aplicação & Orquestração]
         direction TB
-        L1["Layer 1: UI & Orchestration<br/>(Spring Boot + Tailwind)<br/>🔄 In Dev (15%)"]
-        L2["Layer 2: Core Python Service<br/>(Structure Defined)<br/>🔄 In Dev (10%)"]
-        L3["Layer 3: PostgreSQL Database<br/>(Schema & Extensions)<br/>✅ Updated (20%)"]
+        L1["Camada 1: UI & Orquestração<br/>(Java + Spring Boot)<br/>🔄 Em Dev (25%)"]
+        L2["Camada 2: Núcleo de Serviços<br/>(Java + Spring Boot — Python descontinuado)<br/>🔄 Em Dev (15%)"]
+        L3["Camada 3: Banco de Dados PostgreSQL<br/>(Schema & Extensões)<br/>✅ Atualizado (20%)"]
     end
 
-    subgraph L_NET [Network & Security]
+    subgraph L_NET [Rede & Segurança]
         direction TB
-        L4["Layer 4: Network (NM)<br/>✅ Enhanced with DNS classification"]
-        L5["Layer 5: Firewall (nftables)<br/>✅ Enhanced with DNS policy enforcement"]
-        L6["Layer 6: Identity (Samba AD)<br/>✅ POC Implemented"]
-        L7["Layer 7: Hybrid DNS<br/>✅ POC Implemented + upstream selection"]
+        L4["Camada 4: Rede (NetworkManager)<br/>✅ Aprimorada com classificação de DNS"]
+        L5["Camada 5: Firewall (iptables)<br/>✅ Funcional — regras, NAT/Port Forwarding,<br/>Masquerade, Rate Limiting e Modo Pânico"]
+        L6["Camada 6: Identidade (Samba AD)<br/>✅ POC Implementado"]
+        L7["Camada 7: DNS Híbrido<br/>✅ POC Implementado + seleção de upstream"]
     end
 
-    subgraph L_INFRA [Infrastructure & Ops]
+    subgraph L_INFRA [Infraestrutura & Operações]
         direction TB
-        L8["Layer 8: Hypervisor (KVM)<br/>📋 Planned (0%)"]
-        L9["Layer 9: Citrix CVAD<br/>📋 Defined (Config Only)"]
-        L10["Layer 10: Package System<br/>📋 In Design (2%)"]
-        L11["Layer 11: Observability<br/>📋 In Design (3%)"]
+        L8["Camada 8: Hypervisor (KVM)<br/>📋 Planejado (0%)"]
+        L9["Camada 9: Citrix CVAD<br/>📋 Definido (Somente Config)"]
+        L10["Camada 10: Sistema de Pacotes<br/>e Instaladores Automatizados<br/>✅ Base + Firewall implementados"]
+        L11["Camada 11: Observabilidade<br/>📋 Em Design (3%)"]
     end
 
-    %% Styling
+    %% Estilos
     classDef implemented fill:#d4edda,stroke:#155724,stroke-width:2px;
     classDef inprogress fill:#fff3cd,stroke:#856404,stroke-width:2px;
     classDef planned fill:#e2e3e5,stroke:#383d41,stroke-width:1px;
 
-    class L3,L4,L5,L6,L7 implemented;
+    class L3,L4,L5,L6,L7,L10 implemented;
     class L1,L2 inprogress;
-    class L8,L9,L10,L11 planned;
+    class L8,L9,L11 planned;
 ```
 
 ---
 
-## 🔄 DYNAMIC ROADMAP
+## 🔄 ROADMAP DINÂMICO
 
 ```mermaid
 gantt
-  title Astral HV-NGFW Development Roadmap
+  title Roadmap de Desenvolvimento Astral HV-NGFW
   dateFormat  YYYY-MM-DD
   axisFormat  %m/%Y
 
-  section M0 - Core System
-  Architecture & Principles       :done, m0_1, 2025-12-01, 2025-12-20
-  PostgreSQL Migration            :done, m0_2, 2025-12-10, 2025-12-18
-  Core Dev (Spring/Python/DB)     :active, m0_3, 2025-12-20, 2026-06-30
+  section M0 - Sistema Core
+  Arquitetura & Princípios         :done, m0_1, 2025-12-01, 2025-12-20
+  Migração PostgreSQL              :done, m0_2, 2025-12-10, 2025-12-18
+  Dev do Core (Spring Boot/DB)     :active, m0_3, 2025-12-20, 2026-06-30
 
-  section M1 - Firewall/Net
-  Firewall + NM Integration       :m1_1, 2026-02-01, 2026-03-30
+  section M1 - Firewall/Rede
+  Firewall + Integração NM         :done, m1_1, 2026-02-01, 2026-09-01
 
-  section M2 - Identity
-  AD + Hybrid DNS Automation      :m2_1, 2026-09-01, 2026-10-30
+  section M2 - Identidade
+  Automação AD + DNS Híbrido       :m2_1, 2026-09-01, 2026-10-30
 
-  section Milestones
-  Functional MVP Target           :crit, mvp, 2026-08-01, 2026-11-30
-
+  section Marcos
+  Meta de MVP Funcional            :crit, mvp, 2026-08-01, 2026-11-30
 ```
 
-> *(Roadmap will be updated continuously as work progresses)*
+> *(O roadmap será atualizado continuamente conforme o trabalho avança)*
 
 ---
 
-## 🐛 ARCHITECTURAL DECISION LOG
+## 🐛 REGISTRO DE DECISÕES ARQUITETURAIS
 
 ```mermaid
 flowchart LR
-    D1["Nov 2024<br/>Decision: PostgreSQL as<br/>Primary Database"] 
-    D2["Dec 01, 2025<br/>Decision: Python as<br/>Core Execution Language"]
-    D3["Dec 09, 2025<br/>Decision: GPLv2 Licensing"]
-    D4["Aug 27, 2026<br/>Decision: Multi-Distro<br/>Installer via Web"]
+    D1["Nov 2024<br/>Decisão: PostgreSQL como<br/>Banco de Dados Principal"]
+    D2["01 Dez 2025<br/>Decisão: Python como<br/>Linguagem de Execução Core"]
+    D3["09 Dez 2025<br/>Decisão: Licenciamento GPLv2"]
+    D4["27 Ago 2026<br/>Decisão: Instalador<br/>Multi-Distro via Web"]
+    D5["02 Set 2026<br/>Decisão: Backend consolidado<br/>em Java + Spring Boot<br/>(Python descontinuado)"]
 
     D1 --> D2
     D2 --> D3
     D3 --> D4
+    D4 --> D5
 
-    click D1 "Context: ACID compliance, Open Source. Replaced SQL Server."
-    click D2 "Context: Sysadmin friendly, mature libraries."
-    click D3 "Context: Software freedom, anti-vendor lock-in."
-    click D4 "Context: Simplify setup across Debian, RHEL, Arch without manual intervention."
+    click D1 "Contexto: conformidade ACID, código aberto. Substituiu o SQL Server."
+    click D2 "Contexto: familiar a sysadmins, bibliotecas maduras."
+    click D3 "Contexto: liberdade de software, anti vendor lock-in."
+    click D4 "Contexto: simplificar a configuração em Debian, RHEL e Arch sem intervenção manual."
+    click D5 "Contexto: um único runtime e modelo de deploy para toda a plataforma (UI, orquestração e módulos como o Firewall), eliminando a duplicidade entre o serviço Python planejado e o Spring Boot já em produção."
 
     classDef decisions fill:#f0f9ff,stroke:#007bff,color:#000;
-    class D1,D2,D3,D4 decisions;
+    class D1,D2,D3,D4,D5 decisions;
 ```
 
 ---
 
-## 📊 UPDATED TECHNICAL SPECIFICATIONS
+## 📊 ESPECIFICAÇÕES TÉCNICAS ATUALIZADAS
 
-### **Official Development Environment**
-- **OS**: Fedora 43 Workstation / Server
-- **Architecture**: x86_64
-- **Minimum RAM**: 4 GB
-- **Storage**: 25 GB minimum
-Core Backend: Python 3.12+
-  - Modules: psycopg2, sqlalchemy, flask, csv, ipaddress
-  - Framework: Custom (no Django/Flask for core)
+### **Ambiente de Desenvolvimento Oficial**
+- **SO**: Fedora 43 Workstation / Server
+- **Arquitetura**: x86_64
+- **RAM mínima**: 4 GB
+- **Armazenamento**: 25 GB mínimo
 
-UI/Orchestration: Spring Boot 3.2+
-  - Template Engine: Thymeleaf
-  - CSS Framework: Tailwind CSS
-  - Authentication: Spring Security + Samba AD
-
-Database: PostgreSQL 18+
-  - Extensions: timescaledb, pg_stat_statements, pgcrypto
-  - Connection Pooling: HikariCP (Spring) / psycopg2.pool (Python)
-
-System Integration:
-  - Network: NetworkManager (nmcli/dbus via Python)
-  - Firewall: iptables/nftables (Python wrapper)
-  - DNS: Hybrid (Pi-hole + dnsmasq) with **offline public DNS catalog**
-  - Identity: Samba 4.20+ (AD Domain Controller)
-
-Data Sources (Offline):
-  - public-dns.info CSV (nameservers.csv) → embedded at build time
-  - Cloud IP ranges (AWS, GCP, Azure, OVH) → optional enrichment
-
-
-### **Technology Stack**
+### **Stack Tecnológica**
 ```text
-Core Backend: Python 3.12+
-  - Modules: psycopg2, sqlalchemy, flask (internal APIs)
-  - Framework: Custom (no Django/Flask for core)
+Backend: Java 21 + Spring Boot 3.2+ (única tecnologia de backend)
+  - Cobre: UI, orquestração, API reativa (WebFlux) e módulos de infraestrutura
+  - Persistência: Spring Data JPA / Hibernate
+  - Connection Pooling: HikariCP
 
-UI/Orchestration: Spring Boot 3.2+
-  - Template Engine: Thymeleaf
-  - CSS Framework: Tailwind CSS
-  - Authentication: Spring Security + Samba AD
+Frontend: HTML, CSS e JavaScript puros
+  - Sem framework de build no momento (sem React/Vue)
+  - Node.js: reservado para uso futuro, ainda não adotado
 
-Database: PostgreSQL 18+
-  - Extensions: timescaledb, pg_stat_statements, pgcrypto
-  - Connection Pooling: HikariCP (Spring) / psycopg2.pool (Python)
+Banco de Dados: PostgreSQL 18+
+  - Extensões: timescaledb, pg_stat_statements, pgcrypto
 
-System Integration:
-  - Network: NetworkManager (nmcli/dbus via Python)
-  - Firewall: iptables/nftables (Python wrapper)
-  - Virtualization: KVM/libvirt (Python bindings)
-  - Identity: Samba 4.20+ (AD Domain Controller)
+Integração com o Sistema:
+  - Rede: NetworkManager (nmcli, via processo Java)
+  - Firewall: iptables (módulo Java/Spring Boot dedicado, sincronização
+    em tempo real entre banco de dados e regras aplicadas)
+  - DNS: Híbrido (Pi-hole + dnsmasq) com catálogo público de DNS offline
+  - Identidade: Samba 4.20+ (Controlador de Domínio AD)
+
+Instaladores Automatizados (Java, standalone):
+  - Sistema Base: pacotes, dependências, PostgreSQL, systemd, plataforma principal
+  - Módulo de Firewall: build Maven, unit systemd, regras iniciais via iptables
+
+Fontes de Dados (Offline):
+  - CSV do public-dns.info (nameservers.csv) → embutido em tempo de build
+  - Faixas de IP de nuvem (AWS, GCP, Azure, OVH) → enriquecimento opcional
 ```
 
 ---
 
-## 🖼️ HIGH-LEVEL ARCHITECTURE
+## 🖼️ ARQUITETURA DE ALTO NÍVEL
 
 ```mermaid
 flowchart TB
   subgraph CP [Astral Control Plane]
     direction TB
-    CP_UI["Spring Boot UI\n(Thymeleaf + Tailwind)"]
-    CP_API["API Gateway\nRBAC & Audit"]
+    CP_UI["UI Java/Spring Boot\n(HTML + CSS + JS)"]
+    CP_API["API Gateway\nRBAC & Auditoria"]
   end
 
-  subgraph RE [Core Reconciliation Engine]
+  subgraph RE [Núcleo de Orquestração]
     direction TB
-    RE_CORE["Python Control Core\nIntents → Validation → Execution"]
-    RE_DB[("PostgreSQL 18\n(State & Telemetry)")]
+    RE_CORE["Núcleo de Controle Java\nIntenções → Validação → Execução"]
+    RE_DB[("PostgreSQL 18\n(Estado & Telemetria)")]
   end
 
-  subgraph CF [Converged Infrastructure Fabric]
+  subgraph CF [Fabric de Infraestrutura Convergente]
     direction TB
     CF_NET["NetworkManager"]
     CF_FW["IPTABLES-PERSISTENT"]
@@ -255,44 +258,46 @@ flowchart TB
 
 ---
 
-## ⚠️ KNOWN LIMITATIONS AND RESTRICTIONS
+## ⚠️ LIMITAÇÕES E RESTRIÇÕES CONHECIDAS
 
-### **Current Restrictions**
-- ❌ **No Docker support**: Native installation only (Fedora/RHEL)
-- ❌ **No Citrix VDI included**: Only config compatibility if user provides Citrix
-- ⚠️ **Minimum 4 GB RAM** required for basic operation
-- 🔧 **Nested virtualization required** for development environments
-
----
-
-## 🤝 COLLABORATION MODEL
-
-### **For Developers**
-- Fork the repository (when public)
-- Consult this document for architectural context
-- Adhere to the four fundamental principles
-
-### **For Testers / Users**
-- Report issues with clear use-case scenarios
-- Provide UX feedback
+### **Restrições Atuais**
+- ❌ **Sem suporte a Docker**: instalação nativa apenas (Fedora/RHEL)
+- ❌ **Sem Citrix VDI incluído**: apenas compatibilidade de configuração se o usuário fornecer o Citrix
+- ⚠️ **Mínimo de 4 GB de RAM** exigido para operação básica
+- 🔧 **Virtualização aninhada necessária** para ambientes de desenvolvimento
 
 ---
 
-## 🏷️ DOCUMENT VERSION HISTORY
+## 🤝 MODELO DE COLABORAÇÃO
+
+### **Para Desenvolvedores**
+- Fork do repositório (quando público)
+- Consultar este documento para contexto arquitetural
+- Aderir aos quatro princípios fundamentais
+
+### **Para Testadores / Usuários**
+- Reportar problemas com cenários de uso claros
+- Fornecer feedback de UX
+
+---
+
+## 🏷️ HISTÓRICO DE VERSÕES DO DOCUMENTO
 
 ```mermaid
 timeline
-    title Document Revision History
-    Nov 2024 : Draft Concepts
-    Dec 18, 2025 : v0.1 - PostgreSQL Migration <br> Fedora 43 Spec Defined
-    Dec 20, 2025 : v1.0 - Central Reference Doc <br> Roadmap Consolidated
-    Jan 02, 2026 : v1.2 - DNS Classification Feature <br> Offline, user-controlled, cloud-aware
+    title Histórico de Revisões do Documento
+    Nov 2024 : Conceitos Iniciais
+    18 Dez 2025 : v0.1 - Migração PostgreSQL <br> Especificação Fedora 43 Definida
+    20 Dez 2025 : v1.0 - Documento de Referência Central <br> Roadmap Consolidado
+    02 Jan 2026 : v1.2 - Recurso de Classificação de DNS <br> Offline, controlado pelo usuário, ciente de nuvem
+    27 Ago 2026 : v1.3 - Scripts Multi-Distro Samba AD <br> Instalador Web Unificado
+    02 Set 2026 : v1.4 - Backend consolidado em Java/Spring Boot <br> Módulo de Firewall funcional <br> Instaladores automatizados (base + firewall)
 ```
 
 ---
 
-## 🚨 FINAL WARNING
+## 🚨 AVISO FINAL
 
-This is a **living development document**.
+Este é um **documento vivo de desenvolvimento**.
 
-All specifications, architecture, and documented decisions are **subject to change without notice**. This document reflects the current state of thinking and development for the **Astral HV-NGFW** project, but **does not constitute a final commitment** to any specific implementation.
+Todas as especificações, arquitetura e decisões documentadas estão **sujeitas a alteração sem aviso prévio**. Este documento reflete o estado atual do pensamento e desenvolvimento do projeto **Astral HV-NGFW**, mas **não constitui um compromisso final** com nenhuma implementação específica.
