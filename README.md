@@ -221,23 +221,30 @@ Estrutura do Repositório:
 ```mermaid
 
 graph LR
-  A[astral/] --> B[control-plane/]
-  A --> C[reconciler/]
-  A --> D[fabric/]
-  A --> E[storage/]
-  A --> F[runtime/]
-  A --> G[packages/]
-  A --> H[docs/]
-  A --> I[tools/]
+  A["astral-plataform-hci/"] --> B["src/main/java/com/astral/"]
+  A --> C["fabric/"]
+  A --> D["install-base.sh"]
+  A --> E["docs/"]
 
-  B --> B1["API, RBAC, aprovações, auditoria"]
-  C --> C1["Motor de reconciliação em Python"]
-  D --> D1["Integração de rede, firewall, identidade, DNS"]
-  E --> E1["Orquestração DRBD"]
-  F --> F1["Integração de runtime KVM e contêineres"]
-  G --> G1["Extensões opcionais"]
-  H --> H1["Documentação de arquitetura e intenções"]
-  I --> I1["CLI e utilitários de operação"]
+  B --> B1["main/controller/"]
+  B1 --> B1a["API, RBAC, auditoria, proxy<br/>e integração de storage<br/>(HomeController, LoginController,<br/>ProxyController, StorageController...)"]
+
+  B --> B2["tools/"]
+  B2 --> B2a["Instaladores standalone<br/>(Installer.java, InstallerFirewall.java,<br/>NetworkConfig.java, Uninstaller.java)"]
+
+  C --> C1["firewall/"]
+  C1 --> C1a["Módulo de Firewall<br/>(Spring Boot standalone)"]
+
+  C --> C2["frontend/login/"]
+  C2 --> C2a["HTML, CSS e JS estáticos<br/>(tela de login)"]
+
+  D --> D1["Instalação de pacotes e<br/>dependências do sistema base"]
+
+  E --> E1["Documentação de arquitetura e intenções"]
+
+  F["systemd"] --> F1["astral-platform.service<br/>(API + orquestração + reconciliação)"]
+  F --> F2["astral-firewall.service<br/>(fabric/firewall)"]
+  F -.-> N["Cada .jar roda como serviço Linux —<br/>não existem mais pastas 'runtime/' ou 'reconciler/'"]
 ```
 
 Declaração Final
