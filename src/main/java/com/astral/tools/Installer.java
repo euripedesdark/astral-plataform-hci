@@ -50,7 +50,8 @@ public class Installer {
             updateProgress(30, "Ajustando SELinux...");
             relaxSelinux();
             updateProgress(40, "Configurando PostgreSQL (initdb/ssl/hba somente se necessário)...");
-            configurePostgreSQL(detectDistro());
+            String distro = detectDistro();
+            configurePostgreSQL(distro);
             updateProgress(55, "Gerando certificados SSL para mTLS...");
             generateCertificates();
             updateProgress(65, "Configurando banco com mTLS + usuário admin...");
@@ -422,6 +423,35 @@ public class Installer {
     }
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
+    private static void configurePostgreSQL(String distro) {
+        String svc = "postgresql";
+        if (distro.equals("rhel")) {
+            svc = detectPgService();
+            String pg = runCmd("ls -A /var/lib/pgsql/data 2>/dev/null", false);
+            if (pg == null || pg.trim().isEmpty()) {
+                runCmd("chown -R postgres:postgres /var/lib/pgsql", false);
+                runCmd("/usr/bin/postgresql-setup --initdb", true);
+                runCmd("chown -R postgres:postgres /var/lib/pgsql/data", false);
+                runCmd("chmod 700 /var/lib/pgsql/data", false);
+            }
+            runCmd("grep -q '^listen_addresses' /var/lib/pgsql/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", false);
+            runCmd("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || echo 'host all all 0.0.0.0/0 md5' >> /var/lib/pgsql/data/pg_hba.conf", false);
+            runCmd("grep -q '^host.*127.0.0.1/32.*md5' /var/lib/pgsql/data/pg_hba.conf || sed -i '1i host all all 127.0.0.1/32 md5' /var/lib/pgsql/data/pg_hba.conf", false);
+        } else if (distro.equals("arch")) {
+            if (!Files.exists(Paths.get("/var/lib/postgres/data/PG_VERSION"))) {
+                runCmd("runuser -u postgres -- initdb -D /var/lib/postgres/data", true);
+            }
+        }
+        runCmd("systemctl enable " + svc, false);
+        runCmd("systemctl start " + svc, false);
+    }
+    private static String detectPgService() {
+        String[] names = {"postgresql", "postgresql-server", "postgresql-16", "postgresql-15", "postgresql-14"};
+        for (String n : names) {
+            if (runCmd("systemctl cat " + n + " >/dev/null 2>&1", false) != null) return n;
+        }
+        return "postgresql";
+    }
     private static final String POM_XML = """
     <?xml version="1.0" encoding="UTF-8"?>
     <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -800,5 +830,4 @@ public class Installer {
     </body>
     </html>
     """;
-
 }
