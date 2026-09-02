@@ -25,6 +25,19 @@ public class NetworkConfig {
         System.out.println("[ASTRAL PLATFORM] CONFIGURADOR DE REDE");
         System.out.println("=".repeat(60));
 
+        // 0. Verificar se já existem regras de firewall/portas abertas ANTES de mexer em qualquer coisa
+        boolean wipeExisting = true;
+        if (hasExistingFirewallRules()) {
+            System.out.println("\n⚠️  Foram detectadas regras de firewall e/ou portas já configuradas neste servidor.");
+            System.out.println("    Continuar pode sobrepor ou apagar essas regras (ex.: as do módulo de Firewall).");
+            wipeExisting = askYesNo(scanner, "Deseja APAGAR as regras de IP/firewall existentes antes de continuar?", false);
+            if (wipeExisting) {
+                System.out.println("🗑️  As regras existentes serão apagadas antes de aplicar a nova configuração.");
+            } else {
+                System.out.println("ℹ️  As regras existentes serão preservadas — a nova configuração será adicionada por cima, sem limpar o que já existe.");
+            }
+        }
+
         // 1. Exterminar resolved e netplan
         System.out.println("\n🧹 Limpando gerenciadores de rede conflitantes...");
         nukeResolvedAndNetplan();
@@ -74,7 +87,7 @@ public class NetworkConfig {
 
         // 5. Aplicar firewall
         System.out.println("\n🔥 Aplicando regras de firewall...");
-        applyFirewallRules(wanIface, lanIfaces, setupDHCP);
+        applyFirewallRules(wanIface, lanIfaces, setupDHCP, wipeExisting);
 
         System.out.println("\n" + "=".repeat(60));
         System.out.println("✅ Configuração de rede concluída!");
@@ -236,7 +249,7 @@ public class NetworkConfig {
                 content.append("\n# Configuração para ").append(ifaceTrimmed).append("\n");
                 content.append("interface=").append(ifaceTrimmed).append("\n");
                 content.append("dhcp-range=").append(ifaceTrimmed).append(",")
-                       .append(baseIP).append(".100,").append(baseIP).append(".199,12h\n");
+                        .append(baseIP).append(".100,").append(baseIP).append(".199,12h\n");
                 content.append("dhcp-option=").append(ifaceTrimmed).append(",option:router,").append(baseIP).append(".1\n");
             }
 
@@ -265,7 +278,15 @@ public class NetworkConfig {
         }
     }
 
-    private static void applyFirewallRules(String wanIface, List<String> lanIfaces, boolean setupDHCP) {
+    private static boolean hasExistingFirewallRules() {
+        String filterOut = runCmd("iptables -S", false);
+        long filterRules = filterOut == null ? 0 : filterOut.lines().filter(l -> l.startsWith("-A ")).count();
+        String natOut = runCmd("iptables -t nat -S", false);
+        long natRules = natOut == null ? 0 : natOut.lines().filter(l -> l.startsWith("-A ")).count();
+        return (filterRules + natRules) > 0;
+    }
+
+    private static void applyFirewallRules(String wanIface, List<String> lanIfaces, boolean setupDHCP, boolean wipeExisting) {
         System.out.println("\n🔥 Aplicando regras de firewall...");
 
         // Habilitar IP forwarding
@@ -277,16 +298,20 @@ public class NetworkConfig {
             System.err.println("⚠️  Falha ao habilitar IP forwarding: " + e.getMessage());
         }
 
-        // Limpar regras existentes
-        runCmd("iptables -F", false);
-        runCmd("iptables -X", false);
-        runCmd("iptables -t nat -F", false);
-        runCmd("iptables -t nat -X", false);
+        if (wipeExisting) {
+            // Limpar regras existentes
+            runCmd("iptables -F", false);
+            runCmd("iptables -X", false);
+            runCmd("iptables -t nat -F", false);
+            runCmd("iptables -t nat -X", false);
 
-        // Políticas padrão
-        runCmd("iptables -P INPUT DROP", false);
-        runCmd("iptables -P FORWARD DROP", false);
-        runCmd("iptables -P OUTPUT ACCEPT", false);
+            // Políticas padrão
+            runCmd("iptables -P INPUT DROP", false);
+            runCmd("iptables -P FORWARD DROP", false);
+            runCmd("iptables -P OUTPUT ACCEPT", false);
+        } else {
+            System.out.println("ℹ️  Pulando limpeza de regras existentes (preservando firewall atual) — apenas adicionando as regras necessárias para a nova configuração de rede.");
+        }
 
         // Loopback e conexões estabeecidas
         runCmd("iptables -A INPUT -i lo -j ACCEPT", false);
@@ -358,7 +383,7 @@ public class NetworkConfig {
             String content = Files.readString(Paths.get("/etc/os-release")).toLowerCase();
             if (content.contains("debian") || content.contains("ubuntu")) return "debian";
             if (content.contains("rhel") || content.contains("fedora") ||
-                content.contains("centos") || content.contains("rocky")) return "rhel";
+                    content.contains("centos") || content.contains("rocky")) return "rhel";
             if (content.contains("arch")) return "arch";
         } catch (IOException e) {
             // Ignora
@@ -385,8 +410,8 @@ public class NetworkConfig {
         if (log) System.out.println("$ " + cmd);
         try {
             Process p = new ProcessBuilder("bash", "-c", cmd)
-                .redirectErrorStream(true)
-                .start();
+                    .redirectErrorStream(true)
+                    .start();
 
             StringBuilder output = new StringBuilder();
             try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
@@ -410,6 +435,6 @@ public class NetworkConfig {
 
     private static boolean isRoot() {
         return System.getProperty("user.name").equals("root") ||
-               ProcessHandle.current().info().user().orElse("").equals("root");
+                ProcessHandle.current().info().user().orElse("").equals("root");
     }
 }
