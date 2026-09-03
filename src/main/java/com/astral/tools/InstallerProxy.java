@@ -29,6 +29,7 @@ public class InstallerProxy {
         t.start();
         Thread.currentThread().join();
     }
+
     private static void run() {
         try {
             up(5, "Detectando distribuição...");
@@ -74,6 +75,7 @@ public class InstallerProxy {
             done = true;
         } catch (Exception e) { e.printStackTrace(); up(100, "ERRO: " + e.getMessage()); done = true; }
     }
+
     private static boolean validateMTLSConnection() {
         try {
             Path propsPath = Paths.get("/etc/astral/application.properties");
@@ -87,6 +89,7 @@ public class InstallerProxy {
             return success;
         } catch (Exception e) { System.err.println("[ERRO] " + e.getMessage()); return false; }
     }
+
     private static String app() { return System.getProperty("user.dir"); }
     private static void fixOwnership() {
         try {
@@ -101,6 +104,7 @@ public class InstallerProxy {
             run("chown -R " + owner + ":" + ASTRAL_GROUP + " " + target + " 2>/dev/null || true", false);
         } catch (IOException ignored) {}
     }
+
     private static void createTables() throws IOException {
         Path f = Paths.get("/tmp/astral-proxy-tables.sql");
         Files.writeString(f, TABLES_SQL);
@@ -111,6 +115,7 @@ public class InstallerProxy {
         run("chmod 0644 " + f2, false);
         run("runuser -u postgres -- psql -d astral_logs -f " + f2, true);
     }
+
     private static void deploy(Path jarPath) {
         run("mkdir -p /opt/astral-proxy", true);
         run("cp " + jarPath.toAbsolutePath() + " /opt/astral-proxy/", true);
@@ -145,6 +150,7 @@ public class InstallerProxy {
         } catch (IOException ignored) {}
         run("systemctl daemon-reload && systemctl enable astral-proxy && systemctl restart astral-proxy", false);
     }
+
     private static void ui(HttpExchange ex) throws IOException {
         send(ex, 200, """
 <!DOCTYPE html><html><head><meta charset="UTF-8"><style>
@@ -161,6 +167,7 @@ h1{color:#ffcc80}.bar{height:18px;background:#111;border-radius:9px;overflow:hid
 document.getElementById('fill').style.width=d.progress+'%';document.getElementById('status').textContent=d.status;
 if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
     }
+
     private static void stream(HttpExchange ex) throws IOException {
         ex.getResponseHeaders().set("Content-Type", "text/event-stream");
         ex.getResponseHeaders().set("Cache-Control", "no-cache");
@@ -174,6 +181,7 @@ if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
             }
         } catch (IOException ignored) {} catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
     }
+
     private static void send(HttpExchange ex, int c, String b, String t) throws IOException {
         byte[] x = b.getBytes();
         ex.getResponseHeaders().set("Content-Type", t);
@@ -181,6 +189,7 @@ if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
         ex.getResponseBody().write(x);
         ex.close();
     }
+
     private static void up(int p, String s) { progress.set(p); status = s; System.out.println("[" + p + "%] " + s); }
     private static String run(String c, boolean log) {
         if (log) System.out.println("$ " + c);
@@ -199,12 +208,14 @@ if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
         } catch (Exception ignored) {}
         return "rhel";
     }
+
     private static String getLocalIP() {
         try {
             Process p = new ProcessBuilder("bash", "-c", "ip route get 1.1.1.1 | awk '/src/{for(i=1;i<=NF;i++)if($i==\"src\")print $(i+1)}'").start();
             return new String(p.getInputStream().readAllBytes()).trim();
         } catch (Exception e) { return "127.0.0.1"; }
     }
+
     private static void freePortIfHeldByOldInstance(int port) {
         String pids = run("ss -ltnp 2>/dev/null | grep ':" + port + " ' | grep -oP 'pid=\\K[0-9]+' | sort -u || fuser " + port + "/tcp 2>/dev/null", false);
         if (pids == null) return;
@@ -216,6 +227,7 @@ if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
         }
         sleep(500);
     }
+
     private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
     private static void sleep(long ms) { try { Thread.sleep(ms); } catch (Exception ignored) {} }
     private static void cleanModule() throws IOException {
@@ -226,6 +238,7 @@ if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
             run("runuser -u " + owner + " -- rm -rf /home/" + owner + "/.m2/repository/com/astral/astral-proxy", false);
         } catch (IOException ignored) {}
     }
+
     private static void writeProject() throws IOException {
         String base = app() + "/fabric/proxy";
         String jbase = base + "/src/main/java/com/astral/proxy";
@@ -243,10 +256,12 @@ if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
         write(jbase + "/api/ProxyApiController.java", PX_API);
         write(jbase + "/web/PagesController.java", PX_PAGES);
     }
+
     private static void write(String p, String c) throws IOException {
         Files.writeString(Paths.get(p), c);
         System.out.println("[OK] " + Paths.get(p).getFileName());
     }
+
     private static final String TABLES_SQL =
             "CREATE TABLE IF NOT EXISTS proxy_users(id BIGSERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE, pass_hash VARCHAR(128), grupo VARCHAR(80), tipo VARCHAR(10));\n" +
                     "CREATE TABLE IF NOT EXISTS auth_sources(id BIGSERIAL PRIMARY KEY, tipo VARCHAR(10), dominio VARCHAR(120), ldap_url VARCHAR(200), usar_cert BOOLEAN DEFAULT FALSE, enabled BOOLEAN DEFAULT TRUE);\n" +
@@ -259,9 +274,11 @@ if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
                     "CREATE TABLE IF NOT EXISTS politica(id BIGSERIAL PRIMARY KEY, nome VARCHAR(80), inicio DATE DEFAULT CURRENT_DATE, fim DATE, dias INT, indeterminada BOOLEAN DEFAULT TRUE);\n" +
                     "CREATE TABLE IF NOT EXISTS enderecos(id BIGSERIAL PRIMARY KEY, politica_id BIGINT, url TEXT, categoria VARCHAR(80));\n" +
                     "CREATE TABLE IF NOT EXISTS regras_sites(id BIGSERIAL PRIMARY KEY, politica_id BIGINT, endereco TEXT, usuario VARCHAR(80), grupo VARCHAR(80), categoria_site VARCHAR(80), acao BOOLEAN);\n";
-    private static final String LOGS_SQL =
+    p
+    rivate static final String LOGS_SQL =
             "CREATE TABLE IF NOT EXISTS acessos(id BIGSERIAL PRIMARY KEY, usuario VARCHAR(80), hostname VARCHAR(120), ip VARCHAR(50), data_ddmmyyyy VARCHAR(8), grupo VARCHAR(80), tipo_usuario INT, tipo_label VARCHAR(10), destino TEXT, created_at TIMESTAMP DEFAULT now());\n" +
                     "CREATE TABLE IF NOT EXISTS arquivos(id BIGSERIAL PRIMARY KEY, usuario VARCHAR(80), grupo VARCHAR(80), direcao VARCHAR(10), tamanho BIGINT, endereco TEXT, data_ddmmyyyy VARCHAR(8), created_at TIMESTAMP DEFAULT now());\n";
+
     private static final String PX_POM = """
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
@@ -287,6 +304,7 @@ if(d.progress>=100)e.close();}</script></body></html>""", "text/html");
     <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
 </project>
 """;
+
     private static final String PX_PROPS = """
 server.port=8085
 server.address=127.0.0.1
@@ -297,6 +315,7 @@ astral.logs.db=astral_logs
 astral.elasticsearch.url=http://127.0.0.1:9200
 spring.thymeleaf.cache=false
 """;
+
     private static final String PX_APP = """
 package com.astral.proxy;
 import org.springframework.boot.SpringApplication;
@@ -312,6 +331,7 @@ public static void main(String[] a){ SpringApplication.run(ProxyApplication.clas
 @EventListener(ApplicationReadyEvent.class) public void init(){ ats.writeConfigs(); ats.reload(); }
 }
 """;
+
     private static final String PX_STORE = """
 package com.astral.proxy.service;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -331,6 +351,7 @@ this.logs=new JdbcTemplate(ds);
 }
 }
 """;
+
     private static final String PX_AUTH = """
 package com.astral.proxy.service;
 import org.springframework.stereotype.Service;
@@ -487,6 +508,7 @@ public List<String> grupos(String tipo){if(tipo!=null&&!tipo.isBlank())return st
 public List<String> usuarios(String grupo){if(grupo!=null&&!grupo.isBlank())return st.db.queryForList("select distinct usuario from autenticacao where grupo ilike ? order by usuario",String.class,grupo);return st.db.queryForList("select distinct usuario from autenticacao order by usuario",String.class);}
 }
 """;
+
     private static final String PX_ATS = """
 package com.astral.proxy.service;
 import org.springframework.stereotype.Service;
@@ -579,6 +601,7 @@ return o;
 }
 }
 """;
+
     private static final String PX_LOG = """
 package com.astral.proxy.service;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -635,6 +658,7 @@ st.logs.update("delete from arquivos where created_at < now() - interval '7 days
 private String run(String c){try{Process p=new ProcessBuilder("bash","-c",c).redirectErrorStream(true).start();String o=new String(p.getInputStream().readAllBytes());p.waitFor();return o;}catch(Exception e){return "";}}
 }
 """;
+
     private static final String PX_API = """
 package com.astral.proxy.api;
 import com.astral.proxy.service.*;
@@ -731,6 +755,7 @@ return m;});}
 private String run(String c){try{Process p=new ProcessBuilder("bash","-c",c).redirectErrorStream(true).start();String o=new String(p.getInputStream().readAllBytes());p.waitFor();return o;}catch(Exception e){return "";}}
 }
 """;
+
     private static final String PX_PAGES = """
 package com.astral.proxy.web;
 import org.springframework.stereotype.Controller;
@@ -741,6 +766,7 @@ public class PagesController {
 @GetMapping({"/logs/auditoria","/proxy/logs/auditoria"}) public String audit(){ return "auditoria"; }
 }
 """;
+
     private static final String PX_HTML = """
 <!DOCTYPE html>
 <html lang="pt-br">
@@ -854,6 +880,7 @@ function addPol(){api('/control/politica',{method:'POST',body:JSON.stringify({no
 function addRegra(){api('/control/regra',{method:'POST',body:JSON.stringify({endereco:re.value,usuario:ru.value,grupo:rg.value,categoria_site:rc.value,acao:ra.value==='1'})}).then(()=>show('control'))}
 </script></body></html>
 """;
+
     private static final String PX_AUDIT = """
 <!DOCTYPE html>
 <html lang="pt-br"><head><meta charset="UTF-8"><title>ASTRAL · AUDITORIA</title>
