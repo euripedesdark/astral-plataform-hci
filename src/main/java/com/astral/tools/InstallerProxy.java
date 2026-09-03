@@ -400,71 +400,120 @@ private static final String PX_AUTH = """
     public static String sha(String s){try{java.security.MessageDigest m=java.security.MessageDigest.getInstance("SHA-256");byte[] b=m.digest(s.getBytes());StringBuilder sb=new StringBuilder();for(byte x:b)sb.append(String.format("%02x",x));return sb.toString();}catch(Exception e){return "";}}
     }
     """;
-private static final String PX_ATS = """
+
+    private static final String PX_ATS = """
     package com.astral.proxy.service;
     import org.springframework.stereotype.Service;
+    import org.springframework.beans.factory.annotation.Value;
     import java.nio.file.*;
     import java.util.*;
     @Service
     public class AtsService {
     private final Store st;
+    @Value("${astral.ats.dir:auto}") private String atsDirConfig;
     public AtsService(Store s){st=s;}
+    
     public String dir(){
+        if(!"auto".equals(atsDirConfig)) return atsDirConfig;
         if(Files.exists(Paths.get("/etc/trafficserver")))return "/etc/trafficserver";
         if(Files.exists(Paths.get("/opt/trafficserver/etc/trafficserver")))return "/opt/trafficserver/etc/trafficserver";
         return "/etc/trafficserver";
     }
-    private List<String> list(String tab){ try{return st.db.queryForList("select url from "+tab,String.class);}catch(Exception e){return List.of();} }
+    
+    private List<String> list(String tab){ 
+        try{return st.db.queryForList("select url from "+tab,String.class);}
+        catch(Exception e){return List.of();} 
+    }
+    
     public void writeConfigs(){
         try{
-            String d=dir(); Files.createDirectories(Paths.get(d));
-            List<String> deny=list("perigosos"); List<String> allow=list("liberados");
+            String d=dir(); 
+            Files.createDirectories(Paths.get(d));
+            List<String> deny=list("perigosos"); 
+            List<String> allow=list("liberados");
             List<String> doms=st.db.queryForList("select dominio from auth_sources where tipo='AD' and enabled=true",String.class);
-            StringBuilder acl=new StringBuilder("# ACL Plugin - bloqueio/liberacao (politicas tem precedencia)\\\\n");
-            for(String u:deny)acl.append("deny url regex .*").append(u.replace(".","\\\\.")).append(".*\\\\n");
-            for(String u:allow)acl.append("allow url regex .*").append(u.replace(".","\\\\.")).append(".*\\\\n");
-            for(String dm:doms)acl.append("allow url regex .*").append(dm.replace(".","\\\\.")).append(".*\\\\n");
-            acl.append("deny all\\\\n");
-            Files.writeString(Paths.get(d,"acl.config"),acl.toString().replace("\\\\n","\\n"));
-            StringBuilder reg=new StringBuilder("# Regex Remap Plugin - categorias de sites\\\\n");
+            
+            // ACL Plugin
+            List<String> acl=new ArrayList<>();
+            acl.add("# ACL Plugin - politicas tem precedencia");
+            for(String u:deny) acl.add("deny url regex .*" + u.replace(".","\\\\.") + ".*");
+            for(String u:allow) acl.add("allow url regex .*" + u.replace(".","\\\\.") + ".*");
+            for(String dm:doms) acl.add("allow url regex .*" + dm.replace(".","\\\\.") + ".*");
+            acl.add("deny all");
+            Files.write(Paths.get(d,"acl.config"), acl);
+            
+            // Regex Remap Plugin
+            List<String> reg=new ArrayList<>();
+            reg.add("# Regex Remap Plugin - categorias de sites");
             for(Map<String,Object> c:st.db.queryForList("select nome from categorias")){
                 String n=String.valueOf(c.get("nome"));
-                reg.append("regex://").append(n).append("/ /category/").append(n).append("/\\\\n");
+                reg.add("regex://" + n + "/ /category/" + n + "/");
             }
-            Files.writeString(Paths.get(d,"regex_remap.config"),reg.toString().replace("\\\\n","\\n"));
-            StringBuilder hr=new StringBuilder("# Header Rewrite Plugin - regras finas por usuario/grupo\\\\n");
+            Files.write(Paths.get(d,"regex_remap.config"), reg);
+            
+            // Header Rewrite Plugin
+            List<String> hr=new ArrayList<>();
+            hr.add("# Header Rewrite Plugin - regras por usuario/grupo");
             for(Map<String,Object> r:st.db.queryForList("select * from regras_sites")){
-                String cat=String.valueOf(r.get("categoria_site")); String act=Boolean.TRUE.equals(r.get("acao"))?"allow":"block";
-                hr.append("cond %{READ_URL}\\\\n");
-                hr.append("  header Host set ").append(cat).append("\\\\n");
-                hr.append("  header X-ASTRAL-ACTION set ").append(act).append("\\\\n");
+                String cat=String.valueOf(r.get("categoria_site")); 
+                String act=Boolean.TRUE.equals(r.get("acao"))?"allow":"block";
+                hr.add("cond %{READ_URL}");
+                hr.add("  set-header Host " + cat);
+                hr.add("  set-header X-ASTRAL-ACTION " + act);
             }
-            Files.writeString(Paths.get(d,"header_rewrite.rules"),hr.toString().replace("\\\\n","\\n"));
-            String lua="-- Lua Plugin: decisao em tempo real consultando o modulo (REST /api/decision)\\\\n"
-                +"function do_remap(rh)\\\\n"
-                +"  local host=rh.get_url()\\\\n"
-                +"  return 1\\\\n"
-                +"end\\\\n";
-            Files.writeString(Paths.get(d,"astral_decision.lua"),lua.replace("\\\\n","\\n"));
-            StringBuilder fb=new StringBuilder("# Filter Body Plugin - padroes maliciosos\\\\n");
-            fb.append("<script src=\\\\\"http://\\\\n");
-            fb.add
-            (new String(new byte[]{}));
-            for(String u:deny)fb.append(u).append("\\\\n");
-            Files.writeString(Paths.get(d,"filter_body_patterns.txt"),fb.toString().replace("\\\\n","\\n"));
-            String remap="map / http://127.0.0.1:8081/ @plugin=regex_remap.so @pparam=regex_remap.config @plugin=header_rewrite.so @pparam=header_rewrite.rules\\\\n";
-            Files.writeString(Paths.get(d,"remap.config"),remap.replace("\\\\n","\\n"));
-            String plug="header_rewrite.so header_rewrite.rules\\\\nlua.so astral_decision.lua\\\\nfilter_body.so filter_body_patterns.txt\\\\n";
-            Files.writeString(Paths.get(d,"plugin.config"),plug.replace("\\\\n","\\n"));
-            System.out.println("[OK] Configs ATS geradas em "+d);
-        }catch(Exception e){ System.err.println("[AVISO] ATS configs: "+e.getMessage()); }
+            Files.write(Paths.get(d,"header_rewrite.rules"), hr);
+            
+            // Lua Plugin
+            List<String> lua=new ArrayList<>();
+            lua.add("-- Lua Plugin: decisao em tempo real");
+            lua.add("function do_remap(rh)");
+            lua.add("  local host=rh.get_url()");
+            lua.add("  return 1");
+            lua.add("end");
+            Files.write(Paths.get(d,"astral_decision.lua"), lua);
+            
+            // Filter Body Plugin
+            List<String> fb=new ArrayList<>();
+            fb.add("# Filter Body Plugin - padroes maliciosos");
+            fb.add("<script src=");
+            for(String u:deny) fb.add(u);
+            Files.write(Paths.get(d,"filter_body_patterns.txt"), fb);
+            
+            // Remap config
+            List<String> remap=new ArrayList<>();
+            remap.add("map / http://127.0.0.1:8081/");
+            Files.write(Paths.get(d,"remap.config"), remap);
+            
+            // Plugin config
+            List<String> plug=new ArrayList<>();
+            plug.add("acl.so acl.config");
+            plug.add("regex_remap.so regex_remap.config");
+            plug.add("header_rewrite.so header_rewrite.rules");
+            plug.add("lua.so astral_decision.lua");
+            plug.add("filter_body.so filter_body_patterns.txt");
+            Files.write(Paths.get(d,"plugin.config"), plug);
+            
+            System.out.println("[OK] Configs ATS geradas em " + d);
+        }catch(Exception e){ 
+            System.err.println("[AVISO] ATS configs: " + e.getMessage()); 
+        }
     }
+    
     public void reload(){
         run("traffic_ctl config reload 2>/dev/null || /opt/trafficserver/bin/traffic_ctl config reload 2>/dev/null || systemctl restart trafficserver 2>/dev/null || true");
     }
-    private String run(String c){try{Process p=new ProcessBuilder("bash","-c",c).redirectErrorStream(true).start();String o=new String(p.getInputStream().readAllBytes());p.waitFor();return o;}catch(Exception e){return "";}}
+    
+    private String run(String c){
+        try{
+            Process p=new ProcessBuilder("bash","-c",c).redirectErrorStream(true).start();
+            String o=new String(p.getInputStream().readAllBytes());
+            p.waitFor();
+            return o;
+        }catch(Exception e){return "";}
+    }
     }
     """;
+
 private static final String PX_LOG = """
     package com.astral.proxy.service;
     import org.springframework.scheduling.annotation.Scheduled;
