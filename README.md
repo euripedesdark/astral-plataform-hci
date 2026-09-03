@@ -132,7 +132,7 @@ Diagrama resumido:
 
 flowchart TB
   subgraph ControlPlane [Plano de Controle Astral]
-    CP_API["API · RBAC · Auditoria · Aprovações"]
+    CP_API["API · RBAC · Auditoria · Aprovações · InstallerProxy"]
   end
 
   subgraph Reconciler [Motor de Reconciliação]
@@ -140,7 +140,7 @@ flowchart TB
   end
 
   subgraph Fabric [Tecido Convergente]
-    CF["Rede · Firewall · Identidade · DNS"]
+    CF["Rede · Firewall · Proxy · Identidade · DNS"]
   end
 
   subgraph Runtime [Runtime de VMs e Contêineres]
@@ -150,6 +150,7 @@ flowchart TB
   ControlPlane --> Reconciler
   Reconciler --> Fabric
   Fabric --> Runtime
+
 ```
 
 Modelo Operacional
