@@ -20,9 +20,21 @@ echo -e "${BLUE}  CONFIGURAÇÃO KERBEROS/SPNEGO - ASTRAL PROXY${NC}"
 echo -e "${BLUE}===========================================${NC}"
 echo ""
 
-# Detectar domínio e hostname
-DOMAIN=$(hostname -d 2>/dev/null || echo "astral.local")
-HOSTNAME=$(hostname -s)
+# Detectar domínio e hostname diretamente do Samba (ignora falhas de DNS do SO)
+REALM=$(samba-tool testparm --parameter-name="realm" 2>/dev/null || echo "")
+if [ -n "$REALM" ]; then
+    DOMAIN=${REALM,,} # Converte para minúsculas
+else
+    DOMAIN=$(hostname -d 2>/dev/null || echo "astral.local")
+fi
+
+NETBIOS_NAME=$(samba-tool testparm --parameter-name="netbios name" 2>/dev/null || echo "")
+if [ -n "$NETBIOS_NAME" ]; then
+    HOSTNAME=${NETBIOS_NAME,,}
+else
+    HOSTNAME=$(hostname -s)
+fi
+
 FQDN="${HOSTNAME}.${DOMAIN}"
 KEYTAB_PATH="/etc/astral/certs/proxy/proxy.keytab"
 SPN="HTTP/${FQDN}"
@@ -33,14 +45,23 @@ echo -e "  Hostname: ${GREEN}${FQDN}${NC}"
 echo -e "  SPN: ${GREEN}${SPN}${NC}"
 echo ""
 
-# Verificar se é RODC
-echo -e "${YELLOW}Verificando tipo de Domain Controller...${NC}"
-if samba-tool domain level show 2>/dev/null | grep -q "RODC"; then
-    echo -e "${GREEN}✓ RODC detectado${NC}"
-    IS_RODC=true
+# Verificar o Papel do Servidor com base no banco de dados do AD local
+echo -e "${YELLOW}Verificando papel do servidor Samba...${NC}"
+SERVER_ROLE=$(samba-tool testparm --parameter-name="server role" 2>/dev/null)
+IS_RODC=false
+
+if [ "$SERVER_ROLE" = "active directory domain controller" ]; then
+    # Diferencia RODC de DC principal pelo ID nativo do grupo (521 = RODC, 516 = Writable DC)
+    if samba-tool user show "${NETBIOS_NAME}$" 2>/dev/null | grep -q "primaryGroupID: 521"; then
+        echo -e "${GREEN}✓ RODC detectado${NC}"
+        IS_RODC=true
+    else
+        echo -e "${YELLOW}✓ Domain Controller (Gravável) detectado${NC}"
+    fi
+elif [ "$SERVER_ROLE" = "member server" ]; then
+    echo -e "${YELLOW}✓ Servidor Membro detectado${NC}"
 else
-    echo -e "${YELLOW}⚠ Não é RODC ou Samba não está instalado${NC}"
-    IS_RODC=false
+    echo -e "${RED}⚠ Samba não configurado ou papel desconhecido ($SERVER_ROLE)${NC}"
 fi
 echo ""
 
@@ -157,20 +178,6 @@ fi
 
 # Backup do pom.xml
 cp "${PROXY_DIR}/pom.xml" "${PROXY_DIR}/pom.xml.backup"
-
-# Adicionar dependências Kerberos
-cat > /tmp/kerberos_deps.xml <<'EOF'
-        <dependency>
-            <groupId>org.springframework.security.kerberos</groupId>
-            <artifactId>spring-security-kerberos-web</artifactId>
-            <version>2.0.0</version>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.security.kerberos</groupId>
-            <artifactId>spring-security-kerberos-client</artifactId>
-            <version>2.0.0</version>
-        </dependency>
-EOF
 
 # Inserir dependências antes do </dependencies>
 sed -i '/<\/dependencies>/i \
@@ -333,21 +340,6 @@ echo ""
 # Passo 6: Atualizar AuthService e ProxyApiController
 echo -e "${GREEN}[6/6] Atualizando AuthService e API para suportar Kerberos...${NC}"
 
-# Adicionar método getGrupoFromCatalog ao AuthService
-cat > /tmp/auth_kerberos_patch.java <<'EOF'
-    public String getGrupoFromCatalog(String username) {
-        try {
-            return st.db.queryForObject(
-                "select grupo from autenticacao where usuario = ? limit 1",
-                String.class,
-                username
-            );
-        } catch (Exception e) {
-            return "users";
-        }
-    }
-EOF
-
 # Inserir método no AuthService antes do último }
 sed -i '/^}$/i \
     public String getGrupoFromCatalog(String username) {\
@@ -361,40 +353,6 @@ sed -i '/^}$/i \
             return "users";\
         }\
     }' "${PROXY_DIR}/src/main/java/com/astral/proxy/service/AuthService.java"
-
-# Adicionar endpoint Kerberos ao ProxyApiController
-cat > /tmp/api_kerberos_patch.java <<'EOF'
-    @GetMapping("/auth/kerberos/status")
-    public Mono<Map<String,Object>> kerberosStatus() {
-        return call(() -> {
-            Map<String,Object> m = new HashMap<>();
-            m.put("enabled", true);
-            m.put("servicePrincipal", System.getProperty("astral.kerberos.service-principal", "HTTP/" + java.net.InetAddress.getLocalHost().getCanonicalHostName()));
-            m.put("keytabExists", java.nio.file.Files.exists(java.nio.file.Paths.get("/etc/astral/certs/proxy/proxy.keytab")));
-            return m;
-        });
-    }
-
-    @GetMapping("/auth/kerberos/test")
-    public Mono<Map<String,Object>> testKerberos(@RequestParam String username) {
-        return call(() -> {
-            try {
-                String grupo = auth.getGrupoFromCatalog(username);
-                Map<String,Object> result = new HashMap<>();
-                result.put("success", true);
-                result.put("username", username);
-                result.put("grupo", grupo);
-                result.put("message", "Usuário encontrado no catálogo");
-                return result;
-            } catch (Exception e) {
-                Map<String,Object> result = new HashMap<>();
-                result.put("success", false);
-                result.put("error", e.getMessage());
-                return result;
-            }
-        });
-    }
-EOF
 
 # Inserir endpoints antes do último } do ProxyApiController
 sed -i '/^}$/i \
@@ -451,4 +409,3 @@ echo "1. Compile o projeto:"
 echo "   cd ${PROXY_DIR}"
 echo "   mvn clean package"
 echo ""
-echo "
