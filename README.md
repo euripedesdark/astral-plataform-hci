@@ -132,15 +132,15 @@ Diagrama resumido:
 
 flowchart TB
   subgraph ControlPlane [Plano de Controle Astral]
-    CP_API["API · RBAC · Auditoria · Aprovações · InstallerProxy"]
+    CP_API["API · RBAC · Auditoria · Aprovações · InstallerProxy (Spring Boot)"]
   end
 
   subgraph Reconciler [Motor de Reconciliação]
-    RE["Core em Python<br/>Intenções · Estado Desejado · Validação · Diff · Aplicar · Rollback"]
+    RE["Backend padrão (Spring Boot)<br/>Intenções · Estado Desejado · Validação · Diff · Aplicar · Rollback"]
   end
 
   subgraph Fabric [Tecido Convergente]
-    CF["Rede · Firewall · Proxy · Identidade · DNS"]
+    CF["Rede · Firewall · Proxy (ATS) · Identidade · DNS"]
   end
 
   subgraph Runtime [Runtime de VMs e Contêineres]
@@ -150,6 +150,7 @@ flowchart TB
   ControlPlane --> Reconciler
   Reconciler --> Fabric
   Fabric --> Runtime
+
 
 ```
 
