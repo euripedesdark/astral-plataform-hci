@@ -1,12 +1,12 @@
-    package com.astral.tools;
-    import com.sun.net.httpserver.HttpServer;
-    import com.sun.net.httpserver.HttpExchange;
-    import java.io.*;
-    import java.net.InetSocketAddress;
-    import java.nio.file.*;
-    import java.util.concurrent.*;
-    import java.util.concurrent.atomic.AtomicInteger;
-    public class InstallerProxy {
+package com.astral.tools;
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpExchange;
+import java.io.*;
+import java.net.InetSocketAddress;
+import java.nio.file.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+public class InstallerProxy {
     private static final int PORT = 5002;
     private static final AtomicInteger progress = new AtomicInteger(0);
     private static String status = "Aguardando...";
@@ -131,13 +131,13 @@
             Path props = Paths.get("/etc/astral/proxy.properties");
             Files.writeString(props,
                     "server.port=8085\nserver.address=127.0.0.1\n"
-                    + "spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral?ssl=true&sslmode=verify-ca&sslcert=/etc/astral/certs/client-astral.crt&sslkey=/etc/astral/certs/client-astral.pk8&sslrootcert=/etc/astral/certs/root.crt\n"
-                    + "spring.datasource.username=astral\n"
-                    + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
-                    + "astral.logs.db=astral_logs\n"
-                    + "astral.elasticsearch.url=http://127.0.0.1:9200\n"
-                    + "astral.ats.dir=auto\n"
-                    + "spring.thymeleaf.cache=false\n");
+                            + "spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral?ssl=true&sslmode=verify-ca&sslcert=/etc/astral/certs/client-astral.crt&sslkey=/etc/astral/certs/client-astral.pk8&sslrootcert=/etc/astral/certs/root.crt\n"
+                            + "spring.datasource.username=astral\n"
+                            + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
+                            + "astral.logs.db=astral_logs\n"
+                            + "astral.elasticsearch.url=http://127.0.0.1:9200\n"
+                            + "astral.ats.dir=auto\n"
+                            + "spring.thymeleaf.cache=false\n");
             run("chown root:" + ASTRAL_GROUP + " " + props, false);
             run("chmod 0640 " + props, false);
         } catch (IOException ignored) {}
@@ -146,11 +146,11 @@
         try {
             Files.writeString(Paths.get("/etc/systemd/system/astral-proxy.service"),
                     "[Unit]\nDescription=Astral Proxy Module (Apache Traffic Server)\nAfter=network.target postgresql.service astral-platform.service\n\n"
-                    + "[Service]\nType=simple\nUser=root\nGroup=" + ASTRAL_GROUP + "\n"
-                    + "WorkingDirectory=/opt/astral-proxy\n"
-                    + "ExecStart=" + javaBin + " -jar /opt/astral-proxy/astral-proxy-1.0.0.jar --spring.config.location=file:/etc/astral/proxy.properties\n"
-                    + "Restart=always\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\nUMask=0007\n\n"
-                    + "[Install]\nWantedBy=multi-user.target\n");
+                            + "[Service]\nType=simple\nUser=root\nGroup=" + ASTRAL_GROUP + "\n"
+                            + "WorkingDirectory=/opt/astral-proxy\n"
+                            + "ExecStart=" + javaBin + " -jar /opt/astral-proxy/astral-proxy-1.0.0.jar --spring.config.location=file:/etc/astral/proxy.properties\n"
+                            + "Restart=always\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\nUMask=0007\n\n"
+                            + "[Install]\nWantedBy=multi-user.target\n");
         } catch (IOException ignored) {}
         run("systemctl daemon-reload && systemctl enable astral-proxy && systemctl restart astral-proxy", false);
     }
@@ -259,18 +259,18 @@
     // =====================================================================
     private static final String TABLES_SQL =
             "CREATE TABLE IF NOT EXISTS proxy_users(id BIGSERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE, pass_hash VARCHAR(128), grupo VARCHAR(80), tipo VARCHAR(10));\n" +
-            "CREATE TABLE IF NOT EXISTS auth_sources(id BIGSERIAL PRIMARY KEY, tipo VARCHAR(10), dominio VARCHAR(120), ldap_url VARCHAR(200), usar_cert BOOLEAN DEFAULT FALSE, enabled BOOLEAN DEFAULT TRUE);\n" +
-            "CREATE TABLE IF NOT EXISTS certs(id BIGSERIAL PRIMARY KEY, nome VARCHAR(120), tipo VARCHAR(10), conteudo TEXT, truststore BOOLEAN DEFAULT FALSE, added_at TIMESTAMP DEFAULT now());\n" +
-            "CREATE TABLE IF NOT EXISTS politicas_acessos(id BIGSERIAL PRIMARY KEY, perigosos TEXT, confiaveis TEXT, fonte VARCHAR(120), updated_at TIMESTAMP DEFAULT now());\n" +
-            "CREATE TABLE IF NOT EXISTS liberados(id BIGSERIAL PRIMARY KEY, url TEXT);\n" +
-            "CREATE TABLE IF NOT EXISTS perigosos(id BIGSERIAL PRIMARY KEY, url TEXT);\n" +
-            "CREATE TABLE IF NOT EXISTS categorias(id BIGSERIAL PRIMARY KEY, nome VARCHAR(80), descricao VARCHAR(200), formato VARCHAR(20));\n" +
-            "CREATE TABLE IF NOT EXISTS politica(id BIGSERIAL PRIMARY KEY, nome VARCHAR(80), inicio DATE DEFAULT CURRENT_DATE, fim DATE, dias INT, indeterminada BOOLEAN DEFAULT TRUE);\n" +
-            "CREATE TABLE IF NOT EXISTS enderecos(id BIGSERIAL PRIMARY KEY, politica_id BIGINT, url TEXT, categoria VARCHAR(80));\n" +
-            "CREATE TABLE IF NOT EXISTS regras_sites(id BIGSERIAL PRIMARY KEY, politica_id BIGINT, endereco TEXT, usuario VARCHAR(80), grupo VARCHAR(80), categoria_site VARCHAR(80), acao BOOLEAN);\n";
+                    "CREATE TABLE IF NOT EXISTS auth_sources(id BIGSERIAL PRIMARY KEY, tipo VARCHAR(10), dominio VARCHAR(120), ldap_url VARCHAR(200), usar_cert BOOLEAN DEFAULT FALSE, enabled BOOLEAN DEFAULT TRUE);\n" +
+                    "CREATE TABLE IF NOT EXISTS certs(id BIGSERIAL PRIMARY KEY, nome VARCHAR(120), tipo VARCHAR(10), conteudo TEXT, truststore BOOLEAN DEFAULT FALSE, added_at TIMESTAMP DEFAULT now());\n" +
+                    "CREATE TABLE IF NOT EXISTS politicas_acessos(id BIGSERIAL PRIMARY KEY, perigosos TEXT, confiaveis TEXT, fonte VARCHAR(120), updated_at TIMESTAMP DEFAULT now());\n" +
+                    "CREATE TABLE IF NOT EXISTS liberados(id BIGSERIAL PRIMARY KEY, url TEXT);\n" +
+                    "CREATE TABLE IF NOT EXISTS perigosos(id BIGSERIAL PRIMARY KEY, url TEXT);\n" +
+                    "CREATE TABLE IF NOT EXISTS categorias(id BIGSERIAL PRIMARY KEY, nome VARCHAR(80), descricao VARCHAR(200), formato VARCHAR(20));\n" +
+                    "CREATE TABLE IF NOT EXISTS politica(id BIGSERIAL PRIMARY KEY, nome VARCHAR(80), inicio DATE DEFAULT CURRENT_DATE, fim DATE, dias INT, indeterminada BOOLEAN DEFAULT TRUE);\n" +
+                    "CREATE TABLE IF NOT EXISTS enderecos(id BIGSERIAL PRIMARY KEY, politica_id BIGINT, url TEXT, categoria VARCHAR(80));\n" +
+                    "CREATE TABLE IF NOT EXISTS regras_sites(id BIGSERIAL PRIMARY KEY, politica_id BIGINT, endereco TEXT, usuario VARCHAR(80), grupo VARCHAR(80), categoria_site VARCHAR(80), acao BOOLEAN);\n";
     private static final String LOGS_SQL =
             "CREATE TABLE IF NOT EXISTS acessos(id BIGSERIAL PRIMARY KEY, usuario VARCHAR(80), hostname VARCHAR(120), ip VARCHAR(50), data_ddmmyyyy VARCHAR(8), grupo VARCHAR(80), tipo_usuario INT, tipo_label VARCHAR(10), destino TEXT, created_at TIMESTAMP DEFAULT now());\n" +
-            "CREATE TABLE IF NOT EXISTS arquivos(id BIGSERIAL PRIMARY KEY, usuario VARCHAR(80), grupo VARCHAR(80), direcao VARCHAR(10), tamanho BIGINT, endereco TEXT, data_ddmmyyyy VARCHAR(8), created_at TIMESTAMP DEFAULT now());\n";
+                    "CREATE TABLE IF NOT EXISTS arquivos(id BIGSERIAL PRIMARY KEY, usuario VARCHAR(80), grupo VARCHAR(80), direcao VARCHAR(10), tamanho BIGINT, endereco TEXT, data_ddmmyyyy VARCHAR(8), created_at TIMESTAMP DEFAULT now());\n";
 
     private static final String PX_POM = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -292,7 +292,7 @@
                 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>
                 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-thymeleaf</artifactId></dependency>
                 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
-                <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId></dependency>
+                <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>compile</scope></dependency>
             </dependencies>
             <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
         </project>
@@ -403,7 +403,7 @@
         }
         """;
 
-        private static final String PX_ATS = """
+    private static final String PX_ATS = """
         package com.astral.proxy.service;
         import org.springframework.stereotype.Service;
         import org.springframework.beans.factory.annotation.Value;
@@ -793,4 +793,4 @@
         load(0);
         </script></body></html>
         """;
-    }
+}
