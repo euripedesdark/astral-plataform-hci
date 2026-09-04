@@ -11,14 +11,14 @@ public class HomeController {
 
     @GetMapping("/")
     public String root() {
-        return "index"; // Procura src/main/resources/templates/index.html
+        return "index";
     }
 
     @GetMapping("/inicio")
     public String home(Model model) {
         model.addAttribute("buttons", buildButtons());
         model.addAttribute("pageTitle", "ASTRAL PLATFORM");
-        return "home"; // Procura src/main/resources/templates/home.html
+        return "home";
     }
 
     private List<DashboardButton> buildButtons() {
@@ -34,43 +34,5 @@ public class HomeController {
                 new DashboardButton("network", "Network Config & VLAN", "network_config_vlan.png", "/network"),
                 new DashboardButton("terminal", "Terminal", "terminal.jpeg", "#terminal")
         );
-    }
-}
-```[cite: 8]
-
-        ### 2. AuthFilter.java (Liberando os caminhos estáticos padrão)
-```java
-package com.astral.main.filter;
-
-import org.springframework.http.HttpCookie;
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Component;
-import org.springframework.web.server.ServerWebExchange;
-import org.springframework.web.server.WebFilter;
-import org.springframework.web.server.WebFilterChain;
-import reactor.core.publisher.Mono;
-import java.net.URI;
-
-@Component
-public class AuthFilter implements WebFilter {
-    @Override
-    public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        String path = exchange.getRequest().getURI().getPath();
-
-        // Como os assets estão em src/main/resources/static/, eles são servidos diretamente na raiz
-        if (path.equals("/") || path.equals("/index.html") || path.startsWith("/api/auth/") ||
-                path.startsWith("/css/") || path.startsWith("/js/") || path.startsWith("/images/") ||
-                path.startsWith("/fonts/") || path.equals("/terminal-popup.html")) {
-            return chain.filter(exchange);
-        }
-
-        HttpCookie tokenCookie = exchange.getRequest().getCookies().getFirst("astral_token");
-        if (tokenCookie == null || tokenCookie.getValue().isEmpty()) {
-            exchange.getResponse().setStatusCode(HttpStatus.FOUND);
-            exchange.getResponse().getHeaders().setLocation(URI.create("/"));
-            return exchange.getResponse().setComplete();
-        }
-
-        return chain.filter(exchange);
     }
 }

@@ -37,6 +37,3 @@ public class LoginController {
         });
     }
 }
-```[cite: 7]
-
-Com os arquivos alocados nas pastas padrão (`src/main/resources/static` e `templates`), o Spring Boot encontra o `index.html` e os scripts do popup sem precisar de mapeamentos customizados complexos. Basta recompilar com `mvn clean package` e reiniciar o serviço.
