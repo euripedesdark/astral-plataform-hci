@@ -6,27 +6,25 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.0</version>
+        <version>3.2.5</version>
         <relativePath/>
     </parent>
-
     <groupId>com.astral</groupId>
-    <artifactId>astral-platform</artifactId>
+    <artifactId>astral-proxy</artifactId>
     <version>1.0.0</version>
-    <name>astral-platform</name>
-
-    <properties>
-        <java.version>21</java.version>
-    </properties>
-
+    <properties><java.version>21</java.version></properties>
     <dependencies>
-        <!-- WebFlux (Reativo) -->
+        <!-- WebFlux -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
-
-        <!-- JPA e Banco de Dados -->
+        <!-- Thymeleaf -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
+        </dependency>
+        <!-- JPA/Postgres -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
@@ -36,22 +34,22 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
-
-        <!-- Kerberos e SSO -->
+        <!-- Spring Security REATIVO + LDAP -->
         <dependency>
-            <groupId>org.springframework.security.kerberos</groupId>
-            <artifactId>spring-security-kerberos-core</artifactId>
-            <version>1.0.1.RELEASE</version>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
-
-        <!-- LDAP Reativo (UnboundID) -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-ldap</artifactId>
+        </dependency>
+        <!-- UnboundID LDAP SDK (substitui JNDI) -->
         <dependency>
             <groupId>com.unboundid</groupId>
             <artifactId>unboundid-ldapsdk</artifactId>
             <version>6.0.11</version>
         </dependency>
     </dependencies>
-
     <build>
         <plugins>
             <plugin>
