@@ -195,21 +195,21 @@ else
     echo "Node.js já está instalado."
 fi
 
-# Instalar Oracle Java 21 LTS
+# Instalar Oracle Java 25 LTS
 echo -e "${GREEN}[7/16] Instalando Oracle Java 21 LTS...${NC}"
 if ! java -version 2>&1 | grep -q "Oracle"; then
     JAVA_DIR="/usr/lib/jvm/jdk-21-oracle"
     case $DISTRO in
         debian)
-            curl -s -L -o /tmp/jdk-21.deb https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.deb
+            curl -s -L -o /tmp/jdk-21.deb https://download.oracle.com/java/25/latest/jdk-25_linux-x64_bin.deb
             dpkg -i /tmp/jdk-21.deb
             rm -f /tmp/jdk-21.deb
             ;;
         rhel)
-            dnf install -y https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.rpm
+            dnf install -y https://download.oracle.com/java/25/latest/jdk-25_linux-x64_bin.rpm
             ;;
         arch)
-            curl -s -L -o /tmp/jdk-21.tar.gz https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.tar.gz
+            curl -s -L -o /tmp/jdk-21.tar.gz https://download.oracle.com/java/25/latest/jdk-25_linux-x64_bin.tar.gz
             tar -xzf /tmp/jdk-21.tar.gz -C /opt/
             mv /opt/jdk-21* $JAVA_DIR
             rm -f /tmp/jdk-21.tar.gz
