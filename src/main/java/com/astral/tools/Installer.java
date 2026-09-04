@@ -7,227 +7,202 @@ import java.nio.file.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 public class Installer {
-    private static final int PORT = 5000;
-    private static final AtomicInteger progress = new AtomicInteger(0);
-    private static String status = "Aguardando configuração inicial...";
-    private static final String ASTRAL_GROUP = "astral";
-    private static volatile boolean needAdmin = true;
-    private static volatile String adminUser = "", adminPass = "";
-    private static volatile boolean adEnabled = false;
-    private static volatile String adDomain = "", adUser = "", adPass = "";
-    public static void main(String[] args) throws Exception {
-        if (!isRoot()) { System.err.println("ERRO: Execute com sudo"); System.exit(1); }
-        String localIP = getLocalIP();
-        System.out.println("=".repeat(60));
-        System.out.println("[ASTRAL PLATFORM] INSTALADOR JAVA (mTLS + AD/Kerberos)");
-        System.out.println("=".repeat(60));
-        System.out.println("Acesse: http://" + localIP + ":" + PORT);
-        System.out.println("=".repeat(60));
-        HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
-        server.createContext("/", Installer::handleIndex);
-        server.createContext("/install.html", Installer::handleInstallHTML);
-        server.createContext("/api/stream", Installer::handleStream);
-        server.createContext("/api/setup-admin", Installer::handleSetupAdmin);
-        server.setExecutor(Executors.newCachedThreadPool());
-        server.start();
-        Thread installThread = new Thread(Installer::runInstallation, "installer");
-        installThread.setDaemon(true);
-        installThread.start();
-        Thread.currentThread().join();
-    }
-    private static void runInstallation() {
-        try {
-            configureFirewall();
-            while (needAdmin) sleep(300);
-            updateProgress(3, "Credenciais recebidas. Iniciando instalação...");
-            ensureProjectLayout();
-            ensureFonts();
-            String distro = detectDistro();
-            updateProgress(5, "Sincronizando repositórios do Linux...");
-            syncRepos(distro);
-            updateProgress(20, "Verificando Node.js, NPM e dependências JS...");
-            installNode(distro);
-            updateProgress(40, "Avaliando instalação do Oracle Java 21 LTS...");
-            installJava(distro);
-            updateProgress(52, "Instalando o Maven...");
-            installMaven(distro);
-            updateProgress(53, "Pré-baixando dependências do Spring Boot (Maven)...");
-            preDownloadMavenDeps();
-            updateProgress(55, "Instalando o motor de banco de dados (PostgreSQL)...");
-            installPostgreSQL(distro);
-            updateProgress(70, "Removendo Nginx (Reactor Netty assume porta 80)...");
-            removeNginx();
-            updateProgress(85, "Ativando serviços de dados e ajustando SELinux...");
-            relaxSelinux();
-            configurePostgreSQL(distro);
-            updateProgress(87, "Gerando certificados SSL para mTLS...");
-            generateCertificates();
-            updateProgress(88, "Configurando banco com mTLS + usuário admin...");
-            ensureDatabaseBaseMTLS();
-            createAstralGroup();
-            if (adEnabled) {
-                updateProgress(89, "Configurando Active Directory / Kerberos (SPNEGO)...");
-                configureKerberos(distro);
-            }
-            updateProgress(90, "Organizando projeto e aplicando chown...");
-            fixOwnership();
-            updateProgress(92, "Compilando Spring Boot e criando systemd service...");
-            buildAndDeploySpringBoot();
-            updateProgress(95, "Aguardando o serviço de banco de dados iniciar...");
-            boolean dbReady = waitForPort(5432, 30);
-            if (dbReady) updateProgress(100, "Instalação concluída! Acesse http://" + getLocalIP() + "/");
-            else updateProgress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.");
-            while (true) { sleep(1000); }
-        } catch (Exception e) {
-            e.printStackTrace();
-            updateProgress(100, "ERRO: " + e.getMessage());
+private static final int PORT = 5000;
+private static final AtomicInteger progress = new AtomicInteger(0);
+private static String status = "Aguardando configuração inicial...";
+private static final String ASTRAL_GROUP = "astral";
+private static volatile boolean needAdmin = true;
+private static volatile String adminUser = "", adminPass = "";
+private static volatile boolean adEnabled = false;
+private static volatile String adDomain = "";
+
+public static void main(String[] args) throws Exception {
+    if (!isRoot()) { System.err.println("ERRO: Execute com sudo"); System.exit(1); }
+    String localIP = getLocalIP();
+    System.out.println("=".repeat(60));
+    System.out.println("[ASTRAL PLATFORM] INSTALADOR (mTLS + AD via UnboundID)");
+    System.out.println("=".repeat(60));
+    System.out.println("Acesse: http://" + localIP + ":" + PORT);
+    System.out.println("=".repeat(60));
+    HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
+    server.createContext("/", Installer::handleIndex);
+    server.createContext("/install.html", Installer::handleInstallHTML);
+    server.createContext("/api/stream", Installer::handleStream);
+    server.createContext("/api/setup-admin", Installer::handleSetupAdmin);
+    server.setExecutor(Executors.newCachedThreadPool());
+    server.start();
+    Thread installThread = new Thread(Installer::runInstallation, "installer");
+    installThread.setDaemon(true);
+    installThread.start();
+    Thread.currentThread().join();
+}
+
+private static void runInstallation() {
+    try {
+        configureFirewall();
+        while (needAdmin) sleep(300);
+        updateProgress(3, "Credenciais recebidas. Iniciando instalação...");
+        ensureProjectLayout();
+        ensureFonts();
+        String distro = detectDistro();
+        updateProgress(5, "Sincronizando repositórios do Linux...");
+        syncRepos(distro);
+        updateProgress(20, "Verificando Node.js, NPM e dependências JS...");
+        installNode(distro);
+        updateProgress(40, "Avaliando instalação do Oracle Java 21 LTS...");
+        installJava(distro);
+        updateProgress(52, "Instalando o Maven...");
+        installMaven(distro);
+        updateProgress(53, "Pré-baixando dependências do Spring Boot (Maven)...");
+        preDownloadMavenDeps();
+        updateProgress(55, "Instalando o motor de banco de dados (PostgreSQL)...");
+        installPostgreSQL(distro);
+        updateProgress(70, "Removendo Nginx (Reactor Netty assume porta 80)...");
+        removeNginx();
+        updateProgress(85, "Ativando serviços de dados e ajustando SELinux...");
+        relaxSelinux();
+        configurePostgreSQL(distro);
+        updateProgress(87, "Gerando certificados SSL para mTLS...");
+        generateCertificates();
+        updateProgress(88, "Configurando banco com mTLS + usuário admin...");
+        ensureDatabaseBaseMTLS();
+        createAstralGroup();
+        if (adEnabled) {
+            updateProgress(89, "Configurando propriedades do Active Directory...");
+            configureADProperties();
         }
+        updateProgress(90, "Organizando projeto e aplicando chown...");
+        fixOwnership();
+        updateProgress(92, "Compilando Spring Boot e criando systemd service...");
+        buildAndDeploySpringBoot();
+        updateProgress(95, "Aguardando o serviço de banco de dados iniciar...");
+        boolean dbReady = waitForPort(5432, 30);
+        if (dbReady) updateProgress(100, "Instalação concluída! Acesse http://" + getLocalIP() + "/");
+        else updateProgress(100, "Falha crítica: PostgreSQL não está escutando na porta 5432.");
+        while (true) { sleep(1000); }
+    } catch (Exception e) {
+        e.printStackTrace();
+        updateProgress(100, "ERRO: " + e.getMessage());
     }
-    // ================= AD / KERBEROS =================
-    private static void configureKerberos(String distro) {
-        try {
-            String realm = adDomain.trim().toUpperCase();
-            String fqdn = runCmd("hostname -f", false);
-            fqdn = (fqdn == null || fqdn.isBlank()) ? runCmd("hostname", false).trim() : fqdn.trim();
-            // 1) Pacotes Kerberos/LDAP
-            switch (distro) {
-                case "debian": runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y krb5-user samba-common-bin ldap-utils", true); break;
-                case "arch": runCmd("pacman -S --noconfirm krb5 samba openldap", true); break;
-                default: runCmd("dnf install -y krb5-workstation samba-common-tools openldap-clients", true); break;
-            }
-            // 2) krb5.conf global (funciona como DC, RODC ou membro)
-            String krb = "[libdefaults]\n    default_realm = " + realm + "\n    dns_lookup_realm = false\n    dns_lookup_kdc = true\n    ticket_lifetime = 24h\n    renew_lifetime = 7d\n    forwardable = true\n    rdns = false\n\n[realms]\n    " + realm + " = {\n        kdc = " + adDomain + "\n        admin_server = " + adDomain + "\n        default_domain = " + adDomain + "\n    }\n\n[domain_realm]\n    ." + adDomain + " = " + realm + "\n    " + adDomain + " = " + realm + "\n";
-            Files.writeString(Paths.get("/etc/krb5.conf"), krb);
-            // 3) Teste de conectividade (kinit)
-            runCmd("echo '" + adPass.replace("'", "'\\''") + "' | kinit " + adUser + "@" + realm + " >/dev/null 2>&1 && kdestroy 2>/dev/null || true", false);
-            // 4) Exportar keytab HTTP/<fqdn> (samba-tool em DC/RODC, msktutil/net em membro)
-            String kt = "/etc/astral/astral.keytab";
-            String spn = "HTTP/" + fqdn + "@" + realm;
-            boolean spnegoOk = false;
-            if (runCmd("which samba-tool", false) != null) {
-                runCmd("samba-tool spn add HTTP/" + fqdn + " " + adUser + " -U " + adUser + "%" + adPass + " 2>/dev/null || true", false);
-                spnegoOk = runCmd("samba-tool domain exportkeytab " + kt + " --principal=HTTP/" + fqdn + " -U " + adUser + "%" + adPass, true) != null;
-            }
-            if (!spnegoOk && runCmd("which msktutil", false) != null) {
-                spnegoOk = runCmd("msktutil --create --service HTTP --keytab " + kt, true) != null;
-            }
-            if (!spnegoOk && runCmd("which net", false) != null) {
-                spnegoOk = runCmd("net ads keytab add HTTP/" + fqdn + " -U " + adUser + "%" + adPass + " 2>/dev/null || true", false) != null;
-            }
-            runCmd("chmod 0640 " + kt + " 2>/dev/null && chown root:" + ASTRAL_GROUP + " " + kt + " 2>/dev/null || true", false);
-            // 5) Propriedades globais do AD para o backend
-            Files.writeString(Paths.get("/etc/astral/ad.properties"),
-                    "astral.ad.enabled=true\n"
-                            + "astral.ad.spnego=" + spnegoOk + "\n"
-                            + "astral.ad.domain=" + adDomain + "\n"
-                            + "astral.ad.realm=" + realm + "\n"
-                            + "astral.ad.user=" + adUser + "\n"
-                            + "astral.ad.pass=" + adPass + "\n"
-                            + "astral.ad.keytab=" + kt + "\n"
-                            + "astral.ad.spn=" + spn + "\n"
-                            + "astral.ad.fqdn=" + fqdn + "\n");
-            runCmd("chown root:" + ASTRAL_GROUP + " /etc/astral/ad.properties && chmod 0640 /etc/astral/ad.properties", false);
-            System.out.println("[OK] AD configurado (domínio " + adDomain + ", SPNEGO=" + spnegoOk + ").");
-        } catch (Exception e) {
-            System.err.println("[AVISO] Falha na configuração do AD: " + e.getMessage());
+}
+
+private static void configureADProperties() {
+    try {
+        Files.createDirectories(Paths.get("/etc/astral"));
+        Files.writeString(Paths.get("/etc/astral/ad.properties"),
+                "astral.ad.enabled=true\n" +
+                "astral.ad.domain=" + adDomain + "\n");
+        runCmd("chown root:" + ASTRAL_GROUP + " /etc/astral/ad.properties && chmod 0640 /etc/astral/ad.properties", false);
+        System.out.println("[OK] Propriedades do AD configuradas: domínio=" + adDomain);
+    } catch (Exception e) {
+        System.err.println("[AVISO] Falha ao configurar AD: " + e.getMessage());
+    }
+}
+
+private static void handleSetupAdmin(HttpExchange ex) throws IOException {
+    if (!"POST".equals(ex.getRequestMethod())) { sendResponse(ex, 405, "{\"error\":\"Method not allowed\"}", "application/json"); return; }
+    String body = new String(ex.getRequestBody().readAllBytes());
+    String u = extractJsonValue(body, "username");
+    String p = extractJsonValue(body, "password");
+    if (u == null || u.isEmpty() || p == null || p.isEmpty()) { sendResponse(ex, 400, "{\"error\":\"Usuário e senha obrigatórios\"}", "application/json"); return; }
+    adminUser = u; adminPass = p;
+    adEnabled = "true".equals(extractJsonValue(body, "adEnabled"));
+    adDomain = extractJsonValue(body, "adDomain");
+    if (adDomain == null) adDomain = "";
+    if (adEnabled && adDomain.isBlank()) {
+        sendResponse(ex, 400, "{\"error\":\"AD habilitado exige domínio\"}", "application/json"); return;
+    }
+    needAdmin = false;
+    sendResponse(ex, 200, "{\"success\":true}", "application/json");
+}
+
+private static String extractJsonValue(String json, String key) {
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
+    return m.find() ? m.group(1) : null;
+}
+
+private static void generateCertificates() {
+    Path certDir = Paths.get("/etc/astral/certs");
+    try { Files.createDirectories(certDir); } catch (IOException ignored) {}
+    runCmd("openssl req -new -x509 -days 3650 -nodes -out " + certDir + "/root.crt -keyout " + certDir + "/root.key -subj \"/CN=Astral-Root-CA\"", true);
+    runCmd("openssl req -new -nodes -out " + certDir + "/server.csr -keyout " + certDir + "/server.key -subj \"/CN=127.0.0.1\"", true);
+    runCmd("openssl x509 -req -in " + certDir + "/server.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/server.crt", true);
+    runCmd("openssl req -new -nodes -out " + certDir + "/client-astral.csr -keyout " + certDir + "/client-astral.key -subj \"/CN=astral\"", true);
+    runCmd("openssl x509 -req -in " + certDir + "/client-astral.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/client-astral.crt", true);
+    runCmd("openssl pkcs8 -topk8 -inform PEM -outform DER -in " + certDir + "/client-astral.key -out " + certDir + "/client-astral.pk8 -nocrypt", true);
+    runCmd("cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/pgsql/data/ 2>/dev/null || cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/postgres/data/ 2>/dev/null || true", false);
+    runCmd("chown postgres:postgres /var/lib/pgsql/data/root.crt /var/lib/pgsql/data/server.crt /var/lib/pgsql/data/server.key 2>/dev/null || chown postgres:postgres /var/lib/postgres/data/root.crt /var/lib/postgres/data/server.crt /var/lib/postgres/data/server.key 2>/dev/null || true", false);
+    runCmd("chmod 0600 /var/lib/pgsql/data/server.key 2>/dev/null || chmod 0600 /var/lib/postgres/data/server.key 2>/dev/null || true", false);
+    runCmd("chown -R root:" + ASTRAL_GROUP + " " + certDir, false);
+    runCmd("chmod 0640 " + certDir + "/*", false);
+}
+
+private static void configurePostgresSSL() {
+    String pgData = runCmd("runuser -u postgres -- psql -t -c 'SHOW data_directory'", false);
+    if (pgData == null || pgData.trim().isEmpty()) pgData = "/var/lib/pgsql/data";
+    pgData = pgData.trim();
+    Path confFile = Paths.get(pgData, "postgresql.conf");
+    try {
+        String conf = Files.readString(confFile);
+        if (!conf.contains("ssl = on")) {
+            Files.writeString(confFile, conf + "\n# mTLS Astral Platform\nssl = on\nssl_ca_file = 'root.crt'\nssl_cert_file = 'server.crt'\nssl_key_file = 'server.key'\n");
         }
+    } catch (IOException ignored) {}
+    Path hbaFile = Paths.get(pgData, "pg_hba.conf");
+    try {
+        String hba = Files.readString(hbaFile);
+        String newHba = hba.lines()
+                .filter(l -> !l.contains("hostssl astral") && !l.matches("^host\\s+astral\\s+" + adminUser + ".*"))
+                .collect(java.util.stream.Collectors.joining("\n"));
+        String rules = "# Astral Platform - mTLS para aplicações\nhostssl astral astral 127.0.0.1/32 cert\n# Astral Platform - admin via senha\nhost astral " + adminUser + " 127.0.0.1/32 md5\nhost astral " + adminUser + " ::1/128 md5\n\n";
+        Files.writeString(hbaFile, rules + newHba);
+    } catch (IOException ignored) {}
+    runCmd("systemctl restart postgresql", true);
+    sleep(3000);
+}
+
+private static void ensureDatabaseBaseMTLS() {
+    configurePostgresSSL();
+    String sqlAstral = "DO $$ BEGIN\nIF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\nCREATE ROLE astral LOGIN SUPERUSER;\nELSE\nALTER ROLE astral WITH LOGIN SUPERUSER;\nEND IF; END $$;\n\nSELECT 'CREATE DATABASE astral OWNER astral'\nWHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
+    String sqlAdmin = "DO $$ BEGIN\nIF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + adminUser + "') THEN\nCREATE ROLE " + adminUser + " LOGIN SUPERUSER PASSWORD '" + adminPass + "';\nELSE\nALTER ROLE " + adminUser + " WITH LOGIN SUPERUSER PASSWORD '" + adminPass + "';\nEND IF; END $$;\nGRANT ALL PRIVILEGES ON DATABASE astral TO " + adminUser + ";\n";
+    try {
+        Path f1 = Paths.get("/tmp/astral-init-mtls.sql");
+        Files.writeString(f1, sqlAstral);
+        runCmd("chmod 0644 " + f1, false);
+        runCmd("runuser -u postgres -- psql -f " + f1, true);
+        Path f2 = Paths.get("/tmp/astral-init-admin.sql");
+        Files.writeString(f2, sqlAdmin);
+        runCmd("chmod 0644 " + f2, false);
+        runCmd("runuser -u postgres -- psql -f " + f2, true);
+    } catch (IOException ignored) {}
+}
+
+private static boolean waitForPort(int port, int seconds) {
+    for (int i = 0; i < seconds; i++) {
+        try (var s = new java.net.Socket()) { s.connect(new InetSocketAddress("127.0.0.1", port), 500); return true; }
+        catch (IOException e) { sleep(1000); }
     }
-    private static void handleSetupAdmin(HttpExchange ex) throws IOException {
-        if (!"POST".equals(ex.getRequestMethod())) { sendResponse(ex, 405, "{\"error\":\"Method not allowed\"}", "application/json"); return; }
-        String body = new String(ex.getRequestBody().readAllBytes());
-        String u = extractJsonValue(body, "username");
-        String p = extractJsonValue(body, "password");
-        if (u == null || u.isEmpty() || p == null || p.isEmpty()) { sendResponse(ex, 400, "{\"error\":\"Usuário e senha obrigatórios\"}", "application/json"); return; }
-        adminUser = u; adminPass = p;
-        adEnabled = "true".equals(extractJsonValue(body, "adEnabled"));
-        adDomain = extractJsonValue(body, "adDomain"); if (adDomain == null) adDomain = "";
-        adUser = extractJsonValue(body, "adUser"); if (adUser == null) adUser = "";
-        adPass = extractJsonValue(body, "adPass"); if (adPass == null) adPass = "";
-        if (adEnabled && (adDomain.isBlank() || adUser.isBlank() || adPass.isBlank())) {
-            sendResponse(ex, 400, "{\"error\":\"AD habilitado exige domínio, usuário e senha\"}", "application/json"); return;
-        }
-        needAdmin = false;
-        sendResponse(ex, 200, "{\"success\":true}", "application/json");
-    }
-    private static String extractJsonValue(String json, String key) {
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
-        return m.find() ? m.group(1) : null;
-    }
-    private static void generateCertificates() {
-        Path certDir = Paths.get("/etc/astral/certs");
-        try { Files.createDirectories(certDir); } catch (IOException ignored) {}
-        runCmd("openssl req -new -x509 -days 3650 -nodes -out " + certDir + "/root.crt -keyout " + certDir + "/root.key -subj \"/CN=Astral-Root-CA\"", true);
-        runCmd("openssl req -new -nodes -out " + certDir + "/server.csr -keyout " + certDir + "/server.key -subj \"/CN=127.0.0.1\"", true);
-        runCmd("openssl x509 -req -in " + certDir + "/server.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/server.crt", true);
-        runCmd("openssl req -new -nodes -out " + certDir + "/client-astral.csr -keyout " + certDir + "/client-astral.key -subj \"/CN=astral\"", true);
-        runCmd("openssl x509 -req -in " + certDir + "/client-astral.csr -days 3650 -CA " + certDir + "/root.crt -CAkey " + certDir + "/root.key -CAcreateserial -out " + certDir + "/client-astral.crt", true);
-        runCmd("openssl pkcs8 -topk8 -inform PEM -outform DER -in " + certDir + "/client-astral.key -out " + certDir + "/client-astral.pk8 -nocrypt", true);
-        runCmd("cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/pgsql/data/ 2>/dev/null || cp " + certDir + "/root.crt " + certDir + "/server.crt " + certDir + "/server.key /var/lib/postgres/data/ 2>/dev/null || true", false);
-        runCmd("chown postgres:postgres /var/lib/pgsql/data/root.crt /var/lib/pgsql/data/server.crt /var/lib/pgsql/data/server.key 2>/dev/null || chown postgres:postgres /var/lib/postgres/data/root.crt /var/lib/postgres/data/server.crt /var/lib/postgres/data/server.key 2>/dev/null || true", false);
-        runCmd("chmod 0600 /var/lib/pgsql/data/server.key 2>/dev/null || chmod 0600 /var/lib/postgres/data/server.key 2>/dev/null || true", false);
-        runCmd("chown -R root:" + ASTRAL_GROUP + " " + certDir, false);
-        runCmd("chmod 0640 " + certDir + "/*", false);
-    }
-    private static void configurePostgresSSL() {
-        String pgData = runCmd("runuser -u postgres -- psql -t -c 'SHOW data_directory'", false);
-        if (pgData == null || pgData.trim().isEmpty()) pgData = "/var/lib/pgsql/data";
-        pgData = pgData.trim();
-        Path confFile = Paths.get(pgData, "postgresql.conf");
-        try {
-            String conf = Files.readString(confFile);
-            if (!conf.contains("ssl = on")) {
-                Files.writeString(confFile, conf + "\n# mTLS Astral Platform\nssl = on\nssl_ca_file = 'root.crt'\nssl_cert_file = 'server.crt'\nssl_key_file = 'server.key'\n");
-            }
-        } catch (IOException ignored) {}
-        Path hbaFile = Paths.get(pgData, "pg_hba.conf");
-        try {
-            String hba = Files.readString(hbaFile);
-            String newHba = hba.lines()
-                    .filter(l -> !l.contains("hostssl astral") && !l.matches("^host\\s+astral\\s+" + adminUser + ".*"))
-                    .collect(java.util.stream.Collectors.joining("\n"));
-            String rules = "# Astral Platform - mTLS para aplicações\nhostssl astral astral 127.0.0.1/32 cert\n# Astral Platform - admin via senha\nhost astral " + adminUser + " 127.0.0.1/32 md5\nhost astral " + adminUser + " ::1/128 md5\n\n";
-            Files.writeString(hbaFile, rules + newHba);
-        } catch (IOException ignored) {}
-        runCmd("systemctl restart postgresql", true);
-        sleep(3000);
-    }
-    private static void ensureDatabaseBaseMTLS() {
-        configurePostgresSSL();
-        String sqlAstral = "DO $$ BEGIN\nIF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astral') THEN\nCREATE ROLE astral LOGIN SUPERUSER;\nELSE\nALTER ROLE astral WITH LOGIN SUPERUSER;\nEND IF; END $$;\n\nSELECT 'CREATE DATABASE astral OWNER astral'\nWHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'astral')\\gexec\n";
-        String sqlAdmin = "DO $$ BEGIN\nIF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + adminUser + "') THEN\nCREATE ROLE " + adminUser + " LOGIN SUPERUSER PASSWORD '" + adminPass + "';\nELSE\nALTER ROLE " + adminUser + " WITH LOGIN SUPERUSER PASSWORD '" + adminPass + "';\nEND IF; END $$;\nGRANT ALL PRIVILEGES ON DATABASE astral TO " + adminUser + ";\n";
-        try {
-            Path f1 = Paths.get("/tmp/astral-init-mtls.sql");
-            Files.writeString(f1, sqlAstral);
-            runCmd("chmod 0644 " + f1, false);
-            runCmd("runuser -u postgres -- psql -f " + f1, true);
-            Path f2 = Paths.get("/tmp/astral-init-admin.sql");
-            Files.writeString(f2, sqlAdmin);
-            runCmd("chmod 0644 " + f2, false);
-            runCmd("runuser -u postgres -- psql -f " + f2, true);
-        } catch (IOException ignored) {}
-    }
-    private static boolean waitForPort(int port, int seconds) {
-        for (int i = 0; i < seconds; i++) {
-            try (var s = new java.net.Socket()) { s.connect(new InetSocketAddress("127.0.0.1", port), 500); return true; }
-            catch (IOException e) { sleep(1000); }
-        }
-        return false;
-    }
-    private static void relaxSelinux() {
-        runCmd("setenforce 0 2>/dev/null || true", false);
-        runCmd("sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true", false);
-    }
-    private static void createAstralGroup() {
-        if (runCmd("getent group " + ASTRAL_GROUP, false) == null) runCmd("groupadd " + ASTRAL_GROUP, true);
-        try {
-            String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
-            runCmd("usermod -aG " + ASTRAL_GROUP + " " + owner + " 2>/dev/null || true", false);
-            runCmd("usermod -aG " + ASTRAL_GROUP + " root 2>/dev/null || true", false);
-        } catch (IOException ignored) {}
-    }
-    private static void handleIndex(HttpExchange ex) throws IOException { sendResponse(ex, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html"); }
-    private static void handleInstallHTML(HttpExchange ex) throws IOException {
-        String html = """
+    return false;
+}
+
+private static void relaxSelinux() {
+    runCmd("setenforce 0 2>/dev/null || true", false);
+    runCmd("sed -i 's/^SELINUX=.*/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true", false);
+}
+
+private static void createAstralGroup() {
+    if (runCmd("getent group " + ASTRAL_GROUP, false) == null) runCmd("groupadd " + ASTRAL_GROUP, true);
+    try {
+        String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
+        runCmd("usermod -aG " + ASTRAL_GROUP + " " + owner + " 2>/dev/null || true", false);
+        runCmd("usermod -aG " + ASTRAL_GROUP + " root 2>/dev/null || true", false);
+    } catch (IOException ignored) {}
+}
+
+private static void handleIndex(HttpExchange ex) throws IOException { sendResponse(ex, 200, "<meta http-equiv='refresh' content='0; url=/install.html'>", "text/html"); }
+
+private static void handleInstallHTML(HttpExchange ex) throws IOException {
+    String html = """
         <!DOCTYPE html><html lang="pt-br"><head><meta charset="UTF-8"><title>Instalando Astral</title>
         <style>
         body{background:#05070d;color:#fff;font-family:'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
@@ -253,12 +228,10 @@ public class Installer {
             <input type="text" id="adminUser" placeholder="Usuário admin (ex: euripedes)" value="euripedes">
             <input type="password" id="adminPass" placeholder="Senha do banco/dashboard">
             <fieldset>
-                <legend><label><input type="checkbox" id="adEnabled" onchange="toggleAd()"> Conectar ao Active Directory (Kerberos/SPNEGO)</label></legend>
+                <legend><label><input type="checkbox" id="adEnabled" onchange="toggleAd()"> Conectar ao Active Directory (UnboundID LDAP)</label></legend>
                 <div id="adFields" class="hidden">
                     <input type="text" id="adDomain" placeholder="Domínio (ex: srvcloud.cloud)">
-                    <input type="text" id="adUser" placeholder="Usuário do AD (ex: administrator)">
-                    <input type="password" id="adPass" placeholder="Senha do AD">
-                    <p style="font-size:11px;color:#888">Funciona como DC, RODC ou membro. Admins do AD recebem privilégios de sudo/root e superuser do Postgres.</p>
+                    <p style="font-size:11px;color:#888">Admins do AD recebem privilégios de sudo/root e superuser do Postgres.</p>
                 </div>
             </fieldset>
             <button onclick="setupAdmin()">Iniciar Instalação</button>
@@ -280,9 +253,7 @@ public class Installer {
                 method:'POST', headers:{'Content-Type':'application/json'},
                 body: JSON.stringify({username:user, password:pass,
                     adEnabled: document.getElementById('adEnabled').checked ? 'true':'false',
-                    adDomain: document.getElementById('adDomain').value.trim(),
-                    adUser: document.getElementById('adUser').value.trim(),
-                    adPass: document.getElementById('adPass').value})
+                    adDomain: document.getElementById('adDomain').value.trim()})
             }).then(r => r.json()).then(data => {
                 if (data.success) {
                     document.getElementById('adminForm').classList.add('hidden');
@@ -303,45 +274,44 @@ public class Installer {
         function redirectToHome() { window.location.href = '/'; }
         </script>
         </body></html>""";
-        sendResponse(ex, 200, html, "text/html");
-    }
-    private static void handleStream(HttpExchange ex) throws IOException {
-        ex.getResponseHeaders().set("Content-Type", "text/event-stream");
-        ex.getResponseHeaders().set("Cache-Control", "no-cache");
-        ex.sendResponseHeaders(200, 0);
-        try (OutputStream os = ex.getResponseBody()) {
-            while (true) {
-                os.write(("data: {\"progress\": " + progress.get() + ", \"status\": \"" + status + "\"}\n\n").getBytes());
-                os.flush();
-                if (progress.get() >= 100) break;
-                Thread.sleep(500);
-            }
-        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        catch (IOException ignored) { }
-    }
-    private static void ensureProjectLayout() throws IOException {
-        String app = System.getProperty("user.dir");
-        Path base = Paths.get(app, "src", "main", "java", "com", "astral", "main");
-        Path ctrl = base.resolve("controller");
-        Path filter = base.resolve("filter");
-        Path cfg = base.resolve("config");
-        for (Path d : new Path[]{base, ctrl, filter, cfg}) Files.createDirectories(d);
-        write(Paths.get(app, "pom.xml"), pomXml());
-        write(base.resolve("AstralApplication.java"), ASTRAL_APP_JAVA);
-        write(ctrl.resolve("HomeController.java"), HOME_CONTROLLER_JAVA);
-        write(ctrl.resolve("LoginController.java"), LOGIN_CONTROLLER_JAVA);
-        write(ctrl.resolve("ProxyController.java"), PROXY_CONTROLLER_JAVA);
-        write(cfg.resolve("WebSocketConfig.java"), WS_CONFIG_JAVA);
-        write(cfg.resolve("TerminalWebSocketHandler.java"), WS_HANDLER_JAVA);
-        write(cfg.resolve("DatabaseBootstrap.java"), DB_BOOTSTRAP_JAVA);
-        write(filter.resolve("AuthFilter.java"), AUTH_FILTER_JAVA);
-        if (adEnabled) write(filter.resolve("SpnegoAuthFilter.java"), SPNEGO_FILTER_JAVA);
-    }
-    private static String pomXml() {
-        String kerb = adEnabled ? """
-            <dependency><groupId>org.springframework.security.kerberos</groupId><artifactId>spring-security-kerberos-core</artifactId><version>1.0.1.RELEASE</version></dependency>
-    """ : "";
-        return """
+    sendResponse(ex, 200, html, "text/html");
+}
+
+private static void handleStream(HttpExchange ex) throws IOException {
+    ex.getResponseHeaders().set("Content-Type", "text/event-stream");
+    ex.getResponseHeaders().set("Cache-Control", "no-cache");
+    ex.sendResponseHeaders(200, 0);
+    try (OutputStream os = ex.getResponseBody()) {
+        while (true) {
+            os.write(("data: {\"progress\": " + progress.get() + ", \"status\": \"" + status + "\"}\n\n").getBytes());
+            os.flush();
+            if (progress.get() >= 100) break;
+            Thread.sleep(500);
+        }
+    } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    catch (IOException ignored) { }
+}
+
+private static void ensureProjectLayout() throws IOException {
+    String app = System.getProperty("user.dir");
+    Path base = Paths.get(app, "src", "main", "java", "com", "astral", "main");
+    Path ctrl = base.resolve("controller");
+    Path filter = base.resolve("filter");
+    Path cfg = base.resolve("config");
+    for (Path d : new Path[]{base, ctrl, filter, cfg}) Files.createDirectories(d);
+    write(Paths.get(app, "pom.xml"), pomXml());
+    write(base.resolve("AstralApplication.java"), ASTRAL_APP_JAVA);
+    write(ctrl.resolve("HomeController.java"), HOME_CONTROLLER_JAVA);
+    write(ctrl.resolve("LoginController.java"), LOGIN_CONTROLLER_JAVA);
+    write(ctrl.resolve("ProxyController.java"), PROXY_CONTROLLER_JAVA);
+    write(cfg.resolve("WebSocketConfig.java"), WS_CONFIG_JAVA);
+    write(cfg.resolve("TerminalWebSocketHandler.java"), WS_HANDLER_JAVA);
+    write(cfg.resolve("DatabaseBootstrap.java"), DB_BOOTSTRAP_JAVA);
+    write(filter.resolve("AuthFilter.java"), AUTH_FILTER_JAVA);
+}
+
+private static String pomXml() {
+    return """
     <?xml version="1.0" encoding="UTF-8"?>
     <project xmlns="http://maven.apache.org/POM/4.0.0"
              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -350,7 +320,7 @@ public class Installer {
         <parent>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-parent</artifactId>
-            <version>3.2.0</version>
+            <version>3.2.5</version>
             <relativePath/>
         </parent>
         <groupId>com.astral</groupId>
@@ -362,232 +332,254 @@ public class Installer {
             <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webflux</artifactId></dependency>
             <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
             <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>
-    """ + kerb + """
+            <dependency><groupId>com.unboundid</groupId><artifactId>unboundid-ldapsdk</artifactId><version>6.0.11</version></dependency>
         </dependencies>
         <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
     </project>
     """;
-    }
-    private static void write(Path p, String content) throws IOException {
-        Files.createDirectories(p.getParent());
-        Files.writeString(p, content);
-        System.out.println("[OK] " + p.getFileName() + " escrito/atualizado.");
-    }
-    private static void ensureFonts() {
-        try {
-            Path fonts = Paths.get(System.getProperty("user.dir"), "src", "main", "resources", "static", "fonts");
-            Files.createDirectories(fonts);
-            String[][] fs = {
-                    {"orbitron-bold.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-700-normal.woff2"},
-                    {"orbitron-black.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-900-normal.woff2"}
-            };
-            for (String[] f : fs) {
-                Path dst = fonts.resolve(f[0]);
-                if (Files.exists(dst) && Files.size(dst) > 1000) continue;
-                runCmd("curl -fsSL -o " + dst + " " + f[1], false);
-            }
-        } catch (IOException ignored) {}
-    }
-    private static void fixOwnership() {
-        try {
-            String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
-            runCmd("chown -R " + owner + ":" + ASTRAL_GROUP + " " + System.getProperty("user.dir") + " 2>/dev/null || true", false);
-            runCmd("find " + System.getProperty("user.dir") + " -type d -exec chmod 2775 {} \\; 2>/dev/null || true", false);
-            runCmd("find " + System.getProperty("user.dir") + " -type f -exec chmod 0664 {} \\; 2>/dev/null || true", false);
-        } catch (IOException ignored) {}
-    }
-    private static void preDownloadMavenDeps() {
-        String app = System.getProperty("user.dir");
-        if (Files.exists(Paths.get(app, "pom.xml"))) runCmd("cd " + app + " && mvn -B -q dependency:go-offline 2>/dev/null || true", false);
-    }
-    private static void buildAndDeploySpringBoot() {
-        String app = System.getProperty("user.dir");
-        runCmd("cd " + app + " && mvn -B -DskipTests clean package", true);
-        String jar = app + "/target/astral-platform-1.0.0.jar";
-        if (!Files.exists(Paths.get(jar))) { System.err.println("[ERRO] JAR não encontrado em " + jar); return; }
-        String javaBin = detectJavaBin();
-        runCmd("ln -sf " + javaBin + " /usr/bin/java", false);
-        runCmd("mkdir -p /opt/astral-platform", true);
-        runCmd("cp " + jar + " /opt/astral-platform/", true);
-        runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform", true);
-        runCmd("chmod 2770 /opt/astral-platform", true);
-        runCmd("chmod 0660 /opt/astral-platform/*.jar 2>/dev/null || true", false);
-        System.out.println("[DEPLOY] Integrando os arquivos estáticos de /fabric/frontend...");
-        runCmd("rm -rf /opt/astral-platform/frontend", false);
-        runCmd("cp -r " + app + "/fabric/frontend /opt/astral-platform/", true);
-        runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform/frontend", false);
-        runCmd("chmod -R 2775 /opt/astral-platform/frontend", false);
-        runCmd("mkdir -p /etc/astral", false);
-        runCmd("chown root:" + ASTRAL_GROUP + " /etc/astral", false);
-        runCmd("chmod 2770 /etc/astral", false);
-        Path props = Paths.get("/etc/astral/application.properties");
-        try {
-            String sslUrl = "jdbc:postgresql://127.0.0.1:5432/astral?ssl=true&sslmode=verify-ca"
-                    + "&sslcert=/etc/astral/certs/client-astral.crt"
-                    + "&sslkey=/etc/astral/certs/client-astral.pk8"
-                    + "&sslrootcert=/etc/astral/certs/root.crt";
-            Files.writeString(props,
-                    "server.port=80\n"
-                            + "server.address=0.0.0.0\n"
-                            + "spring.datasource.url=" + sslUrl + "\n"
-                            + "spring.datasource.username=astral\n"
-                            + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
-                            + "spring.jpa.hibernate.ddl-auto=update\n"
-                            + "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect\n"
-                            + "spring.jackson.serialization.fail-on-empty-beans=false\n"
-                            + "spring.web.resources.static-locations=file:/opt/astral-platform/frontend/\n"
-                            + "spring.thymeleaf.cache=false\n");
-            runCmd("chown root:" + ASTRAL_GROUP + " " + props, false);
-            runCmd("chmod 0640 " + props, false);
-        } catch (IOException ignored) {}
-        String svc = "[Unit]\nDescription=Astral Platform (Reactor Netty)\nAfter=network.target postgresql.service\nRequires=postgresql.service\n\n"
-                + "[Service]\nType=simple\nUser=root\nGroup=" + ASTRAL_GROUP + "\nWorkingDirectory=/opt/astral-platform\n"
-                + "ExecStart=" + javaBin + " -jar /opt/astral-platform/astral-platform-1.0.0.jar --spring.config.location=file:/etc/astral/application.properties\n"
-                + "Restart=always\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\nUMask=0007\n\n"
-                + "[Install]\nWantedBy=multi-user.target\n";
-        try { Files.writeString(Paths.get("/etc/systemd/system/astral-platform.service"), svc); } catch (IOException ignored) {}
-        runCmd("systemctl daemon-reload", false);
-        runCmd("systemctl enable astral-platform.service", false);
-        runCmd("systemctl restart astral-platform.service", false);
-    }
-    private static String detectJavaBin() {
-        String cand = runCmd("readlink -f $(which java) 2>/dev/null", false);
-        if (cand != null && !cand.trim().isEmpty() && Files.exists(Paths.get(cand.trim()))) return cand.trim();
-        cand = runCmd("ls -d /usr/lib/jvm/jdk-*/bin/java 2>/dev/null | head -1", false);
-        if (cand != null && !cand.trim().isEmpty()) return cand.trim();
-        cand = runCmd("ls -d /usr/lib/jvm/*/bin/java 2>/dev/null | head -1", false);
-        if (cand != null && !cand.trim().isEmpty()) return cand.trim();
-        return "/usr/bin/java";
-    }
-    private static void syncRepos(String distro) {
-        switch (distro) {
-            case "debian": runCmd("apt-get update", true); break;
-            case "rhel": runCmd("dnf makecache", true); break;
-            case "arch": runCmd("pacman -Sy", true); break;
+}
+
+private static void write(Path p, String content) throws IOException {
+    Files.createDirectories(p.getParent());
+    Files.writeString(p, content);
+    System.out.println("[OK] " + p.getFileName() + " escrito/atualizado.");
+}
+
+private static void ensureFonts() {
+    try {
+        Path fonts = Paths.get(System.getProperty("user.dir"), "src", "main", "resources", "static", "fonts");
+        Files.createDirectories(fonts);
+        String[][] fs = {
+                {"orbitron-bold.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-700-normal.woff2"},
+                {"orbitron-black.woff2", "https://cdn.jsdelivr.net/fontsource/fonts/orbitron@latest/latin-900-normal.woff2"}
+        };
+        for (String[] f : fs) {
+            Path dst = fonts.resolve(f[0]);
+            if (Files.exists(dst) && Files.size(dst) > 1000) continue;
+            runCmd("curl -fsSL -o " + dst + " " + f[1], false);
         }
+    } catch (IOException ignored) {}
+}
+
+private static void fixOwnership() {
+    try {
+        String owner = Files.getOwner(Paths.get(System.getProperty("user.dir"))).getName();
+        runCmd("chown -R " + owner + ":" + ASTRAL_GROUP + " " + System.getProperty("user.dir") + " 2>/dev/null || true", false);
+        runCmd("find " + System.getProperty("user.dir") + " -type d -exec chmod 2775 {} \\; 2>/dev/null || true", false);
+        runCmd("find " + System.getProperty("user.dir") + " -type f -exec chmod 0664 {} \\; 2>/dev/null || true", false);
+    } catch (IOException ignored) {}
+}
+
+private static void preDownloadMavenDeps() {
+    String app = System.getProperty("user.dir");
+    if (Files.exists(Paths.get(app, "pom.xml"))) runCmd("cd " + app + " && mvn -B -q dependency:go-offline 2>/dev/null || true", false);
+}
+
+private static void buildAndDeploySpringBoot() {
+    String app = System.getProperty("user.dir");
+    runCmd("cd " + app + " && mvn -B -DskipTests clean package", true);
+    String jar = app + "/target/astral-platform-1.0.0.jar";
+    if (!Files.exists(Paths.get(jar))) { System.err.println("[ERRO] JAR não encontrado em " + jar); return; }
+    String javaBin = detectJavaBin();
+    runCmd("ln -sf " + javaBin + " /usr/bin/java", false);
+    runCmd("mkdir -p /opt/astral-platform", true);
+    runCmd("cp " + jar + " /opt/astral-platform/", true);
+    runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform", true);
+    runCmd("chmod 2770 /opt/astral-platform", true);
+    runCmd("chmod 0660 /opt/astral-platform/*.jar 2>/dev/null || true", false);
+    System.out.println("[DEPLOY] Integrando os arquivos estáticos de /fabric/frontend...");
+    runCmd("rm -rf /opt/astral-platform/frontend", false);
+    runCmd("cp -r " + app + "/fabric/frontend /opt/astral-platform/", true);
+    runCmd("chown -R root:" + ASTRAL_GROUP + " /opt/astral-platform/frontend", false);
+    runCmd("chmod -R 2775 /opt/astral-platform/frontend", false);
+    runCmd("mkdir -p /etc/astral", false);
+    runCmd("chown root:" + ASTRAL_GROUP + " /etc/astral", false);
+    runCmd("chmod 2770 /etc/astral", false);
+    Path props = Paths.get("/etc/astral/application.properties");
+    try {
+        String sslUrl = "jdbc:postgresql://127.0.0.1:5432/astral?ssl=true&sslmode=verify-ca"
+                + "&sslcert=/etc/astral/certs/client-astral.crt"
+                + "&sslkey=/etc/astral/certs/client-astral.pk8"
+                + "&sslrootcert=/etc/astral/certs/root.crt";
+        Files.writeString(props,
+                "server.port=80\n"
+                        + "server.address=0.0.0.0\n"
+                        + "spring.datasource.url=" + sslUrl + "\n"
+                        + "spring.datasource.username=astral\n"
+                        + "spring.datasource.driver-class-name=org.postgresql.Driver\n"
+                        + "spring.jpa.hibernate.ddl-auto=update\n"
+                        + "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect\n"
+                        + "spring.jackson.serialization.fail-on-empty-beans=false\n"
+                        + "spring.web.resources.static-locations=file:/opt/astral-platform/frontend/\n"
+                        + "spring.thymeleaf.cache=false\n");
+        runCmd("chown root:" + ASTRAL_GROUP + " " + props, false);
+        runCmd("chmod 0640 " + props, false);
+    } catch (IOException ignored) {}
+    String svc = "[Unit]\nDescription=Astral Platform (Reactor Netty)\nAfter=network.target postgresql.service\nRequires=postgresql.service\n\n"
+            + "[Service]\nType=simple\nUser=root\nGroup=" + ASTRAL_GROUP + "\nWorkingDirectory=/opt/astral-platform\n"
+            + "ExecStart=" + javaBin + " -jar /opt/astral-platform/astral-platform-1.0.0.jar --spring.config.location=file:/etc/astral/application.properties\n"
+            + "Restart=always\nRestartSec=10\nStandardOutput=journal\nStandardError=journal\nUMask=0007\n\n"
+            + "[Install]\nWantedBy=multi-user.target\n";
+    try { Files.writeString(Paths.get("/etc/systemd/system/astral-platform.service"), svc); } catch (IOException ignored) {}
+    runCmd("systemctl daemon-reload", false);
+    runCmd("systemctl enable astral-platform.service", false);
+    runCmd("systemctl restart astral-platform.service", false);
+}
+
+private static String detectJavaBin() {
+    String cand = runCmd("readlink -f $(which java) 2>/dev/null", false);
+    if (cand != null && !cand.trim().isEmpty() && Files.exists(Paths.get(cand.trim()))) return cand.trim();
+    cand = runCmd("ls -d /usr/lib/jvm/jdk-*/bin/java 2>/dev/null | head -1", false);
+    if (cand != null && !cand.trim().isEmpty()) return cand.trim();
+    cand = runCmd("ls -d /usr/lib/jvm/*/bin/java 2>/dev/null | head -1", false);
+    if (cand != null && !cand.trim().isEmpty()) return cand.trim();
+    return "/usr/bin/java";
+}
+
+private static void syncRepos(String distro) {
+    switch (distro) {
+        case "debian": runCmd("apt-get update", true); break;
+        case "rhel": runCmd("dnf makecache", true); break;
+        case "arch": runCmd("pacman -Sy", true); break;
     }
-    private static void installNode(String distro) {
-        if (runCmd("which node", false) != null && runCmd("which npm", false) != null) return;
-        String pkg = distro.equals("rhel") ? "nodejs nodejs-npm curl" : "nodejs npm curl";
-        switch (distro) {
-            case "debian": runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y " + pkg, true); break;
-            case "rhel": runCmd("dnf install -y " + pkg, true); break;
-            case "arch": runCmd("pacman -S --noconfirm " + pkg, true); break;
+}
+
+private static void installNode(String distro) {
+    if (runCmd("which node", false) != null && runCmd("which npm", false) != null) return;
+    String pkg = distro.equals("rhel") ? "nodejs nodejs-npm curl" : "nodejs npm curl";
+    switch (distro) {
+        case "debian": runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y " + pkg, true); break;
+        case "rhel": runCmd("dnf install -y " + pkg, true); break;
+        case "arch": runCmd("pacman -S --noconfirm " + pkg, true); break;
+    }
+    runCmd("npm install -g pg express cors 2>/dev/null || true", false);
+}
+
+private static void installJava(String distro) {
+    String chk = runCmd("java -version 2>&1", false);
+    if (chk != null && chk.contains("Oracle")) return;
+    switch (distro) {
+        case "debian": runCmd("curl -s -L -o /tmp/jdk.deb https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.deb", true); runCmd("dpkg -i /tmp/jdk.deb", true); break;
+        case "rhel": runCmd("dnf install -y https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.rpm", true); break;
+        case "arch": runCmd("curl -s -L -o /tmp/jdk.tar.gz https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.tar.gz", true); runCmd("tar -xzf /tmp/jdk.tar.gz -C /opt/ && ln -sf /opt/jdk-21*/bin/java /usr/bin/java", true); break;
+    }
+}
+
+private static void installMaven(String distro) {
+    if (runCmd("which mvn", false) != null) return;
+    switch (distro) {
+        case "debian": runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y maven", true); break;
+        case "rhel": runCmd("dnf install -y maven", true); break;
+        case "arch": runCmd("pacman -S --noconfirm maven", true); break;
+    }
+}
+
+private static void installPostgreSQL(String distro) {
+    String pkg = distro.equals("rhel") ? "postgresql postgresql-server postgresql-contrib" : "postgresql postgresql-contrib";
+    switch (distro) {
+        case "debian": runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y " + pkg, true); break;
+        case "rhel": runCmd("dnf install -y " + pkg, true); break;
+        case "arch": runCmd("pacman -S --noconfirm " + pkg, true); break;
+    }
+}
+
+private static void configurePostgreSQL(String distro) {
+    String svc = "postgresql";
+    if (distro.equals("rhel")) {
+        svc = detectPgService();
+        String pg = runCmd("ls -A /var/lib/pgsql/data 2>/dev/null", false);
+        if (pg == null || pg.trim().isEmpty()) {
+            runCmd("chown -R postgres:postgres /var/lib/pgsql", false);
+            runCmd("/usr/bin/postgresql-setup --initdb", true);
+            runCmd("chown -R postgres:postgres /var/lib/pgsql/data", false);
+            runCmd("chmod 700 /var/lib/pgsql/data", false);
         }
-        runCmd("npm install -g pg express cors 2>/dev/null || true", false);
+        runCmd("grep -q '^listen_addresses' /var/lib/pgsql/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", false);
+        runCmd("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || echo 'host all all 0.0.0.0/0 md5' >> /var/lib/pgsql/data/pg_hba.conf", false);
+        runCmd("grep -q '^host.*127.0.0.1/32.*md5' /var/lib/pgsql/data/pg_hba.conf || sed -i '1i host all all 127.0.0.1/32 md5' /var/lib/pgsql/data/pg_hba.conf", false);
+    } else if (distro.equals("arch")) {
+        if (!Files.exists(Paths.get("/var/lib/postgres/data/PG_VERSION"))) runCmd("runuser -u postgres -- initdb -D /var/lib/postgres/data", true);
     }
-    private static void installJava(String distro) {
-        String chk = runCmd("java -version 2>&1", false);
-        if (chk != null && chk.contains("Oracle")) return;
-        switch (distro) {
-            case "debian": runCmd("curl -s -L -o /tmp/jdk.deb https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.deb", true); runCmd("dpkg -i /tmp/jdk.deb", true); break;
-            case "rhel": runCmd("dnf install -y https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.rpm", true); break;
-            case "arch": runCmd("curl -s -L -o /tmp/jdk.tar.gz https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.tar.gz", true); runCmd("tar -xzf /tmp/jdk.tar.gz -C /opt/ && ln -sf /opt/jdk-21*/bin/java /usr/bin/java", true); break;
+    runCmd("systemctl enable " + svc, false);
+    runCmd("systemctl start " + svc, false);
+}
+
+private static String detectPgService() {
+    String[] names = {"postgresql", "postgresql-server", "postgresql-16", "postgresql-15", "postgresql-14"};
+    for (String n : names) if (runCmd("systemctl cat " + n + " >/dev/null 2>&1", false) != null) return n;
+    return "postgresql";
+}
+
+private static void configureFirewall() {
+    int[] ports = {22, 80, 443, 3000, 5000, 5173, 5432, 8081, 9090, 8040};
+    runCmd("systemctl stop firewalld ufw 2>/dev/null || true", false);
+    runCmd("systemctl disable firewalld ufw 2>/dev/null || true", false);
+    for (int p : ports) runCmd("iptables -I INPUT 1 -p tcp --dport " + p + " -j ACCEPT", false);
+    runCmd("iptables-save > /etc/sysconfig/iptables 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true", false);
+}
+
+private static void removeNginx() {
+    runCmd("systemctl stop nginx 2>/dev/null || true", false);
+    runCmd("systemctl disable nginx 2>/dev/null || true", false);
+    runCmd("pkill -x nginx 2>/dev/null || true", false);
+    runCmd("dnf remove -y nginx 2>/dev/null || apt-get purge -y nginx 2>/dev/null || true", true);
+    runCmd("rm -f /etc/nginx/conf.d/astral.conf /etc/nginx/sites-enabled/astral.conf /etc/nginx/sites-available/astral.conf", false);
+}
+
+private static void sendResponse(HttpExchange ex, int code, String body, String type) throws IOException {
+    byte[] b = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    ex.getResponseHeaders().set("Content-Type", type + "; charset=UTF-8");
+    ex.sendResponseHeaders(code, b.length);
+    try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+}
+
+private static void updateProgress(int p, String s) { progress.set(p); status = s; System.out.println("[" + p + "%] " + s); }
+
+private static String runCmd(String cmd, boolean log) {
+    if (log) System.out.println("$ " + cmd);
+    try {
+        Process p = new ProcessBuilder("bash", "-c", cmd).redirectErrorStream(true).start();
+        StringBuilder out = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+            String l; while ((l = br.readLine()) != null) { if (log) System.out.println("  " + l); out.append(l).append("\n"); }
         }
-    }
-    private static void installMaven(String distro) {
-        if (runCmd("which mvn", false) != null) return;
-        switch (distro) {
-            case "debian": runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y maven", true); break;
-            case "rhel": runCmd("dnf install -y maven", true); break;
-            case "arch": runCmd("pacman -S --noconfirm maven", true); break;
-        }
-    }
-    private static void installPostgreSQL(String distro) {
-        String pkg = distro.equals("rhel") ? "postgresql postgresql-server postgresql-contrib" : "postgresql postgresql-contrib";
-        switch (distro) {
-            case "debian": runCmd("DEBIAN_FRONTEND=noninteractive apt-get install -y " + pkg, true); break;
-            case "rhel": runCmd("dnf install -y " + pkg, true); break;
-            case "arch": runCmd("pacman -S --noconfirm " + pkg, true); break;
-        }
-    }
-    private static void configurePostgreSQL(String distro) {
-        String svc = "postgresql";
-        if (distro.equals("rhel")) {
-            svc = detectPgService();
-            String pg = runCmd("ls -A /var/lib/pgsql/data 2>/dev/null", false);
-            if (pg == null || pg.trim().isEmpty()) {
-                runCmd("chown -R postgres:postgres /var/lib/pgsql", false);
-                runCmd("/usr/bin/postgresql-setup --initdb", true);
-                runCmd("chown -R postgres:postgres /var/lib/pgsql/data", false);
-                runCmd("chmod 700 /var/lib/pgsql/data", false);
-            }
-            runCmd("grep -q '^listen_addresses' /var/lib/pgsql/data/postgresql.conf || echo \"listen_addresses = '*'\" >> /var/lib/pgsql/data/postgresql.conf", false);
-            runCmd("grep -q '0.0.0.0/0' /var/lib/pgsql/data/pg_hba.conf || echo 'host all all 0.0.0.0/0 md5' >> /var/lib/pgsql/data/pg_hba.conf", false);
-            runCmd("grep -q '^host.*127.0.0.1/32.*md5' /var/lib/pgsql/data/pg_hba.conf || sed -i '1i host all all 127.0.0.1/32 md5' /var/lib/pgsql/data/pg_hba.conf", false);
-        } else if (distro.equals("arch")) {
-            if (!Files.exists(Paths.get("/var/lib/postgres/data/PG_VERSION"))) runCmd("runuser -u postgres -- initdb -D /var/lib/postgres/data", true);
-        }
-        runCmd("systemctl enable " + svc, false);
-        runCmd("systemctl start " + svc, false);
-    }
-    private static String detectPgService() {
-        String[] names = {"postgresql", "postgresql-server", "postgresql-16", "postgresql-15", "postgresql-14"};
-        for (String n : names) if (runCmd("systemctl cat " + n + " >/dev/null 2>&1", false) != null) return n;
-        return "postgresql";
-    }
-    private static void configureFirewall() {
-        int[] ports = {22, 80, 443, 3000, 5000, 5173, 5432, 8081, 9090, 8040};
-        runCmd("systemctl stop firewalld ufw 2>/dev/null || true", false);
-        runCmd("systemctl disable firewalld ufw 2>/dev/null || true", false);
-        for (int p : ports) runCmd("iptables -I INPUT 1 -p tcp --dport " + p + " -j ACCEPT", false);
-        runCmd("iptables-save > /etc/sysconfig/iptables 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true", false);
-    }
-    private static void removeNginx() {
-        runCmd("systemctl stop nginx 2>/dev/null || true", false);
-        runCmd("systemctl disable nginx 2>/dev/null || true", false);
-        runCmd("pkill -x nginx 2>/dev/null || true", false);
-        runCmd("dnf remove -y nginx 2>/dev/null || apt-get purge -y nginx 2>/dev/null || true", true);
-        runCmd("rm -f /etc/nginx/conf.d/astral.conf /etc/nginx/sites-enabled/astral.conf /etc/nginx/sites-available/astral.conf", false);
-    }
-    private static void sendResponse(HttpExchange ex, int code, String body, String type) throws IOException {
-        byte[] b = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", type + "; charset=UTF-8");
-        ex.sendResponseHeaders(code, b.length);
-        try (OutputStream os = ex.getResponseBody()) { os.write(b); }
-    }
-    private static void updateProgress(int p, String s) { progress.set(p); status = s; System.out.println("[" + p + "%] " + s); }
-    private static String runCmd(String cmd, boolean log) {
-        if (log) System.out.println("$ " + cmd);
-        try {
-            Process p = new ProcessBuilder("bash", "-c", cmd).redirectErrorStream(true).start();
-            StringBuilder out = new StringBuilder();
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-                String l; while ((l = br.readLine()) != null) { if (log) System.out.println("  " + l); out.append(l).append("\n"); }
-            }
-            int code = p.waitFor();
-            return code == 0 ? out.toString() : null;
-        } catch (Exception e) { return null; }
-    }
-    private static String detectDistro() {
-        try {
-            String c = Files.readString(Paths.get("/etc/os-release")).toLowerCase();
-            if (c.contains("debian") || c.contains("ubuntu")) return "debian";
-            if (c.contains("rhel") || c.contains("fedora") || c.contains("rocky") || c.contains("centos")) return "rhel";
-            if (c.contains("arch")) return "arch";
-        } catch (IOException ignored) {}
-        return "unknown";
-    }
-    private static String getLocalIP() {
-        try {
-            ProcessBuilder pb = new ProcessBuilder("bash", "-c", "ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i==\"src\") print $(i+1)}'");
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            StringBuilder out = new StringBuilder();
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) { String l; while ((l = br.readLine()) != null) out.append(l); }
-            int code = p.waitFor();
-            String result = out.toString().trim();
-            if (code == 0 && !result.isEmpty() && result.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return result;
-        } catch (Exception ignored) {}
-        try (var s = new java.net.Socket()) { s.connect(new InetSocketAddress("8.8.8.8", 80), 3000); return s.getLocalAddress().getHostAddress(); }
-        catch (IOException e) { return "127.0.0.1"; }
-    }
-    private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
-    private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
-    // =========================================================================
+        int code = p.waitFor();
+        return code == 0 ? out.toString() : null;
+    } catch (Exception e) { return null; }
+}
+
+private static String detectDistro() {
+    try {
+        String c = Files.readString(Paths.get("/etc/os-release")).toLowerCase();
+        if (c.contains("debian") || c.contains("ubuntu")) return "debian";
+        if (c.contains("rhel") || c.contains("fedora") || c.contains("rocky") || c.contains("centos")) return "rhel";
+        if (c.contains("arch")) return "arch";
+    } catch (IOException ignored) {}
+    return "unknown";
+}
+
+private static String getLocalIP() {
+    try {
+        ProcessBuilder pb = new ProcessBuilder("bash", "-c", "ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for(i=1;i<=NF;i++) if($i==\"src\") print $(i+1)}'");
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        StringBuilder out = new StringBuilder();
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) { String l; while ((l = br.readLine()) != null) out.append(l); }
+        int code = p.waitFor();
+        String result = out.toString().trim();
+        if (code == 0 && !result.isEmpty() && result.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return result;
+    } catch (Exception ignored) {}
+    try (var s = new java.net.Socket()) { s.connect(new InetSocketAddress("8.8.8.8", 80), 3000); return s.getLocalAddress().getHostAddress(); }
+    catch (IOException e) { return "127.0.0.1"; }
+}
+
+private static boolean isRoot() { return System.getProperty("user.name").equals("root"); }
+private static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
+
+// =========================================================================
 // TEMPLATES DO BACKEND
 // =========================================================================
-    private static final String ASTRAL_APP_JAVA = """
+private static final String ASTRAL_APP_JAVA = """
     package com.astral.main;
     import org.springframework.boot.SpringApplication;
     import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -596,7 +588,8 @@ public class Installer {
         public static void main(String[] args) { SpringApplication.run(AstralApplication.class, args); }
     }
     """;
-    private static final String HOME_CONTROLLER_JAVA = """
+
+private static final String HOME_CONTROLLER_JAVA = """
     package com.astral.main.controller;
     import org.springframework.stereotype.Controller;
     import org.springframework.web.bind.annotation.GetMapping;
@@ -606,7 +599,8 @@ public class Installer {
         public String root() { return "redirect:/login/index.html"; }
     }
     """;
-    private static final String AUTH_FILTER_JAVA = """
+
+private static final String AUTH_FILTER_JAVA = """
     package com.astral.main.filter;
     import org.springframework.http.HttpCookie;
     import org.springframework.http.HttpStatus;
@@ -635,122 +629,23 @@ public class Installer {
         }
     }
     """;
-    private static final String SPNEGO_FILTER_JAVA = """
-    package com.astral.main.filter;
-    import org.springframework.core.annotation.Order;
-    import org.springframework.core.io.FileSystemResource;
-    import org.springframework.http.HttpCookie;
-    import org.springframework.http.HttpHeaders;
-    import org.springframework.http.HttpStatus;
-    import org.springframework.security.kerberos.authentication.KerberosTicketValidation;
-    import org.springframework.security.kerberos.authentication.sun.SunJaasKerberosTicketValidator;
-    import org.springframework.stereotype.Component;
-    import org.springframework.web.server.ServerWebExchange;
-    import org.springframework.web.server.WebFilter;
-    import org.springframework.web.server.WebFilterChain;
-    import reactor.core.publisher.Mono;
-    import reactor.core.scheduler.Schedulers;
-    import com.unboundid.ldap.sdk.*;
-    import java.nio.file.*;
-    import java.util.*;
 
-    @Component @Order(-100)
-    public class SpnegoAuthFilter implements WebFilter {
-        private final boolean enabled; private final boolean spnegoOk;
-        private final String domain; private final String bindUser; private final String bindPass;
-        private SunJaasKerberosTicketValidator validator = null;
-
-        public SpnegoAuthFilter() {
-            enabled = "true".equals(prop("astral.ad.enabled"));
-            spnegoOk = "true".equals(prop("astral.ad.spnego"));
-            domain = prop("astral.ad.domain"); bindUser = prop("astral.ad.user"); bindPass = prop("astral.ad.pass");
-            if (enabled && spnegoOk) {
-                try {
-                    SunJaasKerberosTicketValidator v = new SunJaasKerberosTicketValidator();
-                    v.setServicePrincipal(prop("astral.ad.spn"));
-                    v.setKeyTabLocation(new FileSystemResource(prop("astral.ad.keytab")));
-                    v.afterPropertiesSet();
-                    validator = v;
-                } catch (Exception e) { validator = null; }
-            }
-        }
-
-        private static String prop(String k) {
-            try {
-                for (String l : Files.readAllLines(Paths.get("/etc/astral/ad.properties"))) {
-                    if (l.startsWith(k + "=")) return l.substring(k.length() + 1).trim();
-                }
-            } catch (Exception ignored) {}
-            return "";
-        }
-
-        @Override
-        public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-            if (!enabled || validator == null) return chain.filter(exchange);
-            String path = exchange.getRequest().getURI().getPath();
-            if (path.startsWith("/api/auth/") || path.startsWith("/login/") || path.startsWith("/css/") ||
-                path.startsWith("/js/") || path.startsWith("/images/") || path.startsWith("/fonts/")) return chain.filter(exchange);
-            if (exchange.getRequest().getCookies().getFirst("astral_token") != null) return chain.filter(exchange);
-
-            String auth = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
-            if (auth != null && auth.startsWith("Negotiate ")) {
-                try {
-                    byte[] ticket = Base64.getDecoder().decode(auth.substring(10));
-                    KerberosTicketValidation val = validator.validateTicket(ticket);
-                    String principal = val.username();
-                    String uname = principal.contains("@") ? principal.split("@")[0] : principal;
-
-                    return getLdapGroupsReactive(uname).flatMap(groups -> {
-                        boolean admin = groups.stream().anyMatch(g -> g.equalsIgnoreCase("Domain Admins") ||
-                                g.equalsIgnoreCase("Administrators") || g.equalsIgnoreCase("Enterprise Admins"));
-                        String token = UUID.randomUUID().toString();
-                        ServerWebExchange mutated = exchange.mutate().request(r ->
-                                r.cookies(c -> {
-                                    c.add("astral_token", new HttpCookie("astral_token", token));
-                                    c.add("astral_user", new HttpCookie("astral_user", uname));
-                                    c.add("astral_admin", new HttpCookie("astral_admin", admin ? "1" : "0"));
-                                })).build();
-                        mutated.getResponse().getCookies().add("astral_token", new HttpCookie("astral_token", token));
-                        mutated.getResponse().getCookies().add("astral_user", new HttpCookie("astral_user", uname));
-                        return chain.filter(mutated);
-                    });
-                } catch (Exception ignored) { }
-            }
-            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-            exchange.getResponse().getHeaders().add(HttpHeaders.WWW_AUTHENTICATE, "Negotiate");
-            return exchange.getResponse().setComplete();
-        }
-
-        private Mono<List<String>> getLdapGroupsReactive(String user) {
-            return Mono.fromCallable(() -> {
-                List<String> out = new ArrayList<>();
-                try (LDAPConnection conn = new LDAPConnection(domain, 389)) {
-                    conn.bind(bindUser + "@" + domain, bindPass);
-                    SearchRequest req = new SearchRequest("", SearchScope.SUB, "(&(objectClass=user)(sAMAccountName=" + user + "))", "memberOf");
-                    for (SearchResultEntry entry : conn.search(req).getSearchEntries()) {
-                        String[] mo = entry.getAttributeValues("memberOf");
-                        if (mo != null) {
-                            for (String dn : mo) {
-                                for (String part : dn.split(",")) {
-                                    if (part.trim().toLowerCase().startsWith("cn=")) out.add(part.trim().substring(3));
-                                }
-                            }
-                        }
-                    }
-                } catch (Exception ignored) {}
-                return out;
-            }).subscribeOn(Schedulers.boundedElastic());
-        }
-    }
-    """;
-    private static final String LOGIN_CONTROLLER_JAVA = """
+private static final String LOGIN_CONTROLLER_JAVA = """
     package com.astral.main.controller;
+    import com.unboundid.ldap.sdk.LDAPConnection;
+    import com.unboundid.ldap.sdk.SearchResult;
+    import com.unboundid.ldap.sdk.SearchResultEntry;
+    import com.unboundid.ldap.sdk.SearchScope;
+    import com.unboundid.util.ssl.SSLUtil;
+    import com.unboundid.util.ssl.TrustAllTrustManager;
     import org.springframework.http.HttpStatus;
     import org.springframework.http.ResponseEntity;
     import org.springframework.web.bind.annotation.*;
     import reactor.core.publisher.Mono;
-    import javax.naming.directory.*;
-    import javax.naming.*;
+    import reactor.core.scheduler.Schedulers;
+    import javax.net.ssl.SSLSocketFactory;
+    import java.nio.file.Files;
+    import java.nio.file.Paths;
     import java.sql.Connection;
     import java.sql.DriverManager;
     import java.sql.SQLException;
@@ -764,29 +659,31 @@ public class Installer {
             return Mono.fromCallable(() -> {
                 String username = credentials.get("username");
                 String password = credentials.get("password");
-                String mode = credentials.getOrDefault("mode", "BD");
                 Map<String, Object> response = new HashMap<>();
-                if ("AD".equals(mode)) {
-                    String dom = prop("astral.ad.domain");
-                    if (dom != null && !dom.isBlank() && ldapBind(username + "@" + dom, password)) {
-                        List<String> groups = ldapGroups(username, dom);
-                        boolean admin = groups.stream().anyMatch(g -> g.equalsIgnoreCase("Domain Admins") ||
-                                g.equalsIgnoreCase("Administrators") || g.equalsIgnoreCase("Enterprise Admins"));
+                String domain = prop("astral.ad.domain");
+                if (domain != null && !domain.isBlank() && password != null && !password.isBlank()) {
+                    List<String> groups = adAuth(username, password, domain);
+                    if (groups != null) {
+                        boolean admin = isAdAdmin(groups);
                         if (admin) provisionAdmin(username);
                         response.put("success", true);
                         response.put("token", UUID.randomUUID().toString());
+                        response.put("tipo", "AD");
+                        response.put("tipoUsuario", 3);
+                        response.put("tipoLabel", "AD");
                         response.put("groups", groups);
                         response.put("admin", admin);
-                        response.put("message", "Autenticado via AD");
+                        response.put("message", "Autenticado via Active Directory");
                         return ResponseEntity.ok(response);
                     }
-                    response.put("success", false);
-                    response.put("message", "Falha de autenticação no AD");
-                    return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
                 }
                 try (Connection c = DriverManager.getConnection("jdbc:postgresql://127.0.0.1:5432/astral", username, password)) {
                     response.put("success", true);
                     response.put("token", UUID.randomUUID().toString());
+                    response.put("tipo", "BD");
+                    response.put("tipoUsuario", 2);
+                    response.put("tipoLabel", "BD");
+                    response.put("admin", true);
                     response.put("message", "Autenticado com sucesso");
                     return ResponseEntity.ok(response);
                 } catch (SQLException e) {
@@ -794,10 +691,47 @@ public class Installer {
                     response.put("message", "Falha de autenticação: " + e.getMessage());
                     return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(response);
                 }
-            });
+            }).subscribeOn(Schedulers.boundedElastic());
         }
-        // Admins do AD = sudo/root no Linux e superuser no Postgres
+        private List<String> adAuth(String user, String pass, String domain) {
+            try (LDAPConnection conn = connect(domain)) {
+                String principal = user.contains("@") ? user : user + "@" + domain;
+                conn.bind(principal, pass);
+                String sam = user.contains("@") ? user.split("@")[0] : user;
+                SearchResult sr = conn.search("", SearchScope.SUB,
+                        "(&(objectClass=user)(sAMAccountName=" + sam + "))", "memberOf");
+                List<String> groups = new ArrayList<>();
+                for (SearchResultEntry e : sr.getSearchEntries()) {
+                    String[] mo = e.getAttributeValues("memberOf");
+                    if (mo != null) for (String dn : mo) groups.add(cnOf(dn));
+                }
+                if (groups.isEmpty()) groups.add("Domain Users");
+                return groups;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        private LDAPConnection connect(String domain) throws Exception {
+            try {
+                SSLUtil sslUtil = new SSLUtil(new TrustAllTrustManager());
+                SSLSocketFactory sf = sslUtil.createSSLSocketFactory();
+                LDAPConnection conn = new LDAPConnection(sf);
+                conn.connect(domain, 636, 5000);
+                return conn;
+            } catch (Exception e) {
+                LDAPConnection conn = new LDAPConnection();
+                conn.connect(domain, 389, 5000);
+                return conn;
+            }
+        }
+        private boolean isAdAdmin(List<String> groups) {
+            return groups.stream().anyMatch(g ->
+                    g.equalsIgnoreCase("Domain Admins") ||
+                    g.equalsIgnoreCase("Administrators") ||
+                    g.equalsIgnoreCase("Enterprise Admins"));
+        }
         private void provisionAdmin(String user) {
+            String safe = user.replaceAll("[\"'\\\\\\\\]", "");
             try {
                 Properties props = new Properties();
                 props.setProperty("user", "astral");
@@ -807,60 +741,31 @@ public class Installer {
                 props.setProperty("sslkey", "/etc/astral/certs/client-astral.pk8");
                 props.setProperty("sslrootcert", "/etc/astral/certs/root.crt");
                 try (Connection c = DriverManager.getConnection("jdbc:postgresql://127.0.0.1:5432/astral", props)) {
-                    c.createStatement().execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '" + user + "') THEN CREATE ROLE \\"" + user + "\\" LOGIN SUPERUSER; ELSE ALTER ROLE \\"" + user + "\\" LOGIN SUPERUSER; END IF; END $$;");
+                    c.createStatement().execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='" + safe + "') THEN CREATE ROLE \\"" + safe + "\\" LOGIN SUPERUSER; ELSE ALTER ROLE \\"" + safe + "\\" LOGIN SUPERUSER; END IF; END $$;");
                 }
             } catch (Exception ignored) {}
-            runSh("id " + user + " >/dev/null 2>&1 && usermod -aG wheel " + user + " 2>/dev/null || true");
-        }
-        private boolean ldapBind(String principal, String pass) {
             try {
-                Hashtable<String, String> env = new Hashtable<>();
-                env.put("java.naming.factory.initial", "com.sun.jndi.ldap.LdapCtxFactory");
-                env.put("java.naming.provider.url", "ldap://" + prop("astral.ad.domain") + ":389");
-                env.put("java.naming.security.authentication", "simple");
-                env.put("java.naming.security.principal", principal);
-                env.put("java.naming.security.credentials", pass);
-                DirContext ctx = new InitialDirContext(env);
-                ctx.close();
-                return true;
-            } catch (Exception e) { return false; }
-        }
-        private List<String> ldapGroups(String user, String dom) {
-            List<String> out = new ArrayList<>();
-            try {
-                Hashtable<String, String> env = new Hashtable<>();
-                env.put("java.naming.factory.initial", "com.sun.jndi.ldap.LdapCtxFactory");
-                env.put("java.naming.provider.url", "ldap://" + dom + ":389");
-                env.put("java.naming.security.authentication", "simple");
-                env.put("java.naming.security.principal", prop("astral.ad.user") + "@" + dom);
-                env.put("java.naming.security.credentials", prop("astral.ad.pass"));
-                DirContext ctx = new InitialDirContext(env);
-                SearchControls sc = new SearchControls();
-                sc.setSearchScope(SearchControls.SUBTREE_SCOPE);
-                NamingEnumeration<SearchResult> en = ctx.search("", "(&(objectClass=user)(sAMAccountName=" + user + "))", sc);
-                while (en.hasMore()) {
-                    SearchResult r = en.next();
-                    Attribute mo = r.getAttributes().get("memberOf");
-                    if (mo != null) for (int i = 0; i < mo.size(); i++) {
-                        String dn = String.valueOf(mo.get(i));
-                        for (String part : dn.split(",")) if (part.trim().toLowerCase().startsWith("cn=")) out.add(part.trim().substring(3));
-                    }
-                }
-                ctx.close();
+                new ProcessBuilder("bash", "-c", "id " + safe + " >/dev/null 2>&1 && usermod -aG wheel " + safe + " || true")
+                        .start().waitFor();
             } catch (Exception ignored) {}
-            return out;
+        }
+        private String cnOf(String dn) {
+            for (String part : dn.split(",")) {
+                if (part.trim().toLowerCase().startsWith("cn=")) return part.trim().substring(3);
+            }
+            return dn;
         }
         private static String prop(String k) {
             try {
-                for (String l : java.nio.file.Files.readAllLines(java.nio.file.Paths.get("/etc/astral/ad.properties")))
+                for (String l : Files.readAllLines(Paths.get("/etc/astral/ad.properties")))
                     if (l.startsWith(k + "=")) return l.substring(k.length() + 1).trim();
             } catch (Exception ignored) {}
-            return "";
+            return null;
         }
-        private void runSh(String c) { try { new ProcessBuilder("bash", "-c", c).redirectErrorStream(true).start().waitFor(); } catch (Exception ignored) {} }
     }
     """;
-    private static final String WS_CONFIG_JAVA = """
+
+private static final String WS_CONFIG_JAVA = """
     package com.astral.main.config;
     import org.springframework.context.annotation.Bean;
     import org.springframework.context.annotation.Configuration;
@@ -884,7 +789,8 @@ public class Installer {
         public WebSocketHandlerAdapter webSocketHandlerAdapter() { return new WebSocketHandlerAdapter(); }
     }
     """;
-    private static final String WS_HANDLER_JAVA = """
+
+private static final String WS_HANDLER_JAVA = """
     package com.astral.main.config;
     import org.springframework.stereotype.Component;
     import org.springframework.web.reactive.socket.WebSocketHandler;
@@ -929,7 +835,8 @@ public class Installer {
         }
     }
     """;
-    private static final String PROXY_CONTROLLER_JAVA = """
+
+private static final String PROXY_CONTROLLER_JAVA = """
     package com.astral.main.controller;
     import org.springframework.http.ResponseEntity;
     import org.springframework.web.bind.annotation.RequestMapping;
@@ -973,7 +880,8 @@ public class Installer {
         }
     }
     """;
-    private static final String DB_BOOTSTRAP_JAVA = """
+
+private static final String DB_BOOTSTRAP_JAVA = """
     package com.astral.main.config;
     import org.springframework.beans.factory.annotation.Value;
     import org.springframework.boot.context.event.ApplicationReadyEvent;
