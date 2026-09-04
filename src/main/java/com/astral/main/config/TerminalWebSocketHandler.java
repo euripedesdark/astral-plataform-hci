@@ -1,48 +1,49 @@
 package com.astral.main.config;
 
-import org.springframework.web.socket.*;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
-import java.io.*;
+import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.socket.WebSocketHandler;
+import org.springframework.web.reactive.socket.WebSocketMessage;
+import org.springframework.web.reactive.socket.WebSocketSession;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
-public class TerminalWebSocketHandler extends TextWebSocketHandler {
-    private final Map<String, Process> sessions = new ConcurrentHashMap<>();
-
+@Component
+public class TerminalWebSocketHandler implements WebSocketHandler {
     @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-        ProcessBuilder pb = new ProcessBuilder("script", "-qfc", "/bin/bash", "/dev/null");
-        pb.environment().put("TERM", "dumb");
-        pb.directory(new File("/root"));
-        Process proc = pb.start();
-        sessions.put(session.getId(), proc);
-        Thread t = new Thread(() -> {
-            try (InputStream in = proc.getInputStream()) {
-                byte[] buf = new byte[4096]; int n;
-                while ((n = in.read(buf)) != -1) {
-                    synchronized (session) {
-                        if (session.isOpen())
-                            session.sendMessage(new TextMessage(new String(buf, 0, n, StandardCharsets.UTF_8)));
-                    }
-                }
-            } catch (IOException ignored) {}
+    public Mono<Void> handle(WebSocketSession session) {
+        final Process proc;
+        try {
+            ProcessBuilder pb = new ProcessBuilder("script", "-qfc", "/bin/bash", "/dev/null");
+            pb.environment().put("TERM", "dumb");
+            pb.directory(new File("/root"));
+            proc = pb.start();
+        } catch (IOException e) { return session.close(); }
+
+        Flux<WebSocketMessage> output = Flux.create(sink -> {
+            Thread t = new Thread(() -> {
+                try (InputStream in = proc.getInputStream()) {
+                    byte[] buf = new byte[4096]; int n;
+                    while ((n = in.read(buf)) != -1)
+                        sink.next(session.textMessage(new String(buf, 0, n, StandardCharsets.UTF_8)));
+                } catch (IOException ignored) {}
+                sink.complete();
+            });
+            t.setDaemon(true); t.start();
         });
-        t.setDaemon(true); t.start();
-    }
 
-    @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-        Process p = sessions.get(session.getId());
-        if (p != null && p.isAlive()) {
-            p.getOutputStream().write(message.getPayload().getBytes(StandardCharsets.UTF_8));
-            p.getOutputStream().flush();
-        }
-    }
+        Mono<Void> send = session.send(output);
+        Mono<Void> recv = session.receive().doOnNext(msg -> {
+            try {
+                proc.getOutputStream().write(msg.getPayloadAsText().getBytes(StandardCharsets.UTF_8));
+                proc.getOutputStream().flush();
+            } catch (IOException ignored) {}
+        }).then();
 
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        Process p = sessions.remove(session.getId());
-        if (p != null) p.destroyForcibly();
+        return Mono.zip(send, recv).then().doFinally(s -> proc.destroyForcibly());
     }
 }

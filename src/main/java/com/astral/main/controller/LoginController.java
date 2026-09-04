@@ -32,7 +32,7 @@ public class LoginController {
             String password = credentials.get("password");
             Map<String, Object> response = new HashMap<>();
 
-            // ===== 1) ACTIVE DIRECTORY (prioridade) =====
+            // 1) Tenta Active Directory (UnboundID)
             String domain = prop("astral.ad.domain");
             if (domain != null && !domain.isBlank() && password != null && !password.isBlank()) {
                 List<String> groups = adAuth(username, password, domain);
@@ -51,7 +51,7 @@ public class LoginController {
                 }
             }
 
-            // ===== 2) FALLBACK: banco local =====
+            // 2) Fallback: Banco local (PostgreSQL)
             try (Connection c = DriverManager.getConnection("jdbc:postgresql://127.0.0.1:5432/astral", username, password)) {
                 response.put("success", true);
                 response.put("token", UUID.randomUUID().toString());
@@ -69,7 +69,6 @@ public class LoginController {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    // ===== Bind no AD (LDAPS 636 trust-all, fallback 389) + grupos memberOf =====
     private List<String> adAuth(String user, String pass, String domain) {
         try (LDAPConnection conn = connect(domain)) {
             String principal = user.contains("@") ? user : user + "@" + domain;
@@ -85,7 +84,7 @@ public class LoginController {
             if (groups.isEmpty()) groups.add("Domain Users");
             return groups;
         } catch (Exception e) {
-            return null; // credencial AD inválida → cai no fallback
+            return null;
         }
     }
 
@@ -110,7 +109,6 @@ public class LoginController {
                 g.equalsIgnoreCase("Enterprise Admins"));
     }
 
-    // Admin do AD = superuser no Postgres + wheel no Linux
     private void provisionAdmin(String user) {
         String safe = user.replaceAll("[\"'\\\\]", "");
         try {

@@ -11,7 +11,6 @@ import java.util.Map;
 
 @Configuration
 public class WebSocketConfig {
-
     @Bean
     public HandlerMapping terminalWebSocketMapping(TerminalWebSocketHandler handler) {
         Map<String, Object> map = new HashMap<>();
