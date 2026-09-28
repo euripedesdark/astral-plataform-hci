@@ -1,0 +1,3 @@
+export async function api(path,options={}){const r=await fetch(path,{credentials:'same-origin',headers:{...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})},...options});if(r.status===401)throw new Error('Sessão expirada');const t=await r.text();let d=null;try{d=t?JSON.parse(t):null}catch{d=t}if(!r.ok)throw new Error(d?.message||r.statusText);return d}
+export const login=(username,password)=>api('/api/auth/login',{method:'POST',body:JSON.stringify({username,password})});
+export const me=()=>api('/api/auth/me');export const logout=()=>api('/api/auth/logout',{method:'POST'});
