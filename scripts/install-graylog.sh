@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GRAYLOG_VERSION="${GRAYLOG_VERSION:-7.1}"
 MONGO_URI="${GRAYLOG_MONGO_URI:-mongodb://127.0.0.1:27017}"
 MONGO_ADMIN_USER="${MONGO_ADMIN_USER:-admin}"
@@ -30,5 +31,5 @@ install -d -m 0750 /etc/graylog/datanode;touch "$DN"
 sed -i '/^mongodb_uri[[:space:]]*=/d;/^password_secret[[:space:]]*=/d;/^root_password_sha2[[:space:]]*=/d' "$DN"
 printf 'mongodb_uri = %s/%s?authSource=%s\npassword_secret = %s\nroot_password_sha2 = %s\n' "$MONGO_URI" "$GRAYLOG_DB" "$GRAYLOG_DB" "$SECRET" "$ROOT_HASH" >> "$DN"
 systemctl daemon-reload
-systemctl enable --now graylog-datanode.service graylog-server.service\nGRAYLOG_ADMIN_PASSWORD="$GRAYLOG_ADMIN_PASSWORD" "$PWD/scripts/configure-graylog-input.sh"
+systemctl enable --now graylog-datanode.service graylog-server.service\nGRAYLOG_ADMIN_PASSWORD="$GRAYLOG_ADMIN_PASSWORD" "$SCRIPT_DIR/configure-graylog-input.sh"
 echo "[OK] Graylog usa o database Mongo '$GRAYLOG_DB'; collections são criadas pelo Graylog."
