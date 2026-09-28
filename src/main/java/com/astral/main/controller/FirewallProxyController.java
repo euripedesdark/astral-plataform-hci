@@ -1,10 +1,14 @@
 package com.astral.main.controller;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import java.net.URI;
-import java.net.http.*;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.io.IOException;
 
@@ -17,7 +21,7 @@ public class FirewallProxyController {
  @RequestMapping(value="/**",method={RequestMethod.GET,RequestMethod.POST,RequestMethod.PUT,RequestMethod.DELETE})
  public ResponseEntity<byte[]> proxy(HttpServletRequest req,@RequestBody(required=false)byte[] body)throws IOException,InterruptedException{
   String prefix="/api/firewall";String path=req.getRequestURI().startsWith(prefix)?req.getRequestURI().substring(prefix.length()):"/";
-  String target=base+path+(req.getQueryString()==null?"":"?"+req.getQueryString());
+  String target=base+"/api"+path+(req.getQueryString()==null?"":"?"+req.getQueryString());
   HttpRequest.BodyPublisher publisher=body==null?HttpRequest.BodyPublishers.noBody():HttpRequest.BodyPublishers.ofByteArray(body);
   HttpRequest.Builder b=HttpRequest.newBuilder(URI.create(target)).timeout(Duration.ofSeconds(60)).method(req.getMethod(),publisher);
   if(req.getContentType()!=null)b.header("Content-Type",req.getContentType());
