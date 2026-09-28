@@ -18,12 +18,21 @@ public class ProxyAuthorizationServer {
  private void handle(HttpExchange ex)throws IOException{
   String h=ex.getRequestHeaders().getFirst("Proxy-Authorization");
   if(h==null)h=ex.getRequestHeaders().getFirst("Authorization");
-  if(h==null||!h.startsWith("Basic ")){ex.getResponseHeaders().set("WWW-Authenticate","Basic realm=\"Astral Proxy\"");ex.sendResponseHeaders(401,-1);return;}
+  if(h==null||!h.startsWith("Basic ")){challenge(ex);return;}
   try{
    String raw=new String(Base64.getDecoder().decode(h.substring(6)),StandardCharsets.UTF_8);int i=raw.indexOf(':');if(i<1)throw new BadCredentialsException("bad");
    manager.authenticate(new UsernamePasswordAuthenticationToken(raw.substring(0,i),raw.substring(i+1)));
+   ex.getResponseHeaders().set("Proxy-Authenticate","Basic realm=\"Astral Proxy\"");
    ex.sendResponseHeaders(200,-1);
-  }catch(Exception e){ex.sendResponseHeaders(403,-1);}
+  }catch(Exception e){
+   // RFC 7235: falha de AUTENTICACAO e 401 + Proxy-Authenticate. Antes devolvia 403, e um
+   // cliente so reenvia credencial ao ver 401 - com 403 o proxy nunca voltava a perguntar.
+   challenge(ex);
+  }
+ }
+ private void challenge(HttpExchange ex)throws IOException{
+  ex.getResponseHeaders().set("Proxy-Authenticate","Basic realm=\"Astral Proxy\"");
+  ex.sendResponseHeaders(401,-1);
  }
  @PreDestroy public void stop(){if(server!=null)server.stop(1);}
 }

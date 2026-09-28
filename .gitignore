@@ -42,3 +42,11 @@ build/
 dist/
 *.egg-info/
 ```
+# Java / Maven
+target/
+*.jar
+
+# Node / frontend React (Vite)
+node_modules/
+# saida do build do Vite, regenerada por install-astral.sh
+src/main/resources/static/app/

@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -18,6 +19,11 @@ public class FirewallProxyController {
  private final HttpClient client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
  private final String base;
  public FirewallProxyController(@Value("${astral.firewall.url:http://127.0.0.1:8040}")String base){this.base=base;}
+ // Antes isso so exigia estar autenticado: qualquer ROLE_ASTRAL_USER (o papel MINIMO que o
+ // provider concede) alcancava PUT e DELETE no firewall :8040. O provider calculava
+ // ROLE_ASTRAL_ADMIN a partir do grupo do AD e do pg_has_role, e NINGUEM lia o resultado.
+ // Agora a porta administrativa e restrita, e o papel que ja era concedido passa a valer.
+ @PreAuthorize("hasRole('ASTRAL_ADMIN')")
  @RequestMapping(value="/**",method={RequestMethod.GET,RequestMethod.POST,RequestMethod.PUT,RequestMethod.DELETE})
  public ResponseEntity<byte[]> proxy(HttpServletRequest req,@RequestBody(required=false)byte[] body)throws IOException,InterruptedException{
   String prefix="/api/firewall";String path=req.getRequestURI().startsWith(prefix)?req.getRequestURI().substring(prefix.length()):"/";
