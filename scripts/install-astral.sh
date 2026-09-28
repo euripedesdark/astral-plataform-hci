@@ -34,5 +34,6 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable --now astral-platform
+"$ROOT/scripts/configure-system-firewall.sh"
 if command -v traffic_ctl >/dev/null || [[ -x /opt/trafficserver/bin/traffic_ctl ]];then "$ROOT/scripts/configure-ats-auth.sh";fi
 echo "[OK] Deploy concluído sem apagar firewall, PostgreSQL, Samba AD ou ATS."
