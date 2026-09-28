@@ -1,7 +1,0 @@
-flask
-flask-sqlalchemy
-flask-cors
-psycopg2-binary
-requests
-apscheduler
-jinja2

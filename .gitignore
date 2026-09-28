@@ -27,6 +27,7 @@ Thumbs.db
 .env
 .env.local
 *.env.*
+!*.env.example
 
 # Coverage reports
 .coverage
@@ -50,3 +51,6 @@ target/
 node_modules/
 # saida do build do Vite, regenerada por install-astral.sh
 src/main/resources/static/app/
+
+# segredo do Samba AD: fica no disco, nunca no repo (ver auth.env.example)
+auth.env
