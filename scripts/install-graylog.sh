@@ -19,7 +19,7 @@ elif command -v dnf >/dev/null||command -v yum >/dev/null;then
  rpm -Uvh "https://packages.graylog2.org/repo/packages/graylog-$GRAYLOG_VERSION-repository_latest.rpm"||true
  (dnf install -y graylog-datanode graylog-server 2>/dev/null||yum install -y graylog-datanode graylog-server)
 else echo "[ERRO] Distribuição não suportada.";exit 3;fi
-SECRET="$(tr -dc A-Za-z0-9 </dev/urandom|head -c 96)"
+SECRET="$(openssl rand -hex 48)"
 ROOT_HASH="$(printf '%s' "$GRAYLOG_ADMIN_PASSWORD"|sha256sum|awk '{print $1}')"
 CFG=/etc/graylog/server/server.conf
 install -d -m 0750 /etc/graylog/server;touch "$CFG"
