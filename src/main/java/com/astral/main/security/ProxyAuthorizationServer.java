@@ -18,7 +18,7 @@ public class ProxyAuthorizationServer {
  private void handle(HttpExchange ex)throws IOException{
   String h=ex.getRequestHeaders().getFirst("Proxy-Authorization");
   if(h==null)h=ex.getRequestHeaders().getFirst("Authorization");
-  if(h==null||!h.startsWith("Basic ")){ex.getResponseHeaders().set("WWW-Authenticate","Basic realm="Astral Proxy"");ex.sendResponseHeaders(401,-1);return;}
+  if(h==null||!h.startsWith("Basic ")){ex.getResponseHeaders().set("WWW-Authenticate","Basic realm=\\"Astral Proxy\\"");ex.sendResponseHeaders(401,-1);return;}
   try{
    String raw=new String(Base64.getDecoder().decode(h.substring(6)),StandardCharsets.UTF_8);int i=raw.indexOf(':');if(i<1)throw new BadCredentialsException("bad");
    manager.authenticate(new UsernamePasswordAuthenticationToken(raw.substring(0,i),raw.substring(i+1)));
