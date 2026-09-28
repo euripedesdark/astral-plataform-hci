@@ -8,7 +8,7 @@ install -d -m 0750 /etc/astral /opt/astral-platform
 [[ -e /etc/astral/ad.properties ]]&&cp -a /etc/astral/ad.properties "/etc/astral/ad.properties.astral.bak.$(date +%s)"||true
 [[ -e /etc/trafficserver/plugin.config ]]&&cp -a /etc/trafficserver/plugin.config "/etc/trafficserver/plugin.config.astral.bak.$(date +%s)"||true
 cd "$ROOT"
-if command -v npm >/dev/null && [[ -f src/main/resources/static/react/package.json ]]; then (cd src/main/resources/static/react && npm install && npm run build);fi
+if command -v npm >/dev/null && [[ -f src/main/resources/static/react/package.json ]]; then\n  if [[ ! -f src/main/resources/static/react/index.html ]]; then\n    echo "[ERRO] Frontend Vite sem index.html em src/main/resources/static/react."\n    echo "[ERRO] O build foi interrompido para não gerar um artefato inválido."\n    exit 1\n  fi\n  (cd src/main/resources/static/react && npm install && npm run build)\nfi
 mvn -DskipTests clean package
 JAR="$(find target -maxdepth 1 -type f -name '*.jar' ! -name '*sources*'|head -1)"
 [[ -n "$JAR" ]]||{ echo "[ERRO] JAR não gerado.";exit 1; }
