@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-GRAYLOG_VERSION="$GRAYLOG_VERSION"; : "${GRAYLOG_VERSION:=7.1}"
-MONGO_URI="$GRAYLOG_MONGO_URI"; : "${MONGO_URI:=mongodb://127.0.0.1:27017}"
-MONGO_ADMIN_USER="$MONGO_ADMIN_USER"; : "${MONGO_ADMIN_USER:=admin}"
-GRAYLOG_DB="$GRAYLOG_DB"; : "${GRAYLOG_DB:=graylog}"
-GRAYLOG_DB_USER="$GRAYLOG_DB_USER"; : "${GRAYLOG_DB_USER:=graylog}"
+GRAYLOG_VERSION="${GRAYLOG_VERSION:-7.1}"
+MONGO_URI="${GRAYLOG_MONGO_URI:-mongodb://127.0.0.1:27017}"
+MONGO_ADMIN_USER="${MONGO_ADMIN_USER:-admin}"
+GRAYLOG_DB="${GRAYLOG_DB:-graylog}"
+GRAYLOG_DB_USER="${GRAYLOG_DB_USER:-graylog}"
 read -rsp "Senha do administrador MongoDB [$MONGO_ADMIN_USER]: " MONGO_ADMIN_PASSWORD;echo
 read -rsp "Senha do usuário MongoDB [$GRAYLOG_DB_USER]: " GRAYLOG_DB_PASSWORD;echo
 command -v mongosh >/dev/null||{ echo "[ERRO] mongosh ausente.";exit 1; }
@@ -24,4 +24,4 @@ install -d -m 0750 /etc/graylog/server;touch "$CFG"
 sed -i '/^mongodb_uri[[:space:]]*=/d;/^password_secret[[:space:]]*=/d;/^http_bind_address[[:space:]]*=/d' "$CFG"
 printf 'mongodb_uri = %s/%s?authSource=%s\npassword_secret = %s%s\nhttp_bind_address = 127.0.0.1:9000\n' "$MONGO_URI" "$GRAYLOG_DB" "$GRAYLOG_DB" "$SECRET" "$SECRET" >> "$CFG"
 systemctl daemon-reload;systemctl enable --now graylog-datanode.service graylog-server.service
-echo "[OK] Graylog usa o database Mongo '$GRAYLOG_DB'; as collections são criadas pelo Graylog."
+echo "[OK] Graylog usa o database Mongo '$GRAYLOG_DB'; collections são criadas pelo Graylog."
