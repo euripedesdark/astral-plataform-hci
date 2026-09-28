@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-CFG="$ATS_CONFIG_DIR"
-: "${CFG:=}"
+CFG="${ATS_CONFIG_DIR:-}"
 if [[ -z "$CFG" ]]; then [[ -d /etc/trafficserver ]]&&CFG=/etc/trafficserver||CFG=/opt/trafficserver/etc/trafficserver; fi
 [[ -d "$CFG" ]]||{ echo "[ERRO] ATS não encontrado"; exit 1; }
-touch "$CFG/plugin.config"
 cp -a "$CFG/plugin.config" "$CFG/plugin.config.astral.bak.$(date +%s)" 2>/dev/null || true
+touch "$CFG/plugin.config"
 grep -q 'authproxy.so' "$CFG/plugin.config" || echo 'authproxy.so --auth-transform=redirect --auth-host=127.0.0.1 --auth-port=8091' >> "$CFG/plugin.config"
 if [[ -f "$CFG/records.yaml" ]]; then
  grep -q 'doc_in_cache_skip_dns' "$CFG/records.yaml" || cat >> "$CFG/records.yaml" <<'EOF'
