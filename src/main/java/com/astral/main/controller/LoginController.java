@@ -24,7 +24,8 @@ public class LoginController {
    // session fixation) continua valida; so faltava garantir a sessao.
    req.getSession(true);req.changeSessionId();
    SecurityContext ctx=SecurityContextHolder.createEmptyContext();ctx.setAuthentication(auth);SecurityContextHolder.setContext(ctx);repository.saveContext(ctx,req,res);
-   return ResponseEntity.ok(Map.of("authenticated",true,"username",auth.getName(),"authorities",auth.getAuthorities()));
+   String src=(auth.getPrincipal() instanceof com.astral.main.security.AstralPrincipal ap)?ap.getSource():"?";
+   return ResponseEntity.ok(Map.of("authenticated",true,"username",auth.getName(),"source",src,"authorities",auth.getAuthorities()));
   // Fonte de autenticacao fora do ar (AD sem rede, CA do LDAP nao confia, banco fora):
   // antes caia no catch de baixo e respondia "Usuário ou senha inválidos.", o que e
   // mentira - a senha pode estar certa. Alem disso escondia a causa real no journal e
@@ -39,7 +40,8 @@ public class LoginController {
  @GetMapping("/me")
  public ResponseEntity<?> me(Authentication auth){
   if(auth==null||!auth.isAuthenticated())return ResponseEntity.status(401).build();
-  return ResponseEntity.ok(Map.of("authenticated",true,"username",auth.getName(),"authorities",auth.getAuthorities()));
+  String src=(auth.getPrincipal() instanceof com.astral.main.security.AstralPrincipal ap)?ap.getSource():"?";
+  return ResponseEntity.ok(Map.of("authenticated",true,"username",auth.getName(),"source",src,"authorities",auth.getAuthorities()));
  }
  @PostMapping("/logout")
  public ResponseEntity<?> logout(HttpServletRequest req){

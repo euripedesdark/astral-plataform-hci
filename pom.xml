@@ -20,8 +20,8 @@
   precisa declarar <build>, declarar <resources> sem replicar as duas quebraria o
   filtering das propriedades, e o ${...} passaria a ir literal para o jar.
 
-  O exclude de node_modules e o motivo de existir: node_modules vive em
-  src/main/resources/static/react/, entao o Maven copiava 5.249 arquivos de
+  O exclude de node_modules e o motivo de existir: node_modules vivia em
+  src/main/resources/static/react/ (agora em frontend/), entao o Maven copiava 5.249 arquivos de
   dependencia de JavaScript para dentro do jar. O artefato tinha 109 MB dos quais
   12 arquivos eram o build de verdade e 69 as dependencias Java. Nada disso e
   servido em runtime: o que a app precisa de estatico e so o resultado do build
@@ -43,7 +43,7 @@
       <exclude>**/application*.yml</exclude>
       <exclude>**/application*.yaml</exclude>
       <exclude>**/application*.properties</exclude>
-      <exclude>static/react/node_modules/**</exclude>
+      <exclude>frontend/node_modules/**</exclude>
     </excludes>
   </resource>
 </resources>

@@ -21,7 +21,7 @@ public class SecurityConfig {
     // funcional para a tela. /login, /home e /inicio sao os outros apelidos do mesmo
     // HomeController e tinham o mesmo problema. A API continua protegida por
     // anyRequest().authenticated().
-    .requestMatchers("/","/login","/home","/inicio","/app/**","/assets/**","/favicon.ico","/api/auth/login","/error").permitAll()
+    .requestMatchers("/","/login","/home","/inicio","/app/**","/assets/**","/favicon.ico","/api/auth/login","/api/certs/ca/download","/error").permitAll()
     .requestMatchers("/actuator/**").permitAll()
     .anyRequest().authenticated())
    .exceptionHandling(e->e.authenticationEntryPoint((req,res,ex)->res.sendError(401)));

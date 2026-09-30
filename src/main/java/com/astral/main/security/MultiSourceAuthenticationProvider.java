@@ -25,39 +25,52 @@ public class MultiSourceAuthenticationProvider implements AuthenticationProvider
  @Value("${astral.auth.postgres.url:jdbc:postgresql://127.0.0.1:5432/astral}") String pgUrl;
  @Value("${astral.auth.postgres.admin-role:astral_admin}") String pgAdminRole;
 
- /**
-  * SEM fallback silencioso entre fontes.
-  *
-  * Antes cada fonte envolvia tudo em catch(Exception ignored), entao senha errada no AD
-  * levantava LDAPException, o ignored engolia, e a autenticacao caia no Postgres - que
-  * valida usuario/senha do proprio banco. Um role do Postgres com o mesmo nome de uma
-  * conta do AD entrava com a senha do Postgres, sem passar pelo AD.
-  *
-  * Agora a distincao e explicita:
-  *   - "esta fonte nao conhece este usuario" -> devolve null, tenta a proxima (legitimo)
-  *   - "a senha esta errada" ou "a fonte esta fora" -> lanca, e NAO tenta a proxima
-  * Ausencia de contexto de confianca e erro, nunca queda silenciosa. (Mesma regra que
-  * o BUG 2 do ERP precisa: empresaParaGravar() nulo tem que estourar, nao virar 409 depois.)
-  */
+   /**
+   * Roteamento EXPLICITO por tabela bc_core_auth_source. Sem cascata: a fonte
+   * e decidida ANTES de validar, em UMA tentativa so.
+   *
+   *   conta corporativa -> AD (padrao para desconhecidos: falha fechada)
+   *   conta tecnica     -> POSTGRES (nativo)
+   *   conta do host     -> LINUX (PAM via pg_hba, grupo sysadmins)
+   *
+   * A tabela NAO e fonte de identidade nem de autorizacao: nao cria usuario,
+   * nao guarda credencial, nao da permissao e nao impede login AD sem linha.
+   * Ela apenas escolhe qual provider sera chamado.
+   *
+   * Falha de CREDENCIAL em qualquer fonte -> 401. Falha de INFRAESTRUTURA
+   * (fonte fora, rede, TLS) -> 503. Nada e engolido, nada cai em outra fonte.
+   */
+  private javax.sql.DataSource dataSource;
+  @org.springframework.beans.factory.annotation.Autowired
+  public void setDataSource(javax.sql.DataSource ds){ this.dataSource=ds; }
+
+  private String route(String u){
+   String sam=u.contains("@")?u.substring(0,u.indexOf('@')):u;
+   try(java.sql.Connection c=dataSource.getConnection();
+       java.sql.PreparedStatement s=c.prepareStatement("SELECT source FROM bc_core_auth_source WHERE username=?")){
+    s.setString(1,sam);
+    try(java.sql.ResultSet rs=s.executeQuery()){
+     if(rs.next()) return rs.getString(1);
+    }
+   }catch(Exception e){ log.error("auth: roteamento indisponivel ({}), assumindo AD",e.getMessage()); }
+   return "AD";
+  }
+
  @Override public Authentication authenticate(Authentication input) {
   String u=input.getName(), p=String.valueOf(input.getCredentials());
   if(u==null||u.isBlank()||p.isBlank()) throw new BadCredentialsException("Credenciais vazias");
-  if(adEnabled){
-   try{ Authentication a=ad(u,p); if(a!=null) return a; log.debug("auth: usuario nao existe no AD, seguindo para a proxima fonte"); }
-   // Senha errada: sobe como esta. NAO cai na fonte seguinte.
-   catch(BadCredentialsException e){ log.info("auth: senha invalida no AD para o usuario {}",u); throw e; }
-   // AD fora do ar, DNS, TLS, timeout: isto e a FONTE quebrada, nao "usuario desconhecido".
-   // AuthenticationServiceException e o que o ProviderManager trata como falha de servico,
-   // e o que impede a queda silenciosa para a proxima fonte.
-   catch(Exception e){ log.error("auth: fonte AD indisponivel ({}: {})",e.getClass().getSimpleName(),e.getMessage()); throw new AuthenticationServiceException("Fonte AD indisponível",e); }
-  }
-  if(pgEnabled){
-   try{ Authentication a=postgres(u,p); if(a!=null) return a; log.debug("auth: usuario nao existe no Postgres, nenhuma fonte serviu"); }
-   catch(BadCredentialsException e){ throw e; }
-   catch(Exception e){ log.error("auth: fonte Postgres indisponivel ({}: {})",e.getClass().getSimpleName(),e.getMessage()); throw new AuthenticationServiceException("Fonte Postgres indisponível",e); }
-  }
-  log.info("auth: recusada, usuario nao autenticado em nenhuma fonte");
-  throw new BadCredentialsException("Credenciais inválidas");
+  String src=route(u);
+  log.info("auth: '{}' roteado para {}",u,src);
+  try{
+   Authentication a;
+   if("POSTGRES".equals(src)) a=postgres(u,p);
+   else if("LINUX".equals(src)) a=linux(u,p);
+   else a=ad(u,p);
+   if(a==null) throw new BadCredentialsException("Credenciais inválidas");
+   return a;
+  }catch(BadCredentialsException e){ throw e; }
+  catch(AuthenticationServiceException e){ throw e; }
+  catch(Exception e){ log.error("auth: fonte {} indisponivel ({}: {})",src,e.getClass().getSimpleName(),e.getMessage()); throw new AuthenticationServiceException("Fonte "+src+" indisponível",e); }
  }
 
  private Authentication ad(String u,String p)throws Exception{
@@ -78,10 +91,8 @@ public class MultiSourceAuthenticationProvider implements AuthenticationProvider
    catch(LDAPException le){
     ResultCode rc=le.getResultCode();
     // 49 invalidCredentials: o AD responde 49 tanto para "nao existe" quanto para "senha
-    // errada" (de proposito, para nao enumerar usuarios). Nao da para distinguir, entao o
-    // certo e NAO cair na fonte seguinte: se Presented uma identidade no formato do AD e
-    // ela falhou, o erro e do usuario. Caiu aqui antes, e o Postgres validava com a senha
-    // dele - um role com o mesmo nome de uma conta do AD entrava sem passar pelo AD.
+    // errada". Como o Postgres ja foi tentado antes (ordem do dono), cair adiante nao
+    // levaria a lugar nenhum: o erro sobe como esta.
     if(rc==ResultCode.INVALID_CREDENTIALS) throw new BadCredentialsException("Senha inválida");
     // 32 noSuchObject / 34 invalidDNSyntax: esse nome nao e uma identidade do AD.
     if(rc==ResultCode.NO_SUCH_OBJECT||rc==ResultCode.INVALID_DN_SYNTAX) return null;
@@ -116,6 +127,26 @@ public class MultiSourceAuthenticationProvider implements AuthenticationProvider
    // 28P01/28000 = role inexistente ou senha errada => nao e desta fonte, segue e falha no fim.
    // Qualquer outro SQLState e infraestrutura (banco fora, socket, timeout) e NAO pode virar
    // "sem credencial": subiria falso negativo em vez de erro.
+   String st=e.getSQLState();
+   if("28P01".equals(st)||"28000".equals(st))return null;
+   throw e;
+  }
+ }
+
+ private Authentication linux(String u,String p)throws Exception{
+  // Conta do host: o pg_hba encaminha sysadmins para PAM. Aqui so valida;
+  // quem decide o mecanismo e o pg_hba, pelo grupo. Sem grupo, 28P01/28000.
+  try(java.sql.Connection c=java.sql.DriverManager.getConnection(pgUrl,u,p);
+      java.sql.PreparedStatement s=c.prepareStatement("select pg_has_role(current_user, ?, 'USAGE')")){
+   s.setString(1,pgAdminRole);
+   try(java.sql.ResultSet rs=s.executeQuery()){
+    if(!rs.next())return null;
+    java.util.Set<org.springframework.security.core.GrantedAuthority> roles=new java.util.HashSet<>();
+    roles.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ASTRAL_USER"));
+    if(rs.getBoolean(1))roles.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ASTRAL_ADMIN"));
+    return token(u,"LINUX",roles);
+   }
+  }catch(java.sql.SQLException e){
    String st=e.getSQLState();
    if("28P01".equals(st)||"28000".equals(st))return null;
    throw e;

@@ -62,6 +62,9 @@ public class InstallerFirewall {
             }
             run("systemctl enable fail2ban && systemctl restart fail2ban 2>/dev/null || true", false);
 
+            up(15, "Preflight banco: certs mTLS, wheelmap e properties (idempotente)...");
+            preflightBanco();
+
             up(20, "Validando conexão com banco via mTLS...");
             if (!validateMTLSConnection()) {
                 up(100, "ERRO: Falha ao conectar no banco via mTLS. Execute o instalador principal primeiro.");
@@ -70,6 +73,8 @@ public class InstallerFirewall {
             }
             up(30, "Criando tabelas do firewall no banco...");
             createTables();
+            up(35, "Grants do role astral nas tabelas (idempotente)...");
+            ensureGrants();
             up(48, "Limpando build anterior do módulo (evita lixo de execuções antigas)...");
             cleanModule();
             up(50, "Escrevendo projeto do módulo...");
@@ -145,6 +150,50 @@ public class InstallerFirewall {
     }
 
     private static String app() { return System.getProperty("user.dir"); }
+
+    // Preflight idempotente: garante tudo que validateMTLSConnection() e createTables()
+    // precisam. Passos levantados manualmente em 28/09/2026. So adiciona, nunca apaga:
+    // reload (nunca restart) no Postgres, backup do bundle CA antes de anexar.
+    private static void preflightBanco() {
+        run("mkdir -p /etc/astral/certs", false);
+        run("cp -n /var/lib/pgsql/data/ca.crt /etc/astral/certs/root.crt 2>/dev/null || true", false);
+        // CA propria: a CA do servidor nao tem chave acessivel, e o servidor rejeita
+        // cert autoassinado no handshake (unknown_ca) mesmo com auth trust.
+        run("test -f /etc/astral/certs/astral-ca.crt || openssl req -x509 -newkey rsa:2048 -nodes"
+                + " -keyout /etc/astral/certs/astral-ca.key -out /etc/astral/certs/astral-ca.crt"
+                + " -subj /CN=astral-local-ca -days 825 2>/dev/null", false);
+        // Client CN=astral sempre regenerado e assinado pela CA propria (idempotente).
+        run("openssl req -newkey rsa:2048 -nodes -keyout /etc/astral/certs/client-astral.key"
+                + " -out /etc/astral/certs/client-astral.csr -subj /CN=astral -days 825 2>/dev/null;"
+                + " openssl x509 -req -in /etc/astral/certs/client-astral.csr"
+                + " -CA /etc/astral/certs/astral-ca.crt -CAkey /etc/astral/certs/astral-ca.key"
+                + " -CAcreateserial -out /etc/astral/certs/client-astral.crt -days 825 2>/dev/null", false);
+        // .pk8 em DER: o JDBC nao le PEM ("extra data at the end"). O psql CLI aceita os dois.
+        run("openssl pkcs8 -topk8 -nocrypt -outform DER -in /etc/astral/certs/client-astral.key"
+                + " -out /etc/astral/certs/client-astral.pk8 2>/dev/null; chmod 640 /etc/astral/certs/* 2>/dev/null || true", false);
+        run("chown root:" + ASTRAL_GROUP + " /etc/astral/certs/* 2>/dev/null || true", false);
+        // CA propria no bundle do servidor (com backup). Sem isso o handshake cai.
+        run("grep -q astral-local-ca /var/lib/pgsql/data/ca.crt 2>/dev/null || { cp -a /var/lib/pgsql/data/ca.crt"
+                + " /var/lib/pgsql/data/ca.crt.bak-astral 2>/dev/null; cat /etc/astral/certs/astral-ca.crt"
+                + " >> /var/lib/pgsql/data/ca.crt; systemctl reload postgresql; }", false);
+        // Marcador que validateMTLSConnection() exige.
+        run("grep -q spring.datasource.username=astral /etc/astral/application.properties 2>/dev/null || {"
+                + " printf 'spring.datasource.url=jdbc:postgresql://127.0.0.1:5432/astral\\n"
+                + "spring.datasource.username=astral\\n"
+                + "spring.datasource.driver-class-name=org.postgresql.Driver\\n'"
+                + " > /etc/astral/application.properties; chmod 640 /etc/astral/application.properties; }", false);
+        // createTables() usa runuser -u postgres (peer map=wheelmap). Sem o mapa, falha.
+        run("grep -q '^wheelmap' /var/lib/pgsql/data/pg_ident.conf 2>/dev/null || { printf 'wheelmap  root      postgres\\n"
+                + "wheelmap  postgres  postgres\\n' >> /var/lib/pgsql/data/pg_ident.conf;"
+                + " systemctl reload postgresql; }", false);
+    }
+
+    private static void ensureGrants() {
+        // Tabelas criadas pelo superuser postgres; o role astral precisa de acesso.
+        run("runuser -u postgres -- psql -d astral -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO astral;"
+                + " ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO astral;"
+                + " GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO astral;\" 2>&1 | head -5", true);
+    }
 
     private static void fixOwnership() {
         try {
@@ -659,7 +708,9 @@ public class InstallerFirewall {
                     "persist(); syncFromRuntime(); }\n" +
                     "private String extract(String s,String p,int g,String d){java.util.regex.Matcher m=java.util.regex.Pattern.compile(p).matcher(s); return m.find()?m.group(g):d;}\n" +
                     "public String executeAndSync(String cmd){ String out=sh(\"sudo iptables \"+cmd); persist(); syncFromRuntime(); return out; }\n" +
-                    "public FirewallSnapshot saveSnapshot(String label){return snaps.save(new FirewallSnapshot(label,sh(\"sudo iptables-save\")));}\n" +
+                    "public FirewallSnapshot saveSnapshot(String label){String dump=sh(\"sudo iptables-save\");\n" +
+                    "if(dump==null||!dump.contains(\"COMMIT\")||dump.length()<100) throw new IllegalStateException(\"snapshot invalido, panic recusado\");\n" +
+                    "return snaps.save(new FirewallSnapshot(label,dump));}\n" +
                     "public void restoreDump(String dump){run(List.of(\"bash\",\"-c\",\"echo \\\"\"+dump.replace(\"\\\"\",\"\\\\\\\"\")+\"\\\" | sudo iptables-restore\"),null);}\n" +
                     "public Map<String,Object> applyFromDb(String user){\n" +
                     "syncFromRuntime(); return Map.of(\"success\",true);\n" +
@@ -667,6 +718,7 @@ public class InstallerFirewall {
                     "public Map<String,Object> panic(String user){\n" +
                     "saveSnapshot(\"pre-panic\");\n" +
                     "sh(\"sudo iptables -P INPUT DROP; sudo iptables -P FORWARD DROP; sudo iptables -F INPUT; sudo iptables -A INPUT -i lo -j ACCEPT; sudo iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; sudo iptables -A INPUT -p tcp --dport 22 -j ACCEPT; sudo iptables -A INPUT -s 127.0.0.1/32 -p tcp --dport 8040 -j ACCEPT; sudo iptables -A INPUT -p tcp --dport 5001 -j ACCEPT\");\n" +
+                    "for p in 22 53 80 81 88 135 139 389 443 445 464 636 953 3128 3268 3269 4369 4568 4569 5001 5432 5672 6379 8040 8080 8081 8082 8091 9000 9001 9090 15672 25672 27017 3306; do sudo iptables -A INPUT -p tcp --dport $p -j ACCEPT; done; for p in 53 88 123 137 138 389 464; do sudo iptables -A INPUT -p udp --dport $p -j ACCEPT; done\"\n" +
                     "persist(); syncFromRuntime(); setState(\"panic\",\"ON\"); audit.log(user,\"FIREWALL\",\"*\",\"PANIC\",\"\");\n" +
                     "return Map.of(\"success\",true);\n" +
                     "}\n" +
@@ -755,7 +807,7 @@ public class InstallerFirewall {
                     "if(out!=null)for(String i:out.split(NL))if(!i.isBlank()&&!i.trim().equals(\"lo\"))r.add(i.trim());\n" +
                     "m.put(\"ifaces\", r); m.put(\"hostGroups\", hgroups.findAll()); m.put(\"portGroups\", pgroups.findAll()); return m;\n" +
                     "});}\n" +
-                    "@PostMapping(\"/panic\") public Mono<Map<String,Object>> panic(){return call(() -> ipt.panic(\"admin\"));}\n" +
+                    "@PostMapping(\"/panic\") public Mono<Map<String,Object>> panic(@RequestParam(defaultValue=\"false\") boolean confirm){return call(() -> {if(!confirm) throw new IllegalStateException(\"panic exige confirm=true\"); return ipt.panic(\"admin\");});}\n" +
                     "@PostMapping(\"/panic/revert\") public Mono<Map<String,Object>> revert(){return call(() -> ipt.revert(\"admin\"));}\n" +
                     "@GetMapping(\"/rules\") public Mono<List<FirewallRule>> rules(){return call(() -> { ipt.syncFromRuntime(); return rules.findAll(); });}\n" +
                     "@PostMapping(\"/rules\") public Mono<?> saveRule(@RequestBody FirewallRule r){return call(()->{\n" +

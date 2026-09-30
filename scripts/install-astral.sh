@@ -275,24 +275,24 @@ fase_build() {
 
   cd "$ROOT"
 
-  # O fonte do Vite vive em static/react/ e a saida vai para static/app/, que e
+  # O fonte do Vite vive em frontend// e a saida vai para static/app/, que e
   # o que o pom empacota. Se o build do frontend nao rodou, o jar sobe sem a
   # tela e o /app/ devolve 404. O guard abaixo corta o build do jar antes
   # de produzir um artefato invalido.
-  if command -v npm >/dev/null && [[ -f src/main/resources/static/react/package.json ]]; then
-    if [[ ! -f src/main/resources/static/react/index.html ]]; then
+  if command -v npm >/dev/null && [[ -f frontend/package.json ]]; then
+    if [[ ! -f frontend/index.html ]]; then
       die "frontend Vite sem index.html em src/main/resources/static/react.
        O build foi interrompido para nao gerar um artefato invalido."
     fi
-    log "npm install + npm run build em static/react"
-    runsh "cd '$ROOT/src/main/resources/static/react' && npm install && npm run build"
+    log "npm install + npm run build em frontend/"
+    runsh "cd '$ROOT/frontend' && npm install && npm run build"
   else
     warn "sem npm ou sem package.json: o jar vai sem o build do frontend"
   fi
 
   # O guard do index.html nao garante que o build passou. Confere que a saida
   # existe antes de gastar 2 minutos de Maven.
-  if [[ -d src/main/resources/static/react ]]; then
+  if [[ -d frontend ]]; then
     if (( ! DRY )) && [[ ! -f src/main/resources/static/app/index.html ]]; then
       die "o npm nao produziu static/app/index.html. Sem isso o /app/ vai
        devolver 404 em producao. Nao prossigo para o mvn."

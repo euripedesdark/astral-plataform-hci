@@ -17,9 +17,9 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: src/main/resources/static/react/package.json
+          cache-dependency-path: frontend/package-lock.json
       - name: Build PrimeReact
-        working-directory: src/main/resources/static/react
+        working-directory: frontend
         run: npm install && npm run build
       - name: Build Spring Boot
         run: mvn -B -DskipTests package
