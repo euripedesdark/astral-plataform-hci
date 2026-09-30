@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="pt-br" xmlns:th="http://www.thymeleaf.org">
+<head>
+<meta charset="UTF-8">
+<title th:text="${pageTitle}">ASTRAL PLATFORM</title>
+
+<style th:inline="css">
+  /* ===== Fonte Orbitron auto-hospedada =====
+     Antes vinha do Google Fonts (fonts.googleapis.com) e nao carregava porque
+     o servidor nao tem saida pra internet. Agora o arquivo fica junto com as
+     imagens, em /static/fonts, e e' referenciado via @{...} pra funcionar
+     mesmo com o context-path (/inicio) do Spring. */
+  @font-face{
+    font-family:'Orbitron';
+    src:url('[[@{/fonts/Orbitron-Bold.woff2}]]') format('woff2'),
+        url('[[@{/fonts/Orbitron-Bold.ttf}]]') format('truetype');
+    font-weight:700;font-style:normal;font-display:swap;
+  }
+  @font-face{
+    font-family:'Orbitron';
+    src:url('[[@{/fonts/Orbitron-Black.woff2}]]') format('woff2'),
+        url('[[@{/fonts/Orbitron-Black.ttf}]]') format('truetype');
+    font-weight:900;font-style:normal;font-display:swap;
+  }
+
+  html,body{height:100%;margin:0}
+  body{
+    /* Mesmo problema do context-path: a url() abaixo agora e' resolvida
+       pelo Thymeleaf (@{...}), entao funciona em /inicio/images/Fundo.png
+       independente de onde a aplicacao for montada. */
+    background:#05070d url('[[@{/images/Fundo.png}]]') no-repeat center center fixed;
+    background-size:cover;
+    font-family:'Segoe UI',sans-serif;color:#fff;
+    overflow:hidden;
+  }
+
+  /* Titulo no canto superior esquerdo, fonte robotica/sci-fi */
+  h1{
+    position:fixed;top:4%;left:4%;margin:0;
+    font-family:'Orbitron','Segoe UI',sans-serif;font-weight:700;
+    letter-spacing:.14em;font-size:clamp(20px,2.6vw,40px);
+    color:#eef5ff;text-shadow:0 0 6px #9fd8ff,0 0 18px #4da6ff,0 0 42px #1668ff;
+    z-index:10;
+  }
+
+  /* ===== Area util: sobra 25% topo, 25% base, 20% esq, 20% dir =====
+     ".stage" e' a area reservada; o grid fica centralizado dentro dela,
+     tanto na horizontal quanto na vertical. */
+  .stage{
+    position:fixed;inset:25% 20%;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .grid{
+    width:100%;
+    display:grid;
+    grid-template-columns:repeat(var(--cols), 1fr);
+    gap:2.2%;
+  }
+  .card{
+    --c:#8fb7ff;
+    position:relative;
+    width:100%;
+    /* mesma proporcao dos PNGs originais (798x291) -> botao em "tamanho
+       normal", sem esticar/achatar e sem sobrar espaco vazio ao redor */
+    aspect-ratio:798/291;
+    border-radius:14px;overflow:hidden;
+    text-decoration:none;color:#fff;
+    box-shadow:0 0 10px var(--c);
+    transition:transform .15s, box-shadow .15s;
+  }
+  .card:hover{transform:translateY(-4px) scale(1.02);box-shadow:0 0 18px var(--c)}
+  .card img{width:100%;height:100%;object-fit:cover;display:block}
+
+  .card[data-id="dns"]{--c:#57e389}     .card[data-id="firewall"]{--c:#ff5c5c}
+  .card[data-id="proxy"]{--c:#ffb347}   .card[data-id="domain"]{--c:#ff7b7b}
+  .card[data-id="postgres"]{--c:#4fa3ff}.card[data-id="web"]{--c:#c77bff}
+  .card[data-id="vm"]{--c:#59d9e8}      .card[data-id="storage"]{--c:#ffc16b}
+  .card[data-id="network"]{--c:#63e6a4} .card[data-id="terminal"]{--c:#5aff96}
+
+  /* ===== Modal do Terminal ===== */
+  .hidden{display:none}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:50}
+  .termbox{width:min(880px,92vw);height:min(560px,82vh);background:#0b0f14;border:1px solid #3fa9ff;border-radius:10px;display:flex;flex-direction:column;box-shadow:0 0 24px #1668ff}
+  .termhead{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#101820;border-bottom:1px solid #234}
+  .termhead span:first-child{font-family:'Orbitron',sans-serif;letter-spacing:.2em;color:#9fd8ff}
+  .termhead button{background:#16324a;color:#cfe9ff;border:1px solid #3fa9ff;border-radius:6px;padding:4px 10px;cursor:pointer;margin-left:6px}
+  #termOut{flex:1;margin:0;padding:10px;overflow:auto;background:#000;color:#d7ffd7;font:13px/1.35 Consolas,Monaco,monospace;white-space:pre-wrap}
+  #termIn{border:none;outline:none;background:#050a0f;color:#d7ffd7;padding:10px;font:13px Consolas,monospace;border-top:1px solid #234}
+</style>
+</head>
+<body>
+<h1 th:text="${pageTitle}">ASTRAL PLATFORM</h1>
+
+<div class="stage">
+  <div class="grid" id="grid">
+    <a class="card" th:each="btn : ${buttons}" th:href="@{${btn.route}}" th:data-id="${btn.id}" th:title="${btn.label}">
+      <img th:src="@{'/images/' + ${btn.image}}" th:alt="${btn.label}">
+    </a>
+  </div>
+</div>
+
+<!-- Terminal no centro da tela -->
+<div id="termModal" class="modal hidden">
+  <div class="termbox">
+    <div class="termhead">
+      <span>ASTRAL TERMINAL</span>
+      <span>
+        <button id="detachBtn" type="button">Destacar</button>
+        <button id="closeBtn" type="button">✕</button>
+      </span>
+    </div>
+    <pre id="termOut"></pre>
+    <input id="termIn" autocomplete="off" placeholder="digite o comando e pressione Enter">
+  </div>
+</div>
+
+<script>
+/* ===== GRID AUTO-AJUSTAVEL =====
+   1) maior divisor de N entre 5..2  -> linhas perfeitas
+   2) senao, maior divisor de (N-1)  -> 1 botao extra centralizado numa nova linha */
+function layout(n){
+  if (n <= 1) return {c:1, r:1};
+  let c = 0;
+  for (const k of [5,4,3,2]) if (n % k === 0) { c = k; break; }
+  if (!c) for (const k of [6,5,4,3,2]) if ((n - 1) % k === 0) { c = k; break; }
+  if (!c) c = 3;
+  return { c:c, r:Math.ceil(n / c) };
+}
+(function(){
+  const grid = document.getElementById('grid');
+  const n = grid.querySelectorAll('.card').length;
+  const L = layout(n);
+  grid.style.setProperty('--cols', L.c);
+})();
+
+/* ===== TERMINAL (modal + destacar) ===== */
+function clean(s){
+  return s.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g,'')
+          .replace(/\x1b\][^\x07]*(\x07|\x1b\\)/g,'')
+          .replace(/\x1b[()][0-9A-B]/g,'')
+          .replace(/\r/g,'');
+}
+function attachTerminal(out, inp){
+  const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws/terminal');
+  ws.onmessage = e => { out.textContent += clean(e.data); out.scrollTop = out.scrollHeight; };
+  ws.onclose   = () => { out.textContent += '\n[conexao encerrada]\n'; };
+  inp.addEventListener('keydown', e => {
+    if(e.key==='Enter' && ws.readyState===1){ ws.send(inp.value+'\n'); inp.value=''; }
+  });
+  return ws;
+}
+let ws = null;
+const modal = document.getElementById('termModal');
+const out = document.getElementById('termOut');
+const inp = document.getElementById('termIn');
+
+document.querySelectorAll('.card').forEach(a=>{
+  a.addEventListener('click', e=>{
+    if(a.dataset.id==='terminal'){
+      e.preventDefault();
+      modal.classList.remove('hidden');
+      out.textContent=''; ws = attachTerminal(out, inp); inp.focus();
+    }
+  });
+});
+document.getElementById('closeBtn').onclick = () => { if(ws) ws.close(); modal.classList.add('hidden'); };
+document.getElementById('detachBtn').onclick = () => {
+  if(ws) ws.close();
+  modal.classList.add('hidden');
+  window.open('/terminal-popup.html','astralTerm','width=960,height=600');
+};
+</script>
+</body>
+</html>
