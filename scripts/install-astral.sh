@@ -427,6 +427,13 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# ProtectSystem=strict torna o / INTEIRO somente-leitura, /var incluso. Sem
+# este diretorio gravavel, o GraylogAuditPublisher nao consegue nem criar o
+# arquivo de fallback e a auditoria se perde por completo quando o Graylog
+# nao esta' alcancavel -- que e' o estado normal de uma auditoria que ninguem
+# configurou. LogsDirectory cria /var/log/astral com o dono do servico e o
+# deixa gravavel mesmo com o rootfs travado.
+LogsDirectory=astral
 StandardOutput=journal
 StandardError=journal
 [Install]

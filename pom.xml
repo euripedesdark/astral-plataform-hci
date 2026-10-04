@@ -3,15 +3,61 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 <modelVersion>4.0.0</modelVersion>
 <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.3.5</version><relativePath/></parent>
-<groupId>com.astral</groupId><artifactId>astral-proxy</artifactId><version>1.0.0</version>
+<groupId>com.astral</groupId><artifactId>astral-proxy</artifactId><version>1.4.0</version>
+<name>Astral Platform</name>
+<description>Plataforma Astral HCI-NGFW - backend unico Java 21 + Spring Boot 3.3</description>
 <properties><java.version>21</java.version></properties>
 <dependencies>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
+
+<!--
+  Cache em tempo real do motor de ACL: lookup de dominio/categoria e cache de
+  regra em <2ms (PASSO B do fluxo de 5 passos). Sem esta dependencia o
+  AclEvaluatorService cairia em fallback para PostgreSQL a cada requisicao do
+  auth_request do Nginx, e um banco fora de ar rotularia a borda inteira.
+-->
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-redis</artifactId></dependency>
+
+<!--
+  Orquestracao de intencoes: a fila RabbitMQ e' onde a intencao declarativa
+  entra no ReconciliationEngine (Intencao -> Validacao -> Diff -> Commit ->
+  Rollback). O starter traz o listener container com pool proprio, entao a
+  reconciliacao nunca bloqueia o evento do broker.
+-->
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-amqp</artifactId></dependency>
+
+<!--
+  Validacao do Bearer JWT de curta duracao emitido pelo BrasilCloud Auth
+  Service (:8181, HS256). O recurso-server nao e' aplicado a aplicacao inteira
+  (a UI continua em sessao), so' ao /api/v1/acl/check, que o Nginx chama
+  com o token do navegador.
+-->
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-oauth2-resource-server</artifactId></dependency>
+
 <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><version>42.7.13</version></dependency>
 <dependency><groupId>com.unboundid</groupId><artifactId>unboundid-ldapsdk</artifactId><version>6.0.11</version></dependency>
+
+<!--
+  Flyway. Ate a v1.4 o dono do schema era o modulo astral-firewall, que vivia
+  em fabric/firewall como um segundo aplicativo. Com a migracao de fabric/ para
+  src/main/java/com/astral/fabric/, o firewall roda DENTRO desta aplicacao e o
+  unico dono do schema e' este pom. V1 e' o baseline do estado que ja existia;
+  V100 e' a primeira mudanca real depois dele.
+-->
+<dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
+<dependency><groupId>org.flywaydb</groupId><artifactId>flyway-database-postgresql</artifactId></dependency>
+
+<!-- WebSocket do feed de logs do firewall (antes era o webflux do modulo solto). -->
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-websocket</artifactId></dependency>
+
+<!-- OpenAPI/Swagger 3: a UI React consome o contrato, nao codigo. -->
+<dependency><groupId>org.springdoc</groupId><artifactId>springdoc-openapi-starter-webmvc-ui</artifactId><version>2.6.0</version></dependency>
+
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
 </dependencies>
 <build>
 <!--

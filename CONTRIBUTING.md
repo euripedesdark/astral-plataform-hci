@@ -17,7 +17,8 @@ Obrigado pelo interesse em contribuir com o Astral Platform & HCI!
 
 1. Faça um fork do repositório e crie sua branch a partir de `main`.
 2. Siga o estilo de código existente (Spring Boot 3.3.5 / Java 21, Python, React).
-3. **Não adicione `@Entity` sem uma migração.** O `ddl-auto` é `none` de propósito.
+3. **Não adicione `@Entity` sem uma migração.** O `ddl-auto` é `validate`;
+   quem migra é o Flyway, em `src/main/resources/db/migration/`.
 4. Adicione testes para novas funcionalidades.
 5. Atualize a documentação correspondente.
 6. Abra um Pull Request com título e descrição claros.

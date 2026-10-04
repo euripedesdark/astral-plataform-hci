@@ -62,19 +62,29 @@ viola será recusado, mesmo que o código esteja correto.
 
 Se o seu PR precisar gerar código, o código gerado entra no repositório.
 
-### 2. `ddl-auto` é `none`, de propósito
+### 2. `ddl-auto` é `validate`, e quem migra é o Flyway
 
-Não adicione `@Entity` sem uma migração explícita.
+Não adicione `@Entity` sem uma migração explícita em
+`src/main/resources/db/migration/`.
 
-> **Por quê:** o dono do schema do banco `astral` é o módulo `astral-firewall`.
-> O plano de controle não roda Flyway porque dois processos migrando o mesmo
-> banco competem pela mesma tabela de histórico.
+> **Por quê:** `validate` faz a subida **falhar** quando o banco não bate com o
+> Java, em vez de fingir que está tudo bem. E o app legado `fabric/firewall/`
+> (8040) está **aposentado, mas ainda no repositório** — e o
+> `InstallerFirewall.java` ainda o implanta —, que é uma das duas coisas que a
+> migração para `src/main/java/com/astral/fabric/` precisa eliminar.
 
-### 3. Não há JWT
+### 3. Sessão na UI, e o Bearer do ATS desligado por padrão
 
 A sessão é stateful, no servidor, com cookie `HttpOnly`. Não introduza
-autenticação por token sem antes discutir a mudança de modelo — o ATS e o Nginx
-dependem do cabeçalho de proxy confiável.
+autenticação por token no painel sem antes discutir a mudança de modelo — o ATS
+e o Nginx dependem do cabeçalho de proxy confiável.
+
+Existe uma exceção: `GET /api/v1/acl/check` **aceita** um Bearer JWT HS256, e
+está **desligada por padrão** (`ASTRAL_AUTH_JWT_ENABLED=false`). O BrasilCloud
+Auth Service ainda não emite token, e validar um JWT que ninguém emite é trabalho
+por nada. Se você for ligar isso, leia antes o
+[guia de integração](../../docs/GUIA-INTEGRACAO-AUTH-SERVICE.md) — em especial
+a seção 28, sobre o que a emissão vai exigir.
 
 ## 🛠 Configuração de Desenvolvimento
 
@@ -124,21 +134,28 @@ mvn spring-boot:run
 astral-plataform-hci/
 ├── src/main/java/com/astral/
 │   ├── main/              # plano de controle
-│   │   ├── controller/    # Login, Home, SPA forward, firewall proxy, cert download
+│   │   ├── controller/    # Login, Home, SPA forward, cert download
 │   │   ├── security/      # MultiSourceAuthenticationProvider, SecurityConfig,
 │   │   │                  # ProxyAuthorizationServer, AstralPrincipal
 │   │   └── model/
+│   ├── fabric/            # o tecido, em migração para dentro da aplicação
+│   │   ├── firewall/      # cópia das 14 entidades, API e WebSocket
+│   │   ├── network/       # endereçamento e interfaces
+│   │   ├── proxy/         # ACL, auditoria, cache Redis
+│   │   └── reconciliation/ # Intent → Validação → Diff → Commit → Rollback
 │   └── tools/             # Installer, InstallerFirewall, InstallerProxy,
 │                          # NetworkConfig, Uninstaller
-├── src/main/resources/    # application.properties + UI estática legada
+├── src/main/resources/    # application.properties, db/migration (Flyway),
+│                          # data/nameservers.csv
 ├── frontend/              # Vite + React 18 + PrimeReact
-├── fabric/
+│   └── legacy/            # UI legada servida pelo proxy
+├── fabric/                # scripts, serviços e o app legado
 │   ├── DNS/               # Pi-hole
-│   ├── firewall/          # módulo Java com 14 entidades JPA
+│   ├── firewall/          # app Java à parte (14 entidades, porta 8040)
 │   ├── network-firewall/  # Python
 │   ├── samba-ad-dc/       # Samba AD DC (Arch, Debian 13, Fedora)
 │   ├── acess-report-system/  # Flask + PostgreSQL
-│   └── frontend/          # UI legada servida pelo proxy
+│   └── frontend/          # UI legada (em migração para frontend/legacy/)
 ├── scripts/               # instaladores e verificadores bash
 ├── etc/astral/            # ad.properties
 └── installbase.sh         # instalador de dependências do sistema

@@ -44,12 +44,6 @@ internacional Swift.
 O `Routing number` só é usado quando o dinheiro sai dos Estados Unidos. Fora de lá, o
 campo é o `SWIFT/BIC`.
 
-### GitHub Sponsors
-
-O botão **Sponsor** do repositório abre esta mesma página. O arquivo
-`.github/FUNDING.yml` aponta para cá, porque o GitHub aceita somente URLs no
-bloco `custom` — a chave PIX não caberia nele.
-
 ---
 
 ## 🇺🇸 English
@@ -84,12 +78,6 @@ transfer.
 The routing number is only used when the money leaves the United States. Anywhere else,
 the field to use is `SWIFT/BIC`.
 
-### GitHub Sponsors
-
-The repository's **Sponsor** button opens this same page. The
-`.github/FUNDING.yml` file points here, because GitHub accepts only URLs in
-the `custom` block — the PIX key would not fit in it.
-
 ---
 
 ## 🇪🇸 Español
@@ -122,12 +110,6 @@ internacional Swift.
 
 El routing number solo se usa cuando el dinero sale de Estados Unidos. En cualquier otro
 lugar, el campo es el `SWIFT/BIC`.
-
-### GitHub Sponsors
-
-El botón **Sponsor** del repositorio abre esta misma página. El archivo
-`.github/FUNDING.yml` apunta aquí, porque GitHub acepta solo URLs en el bloque
-`custom` — la clave PIX no cabría therein.
 
 ---
 
@@ -162,12 +144,6 @@ faites un virement international Swift.
 
 Le routing number ne sert que lorsque l'argent sort des États-Unis. Ailleurs, le champ à
 utiliser est `SWIFT/BIC`.
-
-### GitHub Sponsors
-
-Le bouton **Sponsor** du dépôt ouvre cette même page. Le fichier
-`.github/FUNDING.yml` pointe ici, car GitHub n'accepte que des URL dans le
-bloc `custom` — la clé PIX n'y tiendrait pas.
 
 ---
 

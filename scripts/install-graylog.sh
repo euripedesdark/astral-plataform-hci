@@ -23,13 +23,31 @@ else echo "[ERRO] Distribuição não suportada.";exit 3;fi
 SECRET="$(openssl rand -hex 48)"
 ROOT_HASH="$(printf '%s' "$GRAYLOG_ADMIN_PASSWORD"|sha256sum|awk '{print $1}')"
 CFG=/etc/graylog/server/server.conf
+# MinIO ja' ocupa 127.0.0.1:9000 neste host. Graylog com a porta ocupada nao
+# derruba o boot, ele simplesmente nao sobe -- e o sintoma ("Graylog fora")
+# nao tem nada a ver com a causa (porta tomada). Auto-deteccao antes de escrever.
+HTTP_PORT="${GRAYLOG_HTTP_PORT:-}"
+if [[ -z "$HTTP_PORT" ]];then
+  HTTP_PORT=9000
+  if ss -lnt 2>/dev/null | grep -qE "127\.0\.0\.1:9000|0\.0\.0\.0:9000|\*:9000";then
+    HTTP_PORT=9001
+    echo "[INFO] 127.0.0.1:9000 ocupado (MinIO?); Graylog vai para :$HTTP_PORT."
+  fi
+fi
 install -d -m 0750 /etc/graylog/server;touch "$CFG"
 sed -i '/^mongodb_uri[[:space:]]*=/d;/^password_secret[[:space:]]*=/d;/^root_password_sha2[[:space:]]*=/d;/^http_bind_address[[:space:]]*=/d;/^http_external_uri[[:space:]]*=/d' "$CFG"
-printf 'mongodb_uri = %s/%s?authSource=%s\npassword_secret = %s\nroot_username = admin\nroot_password_sha2 = %s\nhttp_bind_address = 127.0.0.1:9000\nhttp_external_uri = http://127.0.0.1:9000/\n' "$MONGO_URI" "$GRAYLOG_DB" "$GRAYLOG_DB" "$SECRET" "$ROOT_HASH" >> "$CFG"
+printf 'mongodb_uri = %s/%s?authSource=%s\npassword_secret = %s\nroot_username = admin\nroot_password_sha2 = %s\nhttp_bind_address = 127.0.0.1:%s\nhttp_external_uri = http://127.0.0.1:%s/\n' "$MONGO_URI" "$GRAYLOG_DB" "$GRAYLOG_DB" "$SECRET" "$ROOT_HASH" "$HTTP_PORT" "$HTTP_PORT" >> "$CFG"
 DN=/etc/graylog/datanode/datanode.conf
 install -d -m 0750 /etc/graylog/datanode;touch "$DN"
 sed -i '/^mongodb_uri[[:space:]]*=/d;/^password_secret[[:space:]]*=/d;/^root_password_sha2[[:space:]]*=/d' "$DN"
 printf 'mongodb_uri = %s/%s?authSource=%s\npassword_secret = %s\nroot_password_sha2 = %s\n' "$MONGO_URI" "$GRAYLOG_DB" "$GRAYLOG_DB" "$SECRET" "$ROOT_HASH" >> "$DN"
 systemctl daemon-reload
-systemctl enable --now graylog-datanode.service graylog-server.service\nGRAYLOG_ADMIN_PASSWORD="$GRAYLOG_ADMIN_PASSWORD" "$SCRIPT_DIR/configure-graylog-input.sh"
+# A linha abaixo tinha um '\n' literal dentro das aspas duplas: o systemctl
+# tentava habilitar uma unidade chamada "graylog-server.service\nGRAYLOG_..."
+# e o script morria ali, deixando o Graylog instalado e nunca iniciado.
+systemctl enable --now graylog-datanode.service graylog-server.service
+echo "[INFO] aguardando a API do Graylog em 127.0.0.1:$HTTP_PORT ..."
+GRAYLOG_URL="http://127.0.0.1:$HTTP_PORT" GRAYLOG_ADMIN_PASSWORD="$GRAYLOG_ADMIN_PASSWORD" \
+  "$SCRIPT_DIR/configure-graylog-ilm.sh"
 echo "[OK] Graylog usa o database Mongo '$GRAYLOG_DB'; collections são criadas pelo Graylog."
+echo "     API: http://127.0.0.1:$HTTP_PORT  (admin / a senha que voce digitou)"

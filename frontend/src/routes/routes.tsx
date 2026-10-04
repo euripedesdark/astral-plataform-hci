@@ -1,0 +1,15 @@
+import OverviewGo from '../modules/overview/pages/Index';
+import Firewall from '../modules/firewall/pages/Index';
+import ProxyPage from '../modules/proxy/pages/Index';
+import AdPage from '../modules/ad/pages/Index';
+import PostgresPage from '../modules/postgres/pages/Index';
+import ObsPage from '../modules/observabilidade/pages/Index';
+import CompPage from '../modules/computacao/pages/Index';
+import RedePage from '../modules/rede/pages/Index';
+import EnderecamentoPage from '../modules/rede/pages/Enderecamento';
+import TermPage from '../modules/terminal/pages/Index';
+import CertsPage from '../modules/certs/pages/Index';
+import AclPage from '../modules/proxy/pages/Acl';
+export const ORDER=['Visão geral','Firewall','ACL de Navegação','Traffic Server','Active Directory','PostgreSQL','Observabilidade','Computação','Rede','Endereçamento','Terminal','Certificados'];
+export const ICONS={'Visão geral':'pi pi-home',Firewall:'pi pi-shield','ACL de Navegação':'pi pi-filter','Traffic Server':'pi pi-globe','Active Directory':'pi pi-sitemap',PostgreSQL:'pi pi-database',Observabilidade:'pi pi-chart-line','Computação':'pi pi-server',Rede:'pi pi-share-alt','Endereçamento':'pi pi-network',Terminal:'pi pi-terminal',Certificados:'pi pi-key'};
+export const PAGES={'Visão geral':OverviewGo,Firewall,'ACL de Navegação':AclPage,'Traffic Server':ProxyPage,'Active Directory':AdPage,PostgreSQL:PostgresPage,Observabilidade:ObsPage,'Computação':CompPage,Rede:RedePage,'Endereçamento':EnderecamentoPage,Terminal:TermPage,Certificados:CertsPage};

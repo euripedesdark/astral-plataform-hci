@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astral Platform - Login</title>
+    <!-- Fonte futurista para o título e texto -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Rajdhani:wght@500;600&display=swap" rel="stylesheet">
+
+    <!-- Folha de estilo externa -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+    <div class="brand-title">ASTRAL PLATFORM</div>
+
+    <div class="login-box">
+        <div class="center-logo">
+            <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                <polygon points="50,5 95,25 95,75 50,95 5,75 5,25" fill="none" stroke="#00d2ff" stroke-width="4"/>
+                <path d="M50,25 L75,70 L65,70 L50,40 L35,70 L25,70 Z" fill="#00d2ff"/>
+            </svg>
+        </div>
+
+        <form id="loginForm">
+            <div class="input-group">
+                <label for="username">Login</label>
+                <div class="input-wrapper">
+                    <input type="text" id="username" autocomplete="off" required>
+                    <svg class="input-icon" viewBox="0 0 24 24">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="12" cy="7" r="4"></circle>
+                    </svg>
+                </div>
+            </div>
+
+            <div class="input-group">
+                <label for="password">Password</label>
+                <div class="input-wrapper">
+                    <input type="password" id="password" required>
+                    <svg class="input-icon" viewBox="0 0 24 24">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                    </svg>
+                </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <button type="submit" class="btn-submit" id="submitBtn">SIGN IN</button>
+            <div class="error-msg" id="errorMsg">Credenciais inválidas ou falha na conexão.</div>
+        </form>
+    </div>
+
+    <!-- Script importado da pasta js/ -->
+    <script src="js/login.js"></script>
+</body>
+</html>

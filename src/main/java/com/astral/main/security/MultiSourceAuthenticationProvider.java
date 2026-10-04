@@ -104,11 +104,33 @@ public class MultiSourceAuthenticationProvider implements AuthenticationProvider
    SearchResult sr=c.search(baseDn,SearchScope.SUB,"(&(objectClass=user)(sAMAccountName="+escapeFilter(sam)+"))","memberOf");
    Set<GrantedAuthority> roles=new HashSet<>();
    roles.add(new SimpleGrantedAuthority("ROLE_ASTRAL_USER"));
+   List<String> gruposCn=new java.util.ArrayList<>();
    if(sr.getEntryCount()>0){
-    for(String g:sr.getSearchEntries().get(0).getAttributeValues("memberOf"))
+    SearchResultEntry usuario=sr.getSearchEntries().get(0);
+    String[] diretos=usuario.getAttributeValues("memberOf");
+    for(String g:diretos==null?new String[0]:diretos){
      if(g.toLowerCase(Locale.ROOT).contains("cn="+adminGroup.toLowerCase(Locale.ROOT)+",")) roles.add(new SimpleGrantedAuthority("ROLE_ASTRAL_ADMIN"));
+     String cn=cnDe(g); if(!cn.isEmpty()&&!gruposCn.contains(cn)) gruposCn.add(cn);
+    }
+    // Grupos ANINHADOS: memberOf so' traz os diretos. Um usuario cujo grupo
+    // esta dentro de outro grupo (FW-Operadores dentro de FW-Usuarios) nao
+    // aparece em "FW-Usuarios", e' assim que uma politica escrita no grupo
+    // certo passa a nao casar. 1.2.840.113556.1.4.1941 e' a extensao de
+    // matching por cadeia do AD. Se o Samba nao aceitar, o memberOf direto ja'
+    // lido acima continua valendo: fallback sobre dependencia, sem derrubar
+    // o login por causa de uma busca opcional.
+    try{
+     SearchResult aninhados=c.search(baseDn,SearchScope.SUB,
+         "(&(objectClass=group)(memberOf:1.2.840.113556.1.4.1941:="+escapeFilter(usuario.getDN())+"))","cn");
+     for(SearchResultEntry e:aninhados.getSearchEntries()){
+      String cn=e.getAttributeValue("cn");
+      if(cn!=null&&!cn.isBlank()&&!gruposCn.contains(cn)) gruposCn.add(cn);
+     }
+    }catch(Exception ignorada){
+     log.debug("auth: busca de grupos aninhados indisponivel ({})", ignorada.getMessage());
+    }
    }
-   return token(u,"AD",roles);
+   return token(u,"AD",roles,gruposCn);
   }finally{ c.close(); }
  }
 
@@ -154,7 +176,18 @@ public class MultiSourceAuthenticationProvider implements AuthenticationProvider
  }
 
  private Authentication token(String u,String source,Collection<? extends GrantedAuthority> roles){
-  return new UsernamePasswordAuthenticationToken(new AstralPrincipal(u,source,roles),null,roles);
+  return token(u,source,roles,List.of());
+ }
+ private Authentication token(String u,String source,Collection<? extends GrantedAuthority> roles,List<String> grupos){
+  return new UsernamePasswordAuthenticationToken(new AstralPrincipal(u,source,roles,grupos),null,roles);
+ }
+ /** Extrai o CN de um DN ("CN=FW-Operadores,OU=Grupos,DC=srvcloud,DC=cloud" -> FW-Operadores). */
+ private static String cnDe(String dn){
+  if(dn==null||dn.isEmpty())return "";
+  java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?i)(?:^|,)CN=([^,]+)").matcher(dn);
+  String ultimo="";
+  while(m.find()) ultimo=m.group(1).trim();
+  return ultimo;
  }
  private static String escapeFilter(String s){return s.replace("\\","\\5c").replace("*","\\2a").replace("(","\\28").replace(")","\\29").replace("\0","\\00");}
  @Override public boolean supports(Class<?> c){return UsernamePasswordAuthenticationToken.class.isAssignableFrom(c);}

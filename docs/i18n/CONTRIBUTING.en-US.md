@@ -63,19 +63,29 @@ violates them will be rejected, even if the code is correct.
 
 If your PR needs to generate code, the generated code goes into the repository.
 
-### 2. `ddl-auto` is `none`, on purpose
+### 2. `ddl-auto` is `validate`, and Flyway does the migrating
 
-Do not add `@Entity` without an explicit migration.
+Do not add `@Entity` without an explicit migration in
+`src/main/resources/db/migration/`.
 
-> **Why:** the owner of the `astral` database schema is the `astral-firewall`
-> module. The control plane does not run Flyway because two processes migrating
-> the same database compete for the same history table.
+> **Why:** `validate` makes startup **fail** when the database does not match the
+> Java, instead of pretending all is well. And the legacy `fabric/firewall/`
+> app (8040) is **retired but still in the repository** — and
+> `InstallerFirewall.java` still deploys it —, which is one of the two things
+> the migration into `src/main/java/com/astral/fabric/` has to end.
 
-### 3. There is no JWT
+### 3. Session in the UI, and the ATS Bearer off by default
 
 The session is stateful, server-side, with an `HttpOnly` cookie. Do not
-introduce token-based authentication without first discussing the model change —
-ATS and Nginx depend on the trusted proxy header.
+introduce token-based authentication in the panel without first discussing the
+model change — ATS and Nginx depend on the trusted proxy header.
+
+There is one exception: `GET /api/v1/acl/check` **accepts** a Bearer HS256 JWT,
+and it is **off by default** (`ASTRAL_AUTH_JWT_ENABLED=false`). The BrasilCloud
+Auth Service does not issue tokens yet, and validating a JWT that nobody issues
+is work for nothing. If you are going to turn it on, read the
+[integration guide](../../docs/GUIA-INTEGRACAO-AUTH-SERVICE.md) first —
+especially section 28, on what issuance will require.
 
 ## 🛠 Development Setup
 
@@ -125,21 +135,28 @@ mvn spring-boot:run
 astral-plataform-hci/
 ├── src/main/java/com/astral/
 │   ├── main/              # control plane
-│   │   ├── controller/    # Login, Home, SPA forward, firewall proxy, cert download
+│   │   ├── controller/    # Login, Home, SPA forward, cert download
 │   │   ├── security/      # MultiSourceAuthenticationProvider, SecurityConfig,
 │   │   │                  # ProxyAuthorizationServer, AstralPrincipal
 │   │   └── model/
+│   ├── fabric/            # the fabric, being migrated into the application
+│   │   ├── firewall/      # copy of the 14 entities, API and WebSocket
+│   │   ├── network/       # addressing and interfaces
+│   │   ├── proxy/         # ACL, audit, Redis cache
+│   │   └── reconciliation/ # Intent → Validation → Diff → Commit → Rollback
 │   └── tools/             # Installer, InstallerFirewall, InstallerProxy,
 │                          # NetworkConfig, Uninstaller
-├── src/main/resources/    # application.properties + legacy static UI
+├── src/main/resources/    # application.properties, db/migration (Flyway),
+│                          # data/nameservers.csv
 ├── frontend/              # Vite + React 18 + PrimeReact
-├── fabric/
+│   └── legacy/            # legacy UI served through the proxy
+├── fabric/                # scripts, services and the legacy app
 │   ├── DNS/               # Pi-hole
-│   ├── firewall/          # Java module with 14 JPA entities
+│   ├── firewall/          # separate Java app (14 entities, port 8040)
 │   ├── network-firewall/  # Python
 │   ├── samba-ad-dc/       # Samba AD DC (Arch, Debian 13, Fedora)
 │   ├── acess-report-system/  # Flask + PostgreSQL
-│   └── frontend/          # legacy UI served through the proxy
+│   └── frontend/          # legacy UI (being migrated to frontend/legacy/)
 ├── scripts/               # bash installers and verifiers
 ├── etc/astral/            # ad.properties
 └── installbase.sh         # system dependency installer

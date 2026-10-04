@@ -132,23 +132,35 @@ flowchart TB
 | Herramientas de instalación | Java 21 | `src/main/java/com/astral/tools/` |
 | Frontend | Vite + React 18 + PrimeReact | `frontend/` |
 | DNS | Pi-hole | `fabric/DNS/` |
-| Firewall | Módulo Java (14 entidades JPA) | `fabric/firewall/` |
+| Firewall (heredado, retirado) | App Java aparte (14 entidades JPA, puerto 8040) | `fabric/firewall/` |
+| Firewall dentro de la plataforma | Copia de las mismas 14 entidades, aún no implantada | `src/main/java/com/astral/fabric/firewall/` |
 | Firewall de red | Python | `fabric/network-firewall/` |
 | Controlador de dominio AD | Samba AD multi-distro | `fabric/samba-ad-dc/` |
 | Reportes de acceso | Flask + PostgreSQL | `fabric/acess-report-system/` |
 | Proxy de autenticación | Apache Traffic Server | `scripts/configure-ats-auth.sh` |
 | Telemetría histórica | Elasticsearch | `installbase.sh` |
+| Cola de reconciliación | RabbitMQ (intents) | `fabric/reconciliation/` |
+| Caché de ACL | Redis | `fabric/proxy/` |
+| Métricas históricas | TimescaleDB (hypertables, 30 días) | `scripts/configure-timescaledb.sh` |
+| Contrato de API | OpenAPI/Swagger 3 | `/v3/api-docs`, `/swagger-ui/` |
 
 ### 💾 Persistencia
 
 - **Base de datos relacional** para el estado autoritativo (PostgreSQL)
 - **Data lake** para telemetría histórica (Elasticsearch)
 
-> ⚠️ `spring.jpa.hibernate.ddl-auto` es `none` **a propósito**. El dueño del
-> esquema de la base `astral` es el módulo `astral-firewall`; este módulo no
-> ejecuta Flyway deliberadamente, porque dos procesos migrando la misma base
-> compiten por la misma tabla de historial. El plano de control nunca altera el
-> esquema sin una migración explícita.
+> ⚠️ `spring.jpa.hibernate.ddl-auto` es `validate` y **Flyway está activado**.
+> La migración versionada vive en `src/main/resources/db/migration/`: `V1` es la
+> línea base del estado que ya existía y `V100` es el primer cambio real
+> posterior. `validate` hace que el arranque **falle** si la base no coincide
+> con el Java — lo contrario de `none`/`update`, que ocultan la divergencia
+> hasta que se convierte en un bug en producción.
+>
+> ⚠️ La app heredada `fabric/firewall/` (puerto 8040) está **retirada pero sigue en
+> el repositorio**, con su propio `pom.xml` y las mismas 14 entidades — y también
+> valida con Flyway. `InstallerFirewall.java` sigue implantándola, pero nada en la
+> aplicación principal lee ya `astral.firewall.url`, y el servicio no responde.
+> Es la migración a `src/main/java/com/astral/fabric/` lo que va a borrarla.
 
 ### 🖧 Tejido convergente
 
@@ -177,12 +189,17 @@ autenticación a Astral mediante el módulo `authproxy.so`.
 | **Cookie de sesión** | `HttpOnly`, `SameSite=Lax`, `Secure` vía `ASTRAL_COOKIE_SECURE` |
 | **Expiración de sesión** | 8 horas |
 | **Secretos** | `auth.env` en disco, **fuera** del control de versiones |
-| **Base de datos** | `ddl-auto=none`, sin cambios automáticos de esquema |
+| **Base de datos** | `ddl-auto=validate` + Flyway (`db/migration/`) |
 | **Autorización** | RBAC con aprobación humana en el plano de control |
 | **Auditoría** | Trilha de auditoría en el plano de control |
 
-> ℹ **El proyecto no usa JWT.** La sesión es con estado y se mantiene en el
-> servidor. La cabecera de proxy confiable está habilitada
+> ℹ La UI y el motor de ACL usan una **sesión con estado** en el servidor, con
+> una cookie `HttpOnly`. `/api/v1/acl/check` **acepta** un Bearer JWT HS256 del
+> BrasilCloud Auth Service, pero la validación está **desactivada por defecto**
+> (`ASTRAL_AUTH_JWT_ENABLED=false`): el Auth Service todavía no emite tokens, así
+> que el camino que funciona es la sesión. Contrato completo en la
+> [guía de integración](../GUIA-INTEGRACAO-AUTH-SERVICE.md) (PT-BR). La cabecera
+> de proxy confiable está habilitada
 > (`server.forward-headers-strategy=framework`), algo necesario porque ATS y
 > Nginx terminan TLS delante.
 
@@ -259,9 +276,10 @@ graph LR
   A --> F["etc/astral/"]
 
   B --> B1["main/ — plano de control<br/>controller · security · model"]
-  B --> B2["tools/ — Installer · InstallerFirewall<br/>InstallerProxy · NetworkConfig"]
-  C --> C1["Vite + React 18 + PrimeReact"]
-  D --> D1["DNS (Pi-hole) · firewall<br/>network-firewall · samba-ad-dc<br/>acess-report-system (Flask)"]
+  B --> B2["fabric/ — firewall · network · proxy<br/>reconciliation"]
+  B --> B3["tools/ — Installer · InstallerFirewall<br/>InstallerProxy · NetworkConfig"]
+  C --> C1["Vite + React 18 + PrimeReact<br/>+ legacy/"]
+  D --> D1["DNS (Pi-hole) · firewall (8040)<br/>network-firewall · samba-ad-dc<br/>acess-report-system (Flask)"]
   E --> E1["instaladores y verificadores bash"]
   F --> F1["ad.properties"]
 ```
@@ -270,22 +288,29 @@ graph LR
 astral-plataform-hci/
 ├── src/main/java/com/astral/
 │   ├── main/              # plano de control
-│   │   ├── controller/    # Login, Home, SPA forward, firewall proxy, cert download
+│   │   ├── controller/    # Login, Home, SPA forward, cert download
 │   │   ├── security/      # MultiSourceAuthenticationProvider, SecurityConfig
 │   │   │                  # ProxyAuthorizationServer, AstralPrincipal
 │   │   └── model/
+│   ├── fabric/            # el tejido, en migración hacia la aplicación
+│   │   ├── firewall/      # copia de las 14 entidades, API y WebSocket
+│   │   ├── network/       # direccionamiento e interfaces
+│   │   ├── proxy/         # ACL, auditoría, caché Redis
+│   │   └── reconciliation/ # Intent → Validación → Diff → Commit → Rollback
 │   └── tools/             # Installer, InstallerFirewall, InstallerProxy,
 │                          # NetworkConfig, Uninstaller
-├── src/main/resources/    # application.properties + UI estática heredada
+├── src/main/resources/    # application.properties, db/migration (Flyway),
+│                          # data/nameservers.csv
 ├── frontend/              # Vite + React 18 + PrimeReact (la compilación va a
 │                          # src/main/resources/static/app/)
-├── fabric/
+│   └── legacy/            # UI heredada servida por el proxy
+├── fabric/                # scripts, servicios y la app heredada
 │   ├── DNS/               # Pi-hole
-│   ├── firewall/          # módulo Java con 14 entidades JPA
+│   ├── firewall/          # app Java aparte (14 entidades, puerto 8040)
 │   ├── network-firewall/  # Python
 │   ├── samba-ad-dc/       # Samba AD DC (Arch, Debian 13, Fedora)
 │   ├── acess-report-system/  # Flask + PostgreSQL
-│   └── frontend/          # UI heredada servida por el proxy
+│   └── frontend/          # UI heredada (migrándose a frontend/legacy/)
 ├── scripts/               # instaladores y verificadores bash
 ├── etc/astral/            # ad.properties
 ├── installbase.sh         # instalador de dependencias del sistema
@@ -344,6 +369,8 @@ valida que el puerto de la aplicación esté ligado al loopback.
 | `8081` | loopback | Endpoint de salud (`/actuator/health`) |
 | `8082` | loopback | Aplicación (`/app/`) |
 | `443` | pública | Entrada vía Nginx, con TLS |
+| `81` | pública | `301` a 443, para que nadie se quede atrapado en el puerto viejo |
+| `8040` | — | App heredada del firewall, **retirada**: el servicio no responde y nada la consume |
 
 > ⚠️ La aplicación **no debe** escuchar en `0.0.0.0`. Si lo hace, alguien alcanza
 > la interfaz sin pasar por TLS — `verify-astral.sh` falla a propósito en ese
@@ -376,7 +403,8 @@ En desarrollo inicial.
 | Reportes de acceso (Flask) | 🟢 Funcionando |
 | Frontend PrimeReact | 🟡 En desarrollo |
 | Cómputo (KVM/libvirt) | 🟡 Base instalada; orquestación en construcción |
-| Motor de reconciliación completo | 🟡 Contratos e intenciones en construcción |
+| Motor de reconciliación (Intent → Validación → Diff → Commit → Rollback) | 🟡 Implementado, en integración |
+| Migrar el firewall dentro de la plataforma (sale la app de 8040) | 🟡 En curso |
 | **Replicación de almacenamiento (DRBD)** | 🔴 **Planeado — no implementado** |
 
 > ℹ La replicación de almacenamiento aparece en versiones anteriores de este
@@ -386,10 +414,12 @@ En desarrollo inicial.
 
 Foco actual:
 
-- Contratos del plano de control
-- Definición del esquema de intenciones
-- Fundamentos del motor de reconciliación
-- Red y firewall deterministas
+- Acabar con la app heredada `fabric/firewall/` (8040) y con el
+  `InstallerFirewall.java` que la implanta
+- Terminar la migración de la UI heredada a
+  `frontend/legacy/`
+- Ampliar el `Diff` del reconciliador a los recursos que aún no cubre
+- Llevar el proxy ATS más allá de `/api/v1/acl/check`
 
 ### 🗓 Línea de tiempo
 

@@ -50,13 +50,20 @@ Le projet met en œuvre les mesures suivantes :
   `MultiSourceAuthenticationProvider`
 * **Session :** cookie `HttpOnly` et `SameSite=Lax`, expiration de 8 heures,
   `Secure` activé via `ASTRAL_COOKIE_SECURE`
-* **Pas de JWT :** la session est avec état et conservée sur le serveur
+* **Session, pas jeton :** la session est avec état et conservée sur le
+  serveur, avec un cookie `HttpOnly`. `/api/v1/acl/check` accepte un Bearer JWT
+  HS256, mais la validation est **désactivée par défaut**
+  (`ASTRAL_AUTH_JWT_ENABLED=false`) — le Auth Service n'émet pas encore de
+  jetons, donc la session est le seul chemin qui fonctionne
 * **Proxy de confiance :** `server.forward-headers-strategy=framework`, car ATS
   et Nginx terminent le TLS en amont
 * **Secrets :** `auth.env` reste sur disque et **hors** gestion de versions
-* **Base de données :** `ddl-auto=none`, aucun changement de schéma automatique
+* **Base de données :** `ddl-auto=validate` + Flyway (`db/migration/`) dans les
+  deux applications ; l'héritée `fabric/firewall/` (8040) est **retirée** mais
+  toujours dans le dépôt, et `InstallerFirewall.java` la déploie toujours
 * **Isolation réseau :** l'application n'écoute que sur la boucle locale
-  (8081/8082) ; le port public est 443 via Nginx, avec TLS
+  (8081/8082) ; le port public est 443 via Nginx, avec TLS, et 81 répond `301`
+  vers 443
 * **Vérification :** `scripts/verify-astral.sh` échoue volontairement si
   l'application est exposée hors de la boucle locale
 * **Audit :** piste d'audit et approbation humaine dans le plan de contrôle

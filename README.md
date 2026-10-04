@@ -98,11 +98,17 @@ autenticação ao Astral por meio do módulo `authproxy.so`.
 - **Kerberos/LDAP** contra o Samba AD DC, com segredos apenas em disco
   (`auth.env`, fora do versionamento)
 - **RBAC e trilha de auditoria** no plano de controle
-- **`ddl-auto=none`**: o Astral não altera o schema do banco sem migração
-  explícita
+- **`ddl-auto=validate` + Flyway**: a migração versionada mora em
+  `src/main/resources/db/migration/`; `validate` faz a subida falhar se o banco
+  não bater com o Java
 
-> ℹ O projeto **não usa JWT**. A sessão é stateful, no servidor. Ver a seção
-> *Security Measures* no README do seu idioma.
+> ℹ A UI e o motor de ACL usam **sessão stateful** no servidor, com cookie
+> `HttpOnly`. O `/api/v1/acl/check` **aceita** um Bearer JWT HS256 do BrasilCloud
+> Auth Service, mas a validação está **desligada por padrão**
+> (`ASTRAL_AUTH_JWT_ENABLED=false`): o Auth Service ainda não emite token, então
+> o caminho que funciona é a sessão. Contrato completo em
+> [docs/GUIA-INTEGRACAO-AUTH-SERVICE.md](docs/GUIA-INTEGRACAO-AUTH-SERVICE.md).
+> Ver também a seção *Security Measures* no README do seu idioma.
 
 ## ⚠️ Degradação segura
 
@@ -128,9 +134,10 @@ graph LR
   A --> F["etc/astral/"]
 
   B --> B1["main/ — plano de controle<br/>controller · security · model"]
-  B --> B2["tools/ — Installer · InstallerFirewall<br/>InstallerProxy · NetworkConfig"]
-  C --> C1["Vite + React 18 + PrimeReact"]
-  D --> D1["DNS (Pi-hole) · firewall<br/>network-firewall · samba-ad-dc<br/>acess-report-system (Flask)"]
+  B --> B2["fabric/ — firewall · network · proxy<br/>reconciliation"]
+  B --> B3["tools/ — Installer · InstallerFirewall<br/>InstallerProxy · NetworkConfig"]
+  C --> C1["Vite + React 18 + PrimeReact<br/>+ legacy/"]
+  D --> D1["DNS (Pi-hole) · firewall (8040)<br/>network-firewall · samba-ad-dc<br/>acess-report-system (Flask)"]
   E --> E1["instaladores e verificadores bash"]
   F --> F1["ad.properties"]
 ```
@@ -147,6 +154,8 @@ documento vivo com a linha do tempo, o rationale e as decisões de projeto.
 | DNS com Pi-hole | 🟢 Funcionando |
 | Samba AD DC multi-distro | 🟢 Funcionando |
 | Firewall e proxy ATS | 🟢 Funcionando |
+| Motor de reconciliação (Intent → Validação → Diff → Commit → Rollback) | 🟡 Implementado, em integração |
+| Migração do firewall para dentro da plataforma (sai o app de 8040) | 🟡 Em andamento |
 | Frontend PrimeReact | 🟡 Em desenvolvimento |
 | Computação (KVM/libvirt) | 🟡 Base instalada; módulo em construção |
 | Replicação de armazenamento (DRBD) | 🔴 Planejado — ainda não implementado |
