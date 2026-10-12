@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/shared-observability.sh"
+observability_lock
+reuse_status=0
+reuse_observability_service graylog graylog-server.service || reuse_status=$?
+[[ "$reuse_status" == 0 ]] && exit 0
+[[ "$reuse_status" == 1 ]] || exit "$reuse_status"
+# MongoDB e compartilhado, nunca criado por este instalador.
+reuse_status=0
+reuse_observability_service mongo mongod.service || reuse_status=$?
+[[ "$reuse_status" == 0 ]] || {
+    echo '[ERRO] MongoDB compartilhado ausente ou ambiguo; nenhuma instalacao paralela.' >&2
+    exit 2
+}
+# Preservar configuracao instalada mesmo quando a unit nao foi registrada.
+for config in /etc/graylog/server/server.conf /etc/graylog-server/server.conf; do
+    if [[ -s "$config" ]]; then
+        echo '[ERRO] Configuracao Graylog existente sem unit gerenciada. Corrija a unit antes de reinstalar.' >&2
+        exit 2
+    fi
+done
 GRAYLOG_VERSION="${GRAYLOG_VERSION:-7.1}"
 MONGO_URI="${GRAYLOG_MONGO_URI:-mongodb://127.0.0.1:27017}"
 MONGO_ADMIN_USER="${MONGO_ADMIN_USER:-admin}"
