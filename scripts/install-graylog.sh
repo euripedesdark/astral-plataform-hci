@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/shared-observability.sh"
+observability_lock
+status=0
+reuse_observability_service graylog graylog-server.service || status=$?
+[[ "$status" == 0 ]] && exit 0
+[[ "$status" == 1 ]] || exit "$status"
+status=0
+reuse_observability_service mongo mongod.service || status=$?
+[[ "$status" == 0 ]] || { echo '[ERRO] Mongo compartilhado ausente/ambiguo.' >&2; exit 2; }
+for conf in /etc/graylog/server/server.conf /etc/graylog-server/server.conf; do
+    [[ ! -s "$conf" ]] || { echo '[ERRO] Configuracao existente sem unit; nao reinstalar.' >&2; exit 2; }
+done
 GRAYLOG_VERSION="${GRAYLOG_VERSION:-7.1}"
 MONGO_URI="${GRAYLOG_MONGO_URI:-mongodb://127.0.0.1:27017}"
 MONGO_ADMIN_USER="${MONGO_ADMIN_USER:-admin}"

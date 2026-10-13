@@ -90,9 +90,9 @@ usage() {
 Uso: sudo ./scripts/install-astral.sh [opcoes] [fases...]
 
 FASES (padrao: todas, nesta ordem)
-  deps      garantir JDK 21, Maven, PostgreSQL e Node
+  deps      garantir JDK 25, Maven, PostgreSQL e Node
   db        criar role e banco, se nao existirem (sem SUPERUSER)
-  build     npm build do frontend + mvn package
+  build     npm build do frontend + mvn clean verify
   deploy    instalar o jar em /opt/astral-platform
   unit      escrever a unit systemd e reiniciar o servico
   firewall  inserir as regras do Astral (nunca faz flush)
@@ -128,30 +128,34 @@ done
 # =============================================================================
 # deps
 # =============================================================================
-have_java21() {
-  # Aceita tanto /usr/bin/java apontando pra 21 quanto um jdk-21 em /usr/lib/jvm.
-  java -version 2>&1 | grep -qE '"21\.' && return 0
-  [[ -x /usr/bin/javac ]] || return 1
-  javac -version 2>&1 | grep -qE '^javac 21\.' && return 0
+have_java25() {
+  local candidate version
+  for candidate in "${ASTRAL_JAVA_HOME:-}" "${JAVA_HOME:-}" /usr/lib/jvm/* /opt/java/*; do
+    [[ -x "$candidate/bin/javac" && -x "$candidate/bin/java" ]] || continue
+    version=$("$candidate/bin/javac" -version 2>&1)
+    if [[ "$version" =~ ^javac\ 25(\.|$) ]]; then
+      export JAVA_HOME="$candidate"; export PATH="$JAVA_HOME/bin:$PATH"; return 0
+    fi
+  done
   return 1
 }
 
 fase_deps() {
   head1 "deps: pacotes e toolchain"
 
-  if have_java21; then
-    ok "JDK 21 presente: $(java -version 2>&1 | head -1)"
+  if have_java25; then
+    ok "JDK 25 presente: $(java -version 2>&1 | head -1)"
   else
-    warn "JDK 21 ausente"
+    warn "JDK 25 ausente"
     if (( DRY )); then
-      run dnf install -y java-21-openjdk-devel
+      run dnf install -y java-25-openjdk-devel
     else
-      # java-21-openjdk-devel traz o JDK completo. Se o repo nao tiver, o
+      # java-25-openjdk-devel traz o JDK completo. Se o repo nao tiver, o
       # Oracle JDK e o plano B, que e o que o servidor ja usa.
-      dnf install -y java-21-openjdk-devel >/dev/null 2>&1 \
-        || dnf install -y "https://download.oracle.com/java/21/latest/jdk-21_linux-x64_bin.rpm" >/dev/null
-      have_java21 || die "instalei o pacote mas ainda nao acho javac 21. Rode: dnf install -y java-21-openjdk-devel"
-      ok "JDK 21 instalado"
+      dnf install -y java-25-openjdk-devel >/dev/null 2>&1 \
+        || dnf install -y "https://download.oracle.com/java/25/latest/jdk-25_linux-x64_bin.rpm" >/dev/null
+      have_java25 || die "instalei o pacote mas ainda nao acho javac 21. Rode: dnf install -y java-25-openjdk-devel"
+      ok "JDK 25 instalado"
     fi
   fi
 
@@ -271,6 +275,7 @@ fase_db() {
 # build
 # =============================================================================
 fase_build() {
+  have_java25 || die "Selecione JDK25 em ASTRAL_JAVA_HOME/JAVA_HOME antes de compilar."
   head1 "build: frontend e jar"
 
   cd "$ROOT"
@@ -299,8 +304,8 @@ fase_build() {
     fi
   fi
 
-  log "mvn -DskipTests clean package"
-  runsh "cd '$ROOT' && mvn -DskipTests clean package"
+  log "mvn -B clean verify"
+  runsh "cd '$ROOT' && mvn -B clean verify"
 
   # O build roda como root (o script precisa de root), mas o repo e do usuario.
   # Sem isto o target/ fica com ownership de root e o PROXIMO build do usuario
@@ -397,6 +402,7 @@ fase_deploy() {
 # unit
 # =============================================================================
 fase_unit() {
+  have_java25 || die "JDK25 ausente; execute a fase deps primeiro."
   head1 "unit: systemd"
 
   # Esta unit e a dona do servico. O Installer.java tambem escrevia uma unit
@@ -420,7 +426,8 @@ User=$SVC_USER
 Group=$SVC_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENVF
-ExecStart=/usr/bin/java -jar $APP_DIR/astral-platform.jar
+Environment=JAVA_HOME=$JAVA_HOME
+ExecStart=$JAVA_HOME/bin/java -jar $APP_DIR/astral-platform.jar
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
