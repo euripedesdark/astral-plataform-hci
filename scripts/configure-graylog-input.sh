@@ -10,7 +10,25 @@
 # (astral.graylog.gelf-port). Se trocar de um lado, troque do outro.
 set -Eeuo pipefail
 PORT="${GRAYLOG_GELF_PORT:-12201}"
-URL="${GRAYLOG_URL:-http://127.0.0.1:9000}"
+# A porta da UI nao e' fixa (MinIO toma 9000 e 9001 neste host). Sem GRAYLOG_URL,
+# le a porta do server.conf em vez de adivinhar -- adivinhar e' como falar com o
+# MinIO achando que e' o Graylog: a chamada "da certo" e' o erro passa batido.
+URL="${GRAYLOG_URL:-}"
+if [[ -z "$URL" ]];then
+  CONF="${GRAYLOG_CONF:-/etc/graylog/server/server.conf}"
+  PORT_UI=""
+  if [[ -r "$CONF" ]];then
+    PORT_UI="$( (sed -n 's/^http_bind_address[[:space:]]*=[[:space:]]*//p' "$CONF" || true) | head -1 | awk -F: '{print $NF}')"
+  fi
+  if [[ -n "$PORT_UI" ]];then
+    URL="http://127.0.0.1:$PORT_UI"
+  else
+    echo "[ERRO] nao li a porta em $CONF (existe? legivel por este usuario?)." >&2
+    echo "       rode com sudo ou passe GRAYLOG_URL=http://127.0.0.1:<porta>." >&2
+    exit 1
+  fi
+fi
+export GRAYLOG_URL="$URL"
 ADMIN_USER="${GRAYLOG_ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${GRAYLOG_ADMIN_PASSWORD:-}"
 if [[ -z "$ADMIN_PASSWORD" ]];then read -rsp "Senha do administrador Graylog [admin]: " ADMIN_PASSWORD;echo;fi

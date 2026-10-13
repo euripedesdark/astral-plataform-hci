@@ -1,0 +1,39 @@
+# Perfil de DESENVOLVIMENTO.
+#
+#   mvn spring-boot:run -Dspring-boot.run.profiles=dev
+#
+# Aqui mora so o que e'comfortavel em dev e atrapalharia em producao: log
+# verboso, SQL impresso, detalhe de health. O que e' verdade sobre o sistema --
+# ddl-auto, Flyway, defaults do ACL, cookie, TLS -- fica no application.yml e
+# NAO e' repetido aqui. Perfil que reescreve regra de seguranca vira uma segunda
+# fonte de verdade, e a segunda fonte de verdade sempre acaba divergindo.
+
+spring:
+  jpa:
+    show-sql: true
+
+  thymeleaf:
+    cache: false
+
+management:
+  endpoint:
+    health:
+      # always, e' nao when_authorized: aqui nao ha usuario, e um health que
+      # esconde informacao nao serve para diagnosticar nada.
+      show-details: always
+
+astral:
+  graylog:
+    # /var/log/astral e' do usuario astral e o processo de dev nao e' esse
+    # usuario. Deixar o fallback no tmpdir e' o mesmo padrao do GraylogAuditPublisher,
+    # e evita o dev perder a trilha de auditoria por causa de permissao -- que e'
+    # o jeito mais facil de uma trilha de auditoria nunca ser lida.
+    fallback-file: "${ASTRAL_GRAYLOG_FALLBACK:${java.io.tmpdir}/astral/graylog-fallback.jsonl}"
+
+logging:
+  level:
+    root: INFO
+    com.astral: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.springframework.security: DEBUG
+    com.astral.fabric.proxy: TRACE

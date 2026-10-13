@@ -1,0 +1,61 @@
+# Perfil de PRODUCAO.
+#
+#   SPRING_PROFILES_ACTIVE=prod java -jar astral-platform.jar
+#
+# Este arquivo NAO e' carregado hoje: a unit astral-platform.service nao define
+# SPRING_PROFILES_ACTIVE, entao a aplicacao sobe com o application.yml sozinho.
+# Ativar este perfil e' um ato deliberado -- e a unica forma de o cookie
+# enforcing e o silencio de log valerem.
+#
+# O que muda em relacao ao base e' quatro coisas, todas defensivas:
+#
+#   1. cookie secure ligado    -- o trafego real e' TLS, e o cookie sem Secure
+#                                  continua sendo aceito em http://
+#   2. show-sql desligado      -- o SQL em log vaza schema
+#   3. include-message never    -- stack trace e mensagem de erro nao vao para
+#                                  quem esta na outra ponta da 443
+#   4. log em WARN              -- INFO em prod e' ruido que esconde o alerta
+#
+# O que NAO muda, de proposito:
+#
+# A URL do banco continua com o mesmo placeholder e o mesmo default do base
+# (${ASTRAL_DB_URL:jdbc:postgresql://127.0.0.1:5432/astral}). Apertar para
+# ${ASTRAL_DB_URL} sem default seria mais rigido e e' o que o brasil-saas-erp
+# faz -- mas /etc/astral/astral.env e' root-only e nao da para confirmar, daqui,
+# quais variaveis ele define. Um perfil que passa a exigir uma variavel que o
+# deploy talvez nao sete quebra o servico no momento em que alguem ativa o
+# perfil, que e' o pior momento para descobrir isso. Quando o conteudo do
+# astral.env estiver auditado, este e' o primeiro ponto a apertar.
+#
+# O mesmo vale para o segredo do JWT e para a senha do banco: nenhum dos dois
+# ganha default novo aqui. Default de segredo em prod e' a forma mais comum de
+# um segredo nao ser segredo.
+
+spring:
+  jpa:
+    show-sql: false
+
+server:
+  error:
+    include-message: never
+    include-binding-errors: never
+  servlet:
+    session:
+      cookie:
+        # Ainda overridable: ASTRAL_COOKIE_SECURE=false no astral.env continua
+        # valendo, para o caso de um ambiente interno sem TLS proprio.
+        secure: "${ASTRAL_COOKIE_SECURE:true}"
+
+management:
+  endpoint:
+    health:
+      # when_authorized, e' nao always: o /actuator/ e' caminho publico (ver
+      # astral.acl.public-paths), entao 'always' publicaria detalhe de sistema
+      # para qualquer visitor da 443.
+      show-details: when_authorized
+
+logging:
+  level:
+    root: WARN
+    com.astral: INFO
+    org.hibernate.SQL: WARN

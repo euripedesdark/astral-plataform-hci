@@ -186,10 +186,10 @@ resposta de política; um 401 é resposta de credencial.
 
 A lista é configurável em `astral.acl.public-paths`, separada por vírgula —
 justamente para não depender de redeploy quando um caminho novo é publicado. O
-padrão são 13 entradas:
+padrão são 14 entradas:
 
 ```
-/  /login  /home  /inicio  /app/  /assets/  /favicon.ico
+/  /login  /home  /inicio  /app/  /assets/  /images/  /favicon.ico
 /api/auth/login  /api/certs/ca/download  /error
 /actuator/  /v3/api-docs/  /swagger-ui/
 ```
@@ -431,7 +431,7 @@ JWT faria três coisas erradas de uma vez:
    amortece, não resolve.
 
 Até o Auth Service ganhar emissão de verdade, o honesto é o que está no
-`application.properties`:
+`application.yml`:
 
 ```
 astral.auth.jwt.enabled=${ASTRAL_AUTH_JWT_ENABLED:false}
@@ -477,7 +477,7 @@ ordem:
 | Chave ACL (o `permitAll` do check) | `src/main/java/com/astral/main/security/SecurityConfig.java` |
 | Bloco Nginx | `scripts/configure-nginx.sh` |
 | Retenção | `scripts/configure-timescaledb.sh` |
-| Configuração | `src/main/resources/application.properties` |
+| Configuração | `src/main/resources/application.yml` |
 
 ---
 

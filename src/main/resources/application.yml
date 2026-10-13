@@ -1,0 +1,212 @@
+# Configuracao base do Astral Platform & HCI.
+#
+# Este arquivo e' o unico carregado por padrao. Os demais (application-dev.yml,
+# application-hom.yml, application-prod.yml) sao PERFIS e ficam inativos ate
+# alguem pedir:
+#
+#     mvn spring-boot:run -Dspring-boot.run.profiles=dev     # desenvolvimento
+#     SPRING_PROFILES_ACTIVE=prod java -jar ...               # producao
+#
+# Deliberadamente NAO ha `spring.profiles.active` aqui. A unit que roda hoje
+# (/etc/systemd/system/astral-platform.service) nao define SPRING_PROFILES_ACTIVE,
+# entao fixar `dev` como padrao daria a PRODUCAO o perfil de desenvolvimento sem
+# ninguem notar. Sem essa linha, a aplicacao sobe exatamente com o que esta
+# escrito aqui -- que e' o mesmo comportamento do antigo application.properties.
+# Para ativar um perfil de proposito, defina a variavel de ambiente.
+#
+# A senha do banco e o segredo JWT chegam por /etc/astral/astral.env (EnvironmentFile
+# da unit). O usuario do banco e' `astral`, o mesmo dos dois lados: o processo roda
+# com User=astral e o papel no Postgres e' astral.
+
+spring:
+  application:
+    name: astral-platform
+
+  # Virtual threads: o caminho quente do auth_request e' IO puro (Redis, banco,
+  # publisher). Thread platforma aqui so' gasta fd e cola o Tomcat em 200 conexoes.
+  threads:
+    virtual:
+      enabled: true
+
+  datasource:
+    url: "${ASTRAL_DB_URL:jdbc:postgresql://127.0.0.1:5432/astral}"
+    username: "${ASTRAL_DB_USER:astral}"
+    password: "${ASTRAL_DB_PASSWORD:}"
+    driver-class-name: org.postgresql.Driver
+
+  # O modulo agora e' o dono do schema: as entidades de fabric/ foram movidas para
+  # ca (firewall, network, proxy/acl, reconciliation). 'validate' confirma que o
+  # banco bate com o Java a cada subida e FALHA SE NAO BATER -- e' de proposito.
+  # 'none'/'update' deixam a divergencia aparecer como bug em producao, na hora
+  # menos conveniente. Quem cria coluna e' o Flyway, nunca o Hibernate.
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  # O Flyway roda neste processo (a migracao standalone do astral-firewall foi
+  # desligada). O banco ja' nasceu populado pelo modulo antigo, entao o baseline
+  # marca o V1 como aplicado e a partir dai' toda mudanca e' uma migracao nova --
+  # proxima versao: V100__.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 1
+    validate-on-migrate: true
+    out-of-order: false
+
+  # Redis: cache do motor de ACL. Tempo de conexao curto de proposito: se o Redis
+  # cair, o fallback para PostgreSQL tem que acontecer em milissegundos, nao depois
+  # de um timeout de 5s por requisicao -- senao o auth_request inteiro fica lento.
+  data:
+    redis:
+      host: "${ASTRAL_REDIS_HOST:127.0.0.1}"
+      port: "${ASTRAL_REDIS_PORT:6379}"
+      timeout: 500ms
+      connect-timeout: 500ms
+
+  # RabbitMQ: fila da intencao -> reconciliacao. Com virtual threads o consumidor
+  # pode bloquear no shell do modulo sem prender nenhum request thread.
+  rabbitmq:
+    host: "${ASTRAL_RABBIT_HOST:127.0.0.1}"
+    port: "${ASTRAL_RABBIT_PORT:5672}"
+    username: "${ASTRAL_RABBIT_USER:guest}"
+    password: "${ASTRAL_RABBIT_PASSWORD:guest}"
+    connection-timeout: 5s
+    listener:
+      simple:
+        missing-queues-fatal: false
+        prefetch: 8
+        auto-startup: true
+
+server:
+  # Atencao: 8080 e' o default de DESENVOLVIMENTO. Em instalacao a unit passa
+  # --server.port=8082, e o verify-astral.sh falha de proposito se a porta
+  # pergunta nao estiver presa ao loopback. O 8080 livre nao e' o Astral: e' o
+  # brasil-saas-erp, e foi exatamente por isso que um check antigo passava com
+  # o Astral fora do ar.
+  port: 8080
+  address: 0.0.0.0
+  forward-headers-strategy: framework
+  compression:
+    enabled: true
+  tomcat:
+    threads:
+      max: 200
+    accept-count: 100
+  servlet:
+    session:
+      timeout: 8h
+      cookie:
+        http-only: true
+        same-site: lax
+        # true = cookie so trafega por HTTPS. Fica false por padrao porque o
+        # ambiente de desenvolvimento e' accessed em http:// e ligar isso aqui
+        # quebraria o login local. Quando estiver atras de TLS, suba
+        # ASTRAL_COOKIE_SECURE=true no /etc/astral/astral.env -- ou ative o
+        # perfil prod, que ja faz isso.
+        secure: "${ASTRAL_COOKIE_SECURE:false}"
+
+astral:
+  auth:
+    postgres:
+      enabled: "${ASTRAL_AUTH_POSTGRES_ENABLED:true}"
+      url: "${ASTRAL_AUTH_POSTGRES_URL:jdbc:postgresql://127.0.0.1:5432/astral}"
+      admin-role: "${ASTRAL_AUTH_POSTGRES_ADMIN_ROLE:astral_admin}"
+    ad:
+      enabled: "${ASTRAL_AUTH_AD_ENABLED:true}"
+      domain: "${ASTRAL_AD_DOMAIN:srvcloud.cloud}"
+      # LDAPS por padrao: 636 com TLS ligado. Antes o default era ldap://...:389
+      # com use-tls=false, ou seja, a senha do AD cruzava a rede em claro.
+      url: "${ASTRAL_AD_URL:ldaps://srvcloud.cloud:636}"
+      base-dn: "${ASTRAL_AD_BASE_DN:DC=srvcloud,DC=cloud}"
+      admin-group: "${ASTRAL_AD_ADMIN_GROUP:Domain Admins}"
+      use-tls: "${ASTRAL_AD_USE_TLS:true}"
+      connect-timeout-ms: "${ASTRAL_AD_TIMEOUT_MS:5000}"
+    jwt:
+      # Desligado por padrao: o Auth Service de :8181 ainda nao emite token
+      # (docs/GUIA-INTEGRACAO-AUTH-SERVICE.md, secao 28) e validar um JWT que
+      # ninguem emite e' trabalho por nada. O caminho que funciona hoje e' a sessao
+      # do portal. Quando o Auth Service ganhar emissao, ligue com
+      # ASTRAL_AUTH_JWT_ENABLED=true e ASTRAL_AUTH_JWT_SECRET (>= 32 bytes, mesmo
+      # segredo dos dois lados).
+      enabled: "${ASTRAL_AUTH_JWT_ENABLED:false}"
+      secret: "${ASTRAL_AUTH_JWT_SECRET:}"
+
+  proxy:
+    auth:
+      port: "${ASTRAL_PROXY_AUTH_PORT:8091}"
+
+  # App legado do firewall, em 8040. APOSENTADO: o servico nao responde e nenhum
+  # .java do projeto le mais esta propriedade. Ela fica aqui porque o
+  # InstallerFirewall.java ainda a escreve no /etc/astral/astral.env -- apagar a
+  # chave junto deixaria o instalador quebrado por um motivo invisivel.
+  firewall:
+    url: "${ASTRAL_FIREWALL_URL:http://127.0.0.1:8040}"
+
+  graylog:
+    # GELF/UDP escrito a mao em GraylogAuditPublisher; cai para JSONL se faltar.
+    enabled: "${ASTRAL_GRAYLOG_ENABLED:true}"
+    host: "${ASTRAL_GRAYLOG_HOST:127.0.0.1}"
+    gelf-port: "${ASTRAL_GRAYLOG_GELF_PORT:12201}"
+    queue-capacity: 8192
+    fallback-file: "${ASTRAL_GRAYLOG_FALLBACK:/var/log/astral/graylog-fallback.jsonl}"
+
+  acl:
+    # Fechado por padrao nos dois pontos em que o codigo pode escolher.
+    #   default-without-rule   -> ha categoria, mas nenhuma regra cobre o grupo
+    #   default-uncategorized  -> o dominio nem categoria tem
+    # ALLOW existe para o sem-categoria porque ha ambientes que querem "so' o que
+    # e' marcado como bloqueado por padrao e' negado"; e' escolha consciente, nao
+    # default. Para o fecho completo, DENY.
+    default-without-rule: "${ASTRAL_ACL_DEFAULT_WITHOUT_RULE:DENY}"
+    default-uncategorized: "${ASTRAL_ACL_DEFAULT_UNCATEGORIZED:ALLOW}"
+    cache:
+      enabled: true
+      ttl-dominio: 1h
+      ttl-regra: 5m
+      ttl-decisao: 15m
+    audit:
+      enabled: true
+    # Caminhos que passam sem avaliacao -- espelham o permitAll do SecurityConfig.
+    # Sem login, assets e SPA publica, o auth_request exigiria identidade para
+    # chegar ao proprio login. Prefixo terminado em / casa com tudo dentro dele.
+    #
+    # ATENCAO ao editar esta lista: o SecurityConfig tem um permitAll parallel, e
+    # os dois precisam casar. Divergir nao' furo de seguranca (o Spring Security
+    # continua sendo o portao de verdade das APIs), e' no maximo um login
+    # bloqueado ou uma tela publica que passou a exigir sessao.
+    public-paths: "${ASTRAL_ACL_PUBLIC_PATHS:/,/login,/home,/inicio,/app/,/assets/,/images/,/favicon.ico,/api/auth/login,/api/certs/ca/download,/error,/actuator/,/v3/api-docs/,/swagger-ui/}"
+    # Indice do PASSO A: TTL curto porque excecao nova precisa valer rapido, mas
+    # TTL porque reconstruir a cada requisicao transformaria 2ms em consulta ao
+    # banco.
+    override-index-ttl: 60000
+
+  reconciliation:
+    # Diretorio dos snapshots de rollback (ciclo Commit -> Rollback Obrigatorio).
+    # Vazio = ${java.io.tmpdir}/astral/rollback (padrao de RollbackStore).
+    # Atencao: com PrivateTmp=true na unit, o padrao e' da instancia -- se o
+    # snapshot precisa atravessar reinicio do servico, aponte para
+    # /var/lib/astral/rollback.
+    rollback-dir: "${ASTRAL_ROLLBACK_DIR:}"
+
+# springdoc alimenta o Swagger do front: o form de enderecamento e a tela de ACL
+# consomem /v3/api-docs, nao URLs decoradas a mao.
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sort: alpha
+    tags-sort: alpha
+  packages-to-scan: com.astral.fabric
+
+management:
+  server:
+    port: 8081
+    address: 127.0.0.1
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

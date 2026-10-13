@@ -1,0 +1,31 @@
+# Perfil de HOMOLOGACAO.
+#
+#   SPRING_PROFILES_ACTIVE=hom java -jar astral-platform.jar
+#
+# Homologacao e' produocao com menos ruido: mesmas regras de seguranca do base,
+# sem o show-sql do dev e sem o silencio do prod. O que muda em relacao ao base e'
+# apenas o nivel de log e o detalhe do health.
+#
+# Repare o que NAO esta aqui: nada de cookie secure desligado, nada de
+# default-uncategorized em ALLOW, nenhuma chave de AD apontando para outro
+# dominio. Se homologacao precisa divergir do base numa regra de seguranca, a
+# divergencia vai no application.yml com um comentario -- nao escondida num perfil
+# que so alguem com perfil sabe ler.
+
+spring:
+  jpa:
+    show-sql: false
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    root: INFO
+    com.astral: DEBUG
+    org.springframework.security: INFO
+    # O Hibernate em WARN em hom: o DEBUG de SQL aqui vira centenas de linhas por
+    # pagina de teste e mascara o que deu errado de verdade.
+    org.hibernate.SQL: WARN

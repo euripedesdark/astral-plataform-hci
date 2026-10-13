@@ -145,7 +145,7 @@ astral-plataform-hci/
 │   │   └── reconciliation/ # Intent → Validación → Diff → Commit → Rollback
 │   └── tools/             # Installer, InstallerFirewall, InstallerProxy,
 │                          # NetworkConfig, Uninstaller
-├── src/main/resources/    # application.properties, db/migration (Flyway),
+├── src/main/resources/    # application.yml + 3 perfiles, db/migration (Flyway),
 │                          # data/nameservers.csv
 ├── frontend/              # Vite + React 18 + PrimeReact
 │   └── legacy/            # UI heredada servida por el proxy
